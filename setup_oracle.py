@@ -153,7 +153,7 @@ def main():
 
     print("\n1. Generating data...")
     train_df = generate_training_data()
-    scoring_df = generate_scoring_data()
+    scoring_df, _labels = generate_scoring_data()
 
     print(f"\n2. Connecting to Oracle ({SCHEMA})...")
     conn = get_connection()
