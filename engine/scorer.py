@@ -3,7 +3,7 @@
 import logging
 import numpy as np
 import pandas as pd
-from engine.config_loader import get_feature_list, get_label
+from engine.config_loader import get_feature_list, get_label, get_ensemble_weights, get_alert_bands
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +15,10 @@ class AnomalyScorer:
         self.config = config
         self.models = models
         self.features = get_feature_list(config)
-        self.weights = config["ensemble"]["weights"]
-        self.top_n = config["scoring"]["top_n_reasons"]
-        self.z_threshold = config["scoring"]["univariate_z_threshold"]
-        self.bands = config["scoring"]["bands"]
+        self.weights = get_ensemble_weights(config)
+        self.top_n = config.get("scoring", {}).get("top_n_reasons", 3)
+        self.z_threshold = config.get("scoring", {}).get("univariate_z_threshold", 2.5)
+        self.bands = get_alert_bands(config)
 
     def score(self, df):
         """Score DataFrame, return results with explanations."""

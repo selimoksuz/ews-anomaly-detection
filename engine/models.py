@@ -56,7 +56,7 @@ class AnomalyModels:
         X = self.scaler.fit_transform(X_raw)
         self.n_features = X.shape[1]
 
-        mc = self.config["model"]
+        mc = self.config.get("models", self.config.get("model", {}))
 
         # Autoencoder
         ae_cfg = mc["autoencoder"]
