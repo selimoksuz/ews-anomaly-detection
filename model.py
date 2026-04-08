@@ -80,7 +80,7 @@ class ExplainableEnsemble:
         self.iso.fit(X)
 
         # 3. Mahalanobis (Robust Covariance)
-        self.mcd = MinCovDet(random_state=42, support_fraction=0.85).fit(X)
+        self.mcd = MinCovDet(random_state=42, support_fraction=0.90).fit(X)
         self.cov_inv = np.linalg.inv(self.mcd.covariance_)
         self.center = self.mcd.location_
 
@@ -106,7 +106,7 @@ class ExplainableEnsemble:
         X = self.scaler.transform(df[self.feature_cols].fillna(0))
         n = len(X)
 
-        # --- Per-model feature contributions (each: n x 35, row sums = 1) ---
+        # --- Per-model feature contributions (each: n x n_features, row sums = 1) ---
         ae_contrib = self._ae_contribution(X)
         if_contrib = self._if_contribution(X)
         md_contrib = self._md_contribution(X)
