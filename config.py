@@ -58,26 +58,14 @@ TREND_FEATURES = [
 ]
 
 # ═══════════════════════════════════════════════════════════════
-# KATMAN 4 — RISK GRUBU INTERACTION
-# ═══════════════════════════════════════════════════════════════
-
-INTERACTION_FEATURES = [
-    "liquidity_squeeze_score",      # util_high * checking_low * cash_adv_high
-    "hidden_stress_score",          # dpd_low * min_pay_high * deposit_volatile
-    "income_erosion_score",         # deposit_falling * balance_rising
-    "payment_breakdown_score",      # days_to_pay_high * reversal_high * cv_high
-]
-
-# ═══════════════════════════════════════════════════════════════
 
 ALL_FEATURES = (
     INSTANT_FEATURES
     + ROLLING_4W_FEATURES
     + TREND_FEATURES
-    + INTERACTION_FEATURES
 )
 
-assert len(ALL_FEATURES) == 32, f"Expected 32, got {len(ALL_FEATURES)}"
+assert len(ALL_FEATURES) == 28, f"Expected 28, got {len(ALL_FEATURES)}"
 
 # ═══════════════════════════════════════════════════════════════
 # TURKCE ETIKETLER (human-readable ciktilar icin)
@@ -118,99 +106,8 @@ FEATURE_LABELS = {
     "util_acceleration":            "Kullanim Ivmesi",
     "dpd_direction_4w":             "Gecikme Yonu (artan hafta sayisi)",
 
-    # Katman 4 — Interaction
-    "liquidity_squeeze_score":      "Likidite Sikismasi Skoru",
-    "hidden_stress_score":          "Gizli Stres Skoru",
-    "income_erosion_score":         "Gelir Erozyonu Skoru",
-    "payment_breakdown_score":      "Odeme Kirilma Skoru",
 }
 
-# ═══════════════════════════════════════════════════════════════
-# RISK GRUPLARI (human-readable grup anomali aciklamalari)
-# ═══════════════════════════════════════════════════════════════
-
-RISK_GROUPS = {
-    "likidite_sikismasi": {
-        "label": "Likidite Sikismasi",
-        "interaction_feature": "liquidity_squeeze_score",
-        "component_features": [
-            "utilization_ratio", "checking_balance",
-            "checking_balance_min_4w", "cash_advance_ratio_4w",
-        ],
-        "description": "Kredi kullanimi artarken nakit varliklari eriyor",
-        "stress_direction": {
-            "utilization_ratio": "high",
-            "checking_balance": "low",
-            "checking_balance_min_4w": "low",
-            "cash_advance_ratio_4w": "high",
-        },
-    },
-    "gizli_stres": {
-        "label": "Gizli Stres",
-        "interaction_feature": "hidden_stress_score",
-        "component_features": [
-            "dpd_current", "min_payment_only_count_4w",
-            "payment_to_min_ratio_4w", "deposit_change_pct",
-        ],
-        "description": "Gecikme yok ama odeme davranisi bozulmus",
-        "stress_direction": {
-            "dpd_current": "low",
-            "min_payment_only_count_4w": "high",
-            "payment_to_min_ratio_4w": "low",
-            "deposit_change_pct": "low",
-        },
-    },
-    "gelir_erozyonu": {
-        "label": "Gelir Erozyonu",
-        "interaction_feature": "income_erosion_score",
-        "component_features": [
-            "deposit_change_pct", "deposit_amount_avg_4w",
-            "balance_slope_4w", "checking_slope_4w",
-        ],
-        "description": "Gelen para azaliyor, borc buyuyor, bakiye eriyor",
-        "stress_direction": {
-            "deposit_change_pct": "low",
-            "deposit_amount_avg_4w": "low",
-            "balance_slope_4w": "high",
-            "checking_slope_4w": "low",
-        },
-    },
-    "odeme_kirilmasi": {
-        "label": "Odeme Davranisi Kirilmasi",
-        "interaction_feature": "payment_breakdown_score",
-        "component_features": [
-            "avg_days_to_payment_4w", "payment_reversal_count_4w",
-            "txn_count_change_pct", "channel_count_4w",
-        ],
-        "description": "Odeme zamanlama, tutar ve kanali degismis",
-        "stress_direction": {
-            "avg_days_to_payment_4w": "high",
-            "payment_reversal_count_4w": "high",
-            "txn_count_change_pct": "low",
-            "channel_count_4w": "low",
-        },
-    },
-}
-
-# ═══════════════════════════════════════════════════════════════
-# MODEL PARAMETRELERI
-# ═══════════════════════════════════════════════════════════════
-
-AE_LATENT_DIM = 6
-AE_HIDDEN_LAYERS = [24, 12]
-AE_EPOCHS = 150
-AE_LEARNING_RATE = 1e-3
-
-ISO_N_ESTIMATORS = 200
-ISO_CONTAMINATION = 0.05
-
-WEIGHT_AE = 0.5
-WEIGHT_IF = 0.3
-WEIGHT_MD = 0.2
-
-BAND_THRESHOLDS = {
-    "NORMAL": (0, 60),
-    "SARI": (60, 75),
-    "TURUNCU": (75, 90),
-    "KIRMIZI": (90, 100),
-}
+# Not: Eski config.py'deki model parametreleri ve risk gruplari artik
+# config/pipeline_config.yaml'a tasindi. Bu dosya sadece geriye uyumluluk
+# icin feature listesi ve label'lari tutuyor.

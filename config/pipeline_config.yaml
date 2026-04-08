@@ -1,0 +1,112 @@
+pipeline:
+  name: "ews-anomaly-detection"
+  version: "2.0.0"
+  id_column: "customer_id"
+  time_column: "snapshot_date"
+  log_level: "INFO"
+  log_dir: "logs"
+
+features:
+  instant:
+    - dpd_current
+    - utilization_ratio
+    - outstanding_balance
+    - checking_balance
+    - txn_count_weekly
+    - txn_amount_weekly
+    - avg_txn_amount_weekly
+    - payment_amount_this_week
+
+  rolling_4w:
+    - dpd_max_4w
+    - min_payment_only_count_4w
+    - payment_to_min_ratio_4w
+    - avg_days_to_payment_4w
+    - payment_reversal_count_4w
+    - nsf_count_4w
+    - overlimit_count_4w
+    - cash_advance_ratio_4w
+    - checking_balance_min_4w
+    - deposit_amount_avg_4w
+    - channel_count_4w
+
+  trend:
+    - util_slope_4w
+    - balance_slope_4w
+    - checking_slope_4w
+    - payment_ratio_slope_4w
+    - txn_count_change_pct
+    - txn_amount_change_pct
+    - deposit_change_pct
+    - util_acceleration
+    - dpd_direction_4w
+
+labels:
+  dpd_current: "Gecikme Gunu (bu hafta)"
+  utilization_ratio: "Limit Kullanim Orani"
+  outstanding_balance: "Toplam Borc Bakiyesi"
+  checking_balance: "Vadesiz Hesap Bakiyesi"
+  txn_count_weekly: "Haftalik Islem Sayisi"
+  txn_amount_weekly: "Haftalik Islem Tutari"
+  avg_txn_amount_weekly: "Ort. Islem Tutari (haftalik)"
+  payment_amount_this_week: "Bu Hafta Odeme Tutari"
+  dpd_max_4w: "Max Gecikme (son 4 hafta)"
+  min_payment_only_count_4w: "Sadece Min. Odeme Sayisi (4 hafta)"
+  payment_to_min_ratio_4w: "Odeme / Min. Odeme Orani (4 hafta)"
+  avg_days_to_payment_4w: "Ort. Odeme Suresi (4 hafta, gun)"
+  payment_reversal_count_4w: "Odeme Iade/Iptal (4 hafta)"
+  nsf_count_4w: "Karsilaksiz Islem (4 hafta)"
+  overlimit_count_4w: "Limit Asim Sayisi (4 hafta)"
+  cash_advance_ratio_4w: "Nakit Avans Orani (4 hafta)"
+  checking_balance_min_4w: "Min. Vadesiz Bakiye (4 hafta)"
+  deposit_amount_avg_4w: "Ort. Mevduat Girisi (4 hafta)"
+  channel_count_4w: "Kullanilan Kanal Sayisi (4 hafta)"
+  util_slope_4w: "Kullanim Orani Egimi (4 hafta)"
+  balance_slope_4w: "Borc Bakiye Egimi (4 hafta)"
+  checking_slope_4w: "Vadesiz Bakiye Egimi (4 hafta)"
+  payment_ratio_slope_4w: "Odeme Orani Egimi (4 hafta)"
+  txn_count_change_pct: "Islem Sayisi Degisimi %"
+  txn_amount_change_pct: "Islem Tutari Degisimi %"
+  deposit_change_pct: "Mevduat Degisimi %"
+  util_acceleration: "Kullanim Ivmesi"
+  dpd_direction_4w: "Gecikme Yonu (artan hafta sayisi)"
+
+model:
+  autoencoder:
+    hidden_layers: [20, 10]
+    latent_dim: 5
+    epochs: 150
+    learning_rate: 0.001
+    batch_size: 512
+
+  isolation_forest:
+    n_estimators: 200
+    contamination: 0.05
+    random_state: 42
+
+  mahalanobis:
+    covariance_method: "ledoit_wolf"
+
+ensemble:
+  weights:
+    autoencoder: 0.5
+    isolation_forest: 0.3
+    mahalanobis: 0.2
+
+scoring:
+  top_n_reasons: 3
+  bands:
+    NORMAL: [0, 60]
+    SARI: [60, 75]
+    TURUNCU: [75, 90]
+    KIRMIZI: [90, 100]
+
+  univariate_z_threshold: 2.5
+
+oracle:
+  schema: "ZT_VAR2"
+  tables:
+    training: "EWS_TRAINING_DATA"
+    scoring: "EWS_SCORING_DATA"
+    results: "EWS_ALERT_RESULTS"
+    details: "EWS_ALERT_DETAILS"

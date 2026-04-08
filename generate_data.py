@@ -7,17 +7,16 @@ Synthetic data generator for EWS Anomaly Detection.
   RISKY:    Dusuk gelir, yuksek kullanim, gecikme egilimi
   NEW:      Yeni musteriler, dusuk islem gecmisi
 
-32 degisken, 4 katman:
+28 degisken, 3 katman:
   Katman 1: Anlik (8)
   Katman 2: Rolling 4W (11)
   Katman 3: Trend (9)
-  Katman 4: Interaction (4)
 """
 
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from config import ALL_FEATURES, INSTANT_FEATURES, ROLLING_4W_FEATURES, TREND_FEATURES, INTERACTION_FEATURES
+from config import ALL_FEATURES
 
 N_CUSTOMERS = 5000
 N_ANOMALY_A = 50
@@ -25,8 +24,7 @@ N_ANOMALY_B = 80
 N_ANOMALY_C = 70
 N_ANOMALIES = N_ANOMALY_A + N_ANOMALY_B + N_ANOMALY_C
 
-# Interaction feature'lar haric base feature'lar (model bunlari ogrenir, interaction turetilir)
-BASE_FEATURES = INSTANT_FEATURES + ROLLING_4W_FEATURES + TREND_FEATURES
+BASE_FEATURES = ALL_FEATURES
 N_BASE = len(BASE_FEATURES)  # 28
 
 # ═══════════════════════════════════════════════════════════════
@@ -256,49 +254,6 @@ def _constrain(data):
     return data
 
 
-def _compute_interactions(df):
-    """Katman 4 interaction feature'lari hesapla."""
-    eps = 1e-6
-
-    # Likidite sikismasi: util yuksek * bakiye dusuk * cash_advance yuksek
-    df["liquidity_squeeze_score"] = (
-        df["utilization_ratio"].clip(lower=0) *
-        (1.0 / df["checking_balance"].clip(lower=100)) * 1000 *
-        (1 + df["cash_advance_ratio_4w"] * 10)
-    )
-
-    # Gizli stres: DPD dusuk AMA min_pay yuksek, odeme orani dusuk, mevduat dusuyor
-    dpd_low_factor = 1.0 / (1 + df["dpd_current"])  # DPD sifira yakinsa yuksek
-    df["hidden_stress_score"] = (
-        dpd_low_factor *
-        df["min_payment_only_count_4w"] *
-        (1.0 / df["payment_to_min_ratio_4w"].clip(lower=0.5)) *
-        np.clip(-df["deposit_change_pct"], 0, 100) / 10
-    )
-
-    # Gelir erozyonu: mevduat dusuyor + borc artiyor + bakiye eriyor
-    df["income_erosion_score"] = (
-        np.clip(-df["deposit_change_pct"], 0, 100) / 10 *
-        np.clip(df["balance_slope_4w"], 0, None) / 500 *
-        np.clip(-df["checking_slope_4w"], 0, None) / 200
-    )
-
-    # Odeme kirilmasi: gec odeme + iade + islem dususu + kanal dususu
-    df["payment_breakdown_score"] = (
-        df["avg_days_to_payment_4w"] / 30 *
-        (1 + df["payment_reversal_count_4w"]) *
-        np.clip(-df["txn_count_change_pct"], 0, 100) / 20 *
-        (1.0 / df["channel_count_4w"].clip(lower=1))
-    )
-
-    # NaN/inf temizle + log normalizasyon (olcek farki gidermek icin)
-    for f in INTERACTION_FEATURES:
-        df[f] = df[f].replace([np.inf, -np.inf], 0).fillna(0).clip(lower=0)
-        # log(1+x) transform — buyuk degerleri sıkistir, kucukleri koru
-        df[f] = np.log1p(df[f])
-
-    return df
-
 
 def _generate_segment_data(n, rng):
     corr = _build_corr()
@@ -339,7 +294,7 @@ def generate_normal_data(n=N_CUSTOMERS, seed=42):
     data, segments = _generate_segment_data(n, rng)
     df = pd.DataFrame(data, columns=BASE_FEATURES)
     df.insert(0, "customer_id", [f"CUST_{i:05d}" for i in range(n)])
-    df = _compute_interactions(df)
+    # features ready
     return df
 
 
@@ -349,7 +304,7 @@ def generate_training_data(n=N_CUSTOMERS, seed=42):
     df = pd.DataFrame(data, columns=BASE_FEATURES)
     df.insert(0, "customer_id", [f"CUST_{i:05d}" for i in range(n)])
     df["segment"] = segments
-    df = _compute_interactions(df)
+    # features ready
 
     test_idx = rng.choice(n, int(n * 0.2), replace=False)
     df["split_flag"] = "TRAIN"
@@ -438,7 +393,7 @@ def generate_scoring_data(n=N_CUSTOMERS, seed=99):
     df = pd.DataFrame(data, columns=BASE_FEATURES)
     df.insert(0, "customer_id", [f"CUST_{i:05d}" for i in range(n)])
     df["segment"] = segments
-    df = _compute_interactions(df)
+    # features ready
     df["snapshot_date"] = datetime(2026, 4, 8)
 
     labels = pd.DataFrame({"customer_id": df["customer_id"], "is_anomaly": False, "anomaly_type": "NORMAL"})

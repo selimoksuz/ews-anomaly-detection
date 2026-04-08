@@ -1,8 +1,12 @@
+config/secrets.yaml
+logs/
+models/
 __pycache__/
 *.pyc
+.venv/
 data/
 output/
-.venv/
 *.egg-info/
 dist/
 build/
+.env
