@@ -16,6 +16,9 @@ Usage:
     python cli.py compare [segment] [challenger_version]
     python cli.py promote [segment] [model_version]
     python cli.py score-live [segment]
+    python cli.py run-batch [segment]
+    python cli.py reset-runtime
+    python cli.py build-notebook [output_path]
     python cli.py cleanup
 """
 
@@ -29,18 +32,18 @@ import pandas as pd
 from engine.config_loader import get_feature_list, load_config
 from engine.lifecycle import LifecycleManager
 from engine.models import AnomalyModels
+from engine.notebook_builder import build_simulation_notebook
 from engine.oracle_io import OracleConnector
 from engine.pipeline import EWSPipeline
 from engine.scorer import AnomalyScorer
 
 
-def setup_logging(log_dir="logs", level="INFO"):
+def setup_logging(log_dir="logs", level="INFO", enable_file=True):
     Path(log_dir).mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    handlers = [
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(f"{log_dir}/ews_{ts}.log", encoding="utf-8"),
-    ]
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if enable_file:
+        handlers.append(logging.FileHandler(f"{log_dir}/ews_{ts}.log", encoding="utf-8"))
     logging.basicConfig(
         level=getattr(logging, level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -54,7 +57,7 @@ def cmd_setup(*_):
 
 
 def cmd_load(*_):
-    from generate_data import generate_outcome_labels, generate_scoring_data, generate_training_data
+    from scripts.generate_data import generate_outcome_labels, generate_scoring_data, generate_training_data
 
     pipe = EWSPipeline()
     print("Generating synthetic data...")
@@ -83,7 +86,7 @@ def cmd_run(*_):
 
 def cmd_test(*_):
     """Oracle-free full test with synthetic data."""
-    from generate_data import generate_scoring_data, generate_training_data
+    from scripts.generate_data import generate_scoring_data, generate_training_data
 
     config = load_config()
     features = get_feature_list(config)
@@ -123,7 +126,7 @@ def cmd_test(*_):
 
 
 def cmd_prepare_demo_data(*_):
-    from generate_data import generate_outcome_labels, generate_scoring_data, generate_training_data
+    from scripts.generate_data import generate_outcome_labels, generate_scoring_data, generate_training_data
 
     config = load_config()
     sources_cfg = config.get("sources", {})
@@ -241,6 +244,24 @@ def cmd_score_live(*args):
     print(result["snapshot_date"])
 
 
+def cmd_run_batch(*args):
+    manager = LifecycleManager()
+    result = manager.run_batch(segment=args[0] if args else None)
+    print(result)
+
+
+def cmd_reset_runtime(*_):
+    manager = LifecycleManager()
+    result = manager.reset_runtime()
+    print(result)
+
+
+def cmd_build_notebook(*args):
+    output_path = args[0] if args else "notebooks/ews_simulation.ipynb"
+    result = build_simulation_notebook(output_path)
+    print(result)
+
+
 def cmd_cleanup(*_):
     manager = LifecycleManager()
     result = manager.cleanup()
@@ -283,6 +304,9 @@ COMMANDS = {
     "compare": cmd_compare,
     "promote": cmd_promote,
     "score-live": cmd_score_live,
+    "run-batch": cmd_run_batch,
+    "reset-runtime": cmd_reset_runtime,
+    "build-notebook": cmd_build_notebook,
     "cleanup": cmd_cleanup,
 }
 
@@ -292,11 +316,11 @@ if __name__ == "__main__":
         print(__doc__)
         sys.exit(1)
 
+    cmd = sys.argv[1]
     config = load_config()
     logs_dir = config.get("registry", {}).get("logs_dir", "logs")
-    setup_logging(log_dir=logs_dir)
+    setup_logging(log_dir=logs_dir, enable_file=cmd != "reset-runtime")
 
-    cmd = sys.argv[1]
     args = sys.argv[2:]
     logging.info("CLI command: %s %s", cmd, " ".join(args))
     COMMANDS[cmd](*args)

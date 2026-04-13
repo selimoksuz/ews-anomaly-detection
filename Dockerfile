@@ -7,8 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 COPY engine/ engine/
+COPY scripts/ scripts/
+COPY legacy/ legacy/
 COPY config/pipeline_config.yaml config/pipeline_config.yaml
-COPY generate_data.py .
 COPY cli.py .
 
 RUN mkdir -p logs models

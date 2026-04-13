@@ -216,6 +216,18 @@ live_scoring:
     selector: latest
     explicit_date: null
 
+batch_execution:
+  bootstrap_if_missing_champion: true
+  bootstrap_promote: true
+  score_live_enabled: true
+  refresh_candidate_enabled: true
+  candidate_run_type: retrain
+  tune_weights_enabled: true
+  evaluate_outcomes_enabled: true
+  compare_enabled: true
+  promote_if_recommended: false
+  cleanup_after_run: false
+
 registry:
   meta_dir: meta
   artifacts_dir: artifacts
@@ -223,6 +235,7 @@ registry:
   run_registry_file: meta/run_registry.json
   model_registry_file: meta/model_registry.json
   champion_registry_file: meta/champions.json
+  registry_lock_file: meta/.registry.lock
 
 retention:
   logs_days: 14

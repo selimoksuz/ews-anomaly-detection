@@ -2,7 +2,7 @@
 EWS Anomaly Detection - Main runner.
 
 Usage:
-    python run.py
+    python legacy/run.py
 
 Steps:
   1. Generate synthetic data (train + inference)
@@ -17,9 +17,9 @@ import numpy as np
 import pandas as pd
 from tabulate import tabulate
 
-from config import ALL_FEATURES
-from generate_data import generate_normal_data, generate_inference_data
-from model import ExplainableEnsemble
+from legacy.config import ALL_FEATURES
+from legacy.model import ExplainableEnsemble
+from scripts.generate_data import generate_inference_data, generate_normal_data
 
 
 def print_header(text):

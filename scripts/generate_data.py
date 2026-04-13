@@ -16,7 +16,7 @@ Synthetic data generator for EWS Anomaly Detection.
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from config import ALL_FEATURES
+from legacy.config import ALL_FEATURES
 
 N_CUSTOMERS = 5000
 N_ANOMALY_A = 50

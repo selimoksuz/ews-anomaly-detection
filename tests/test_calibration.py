@@ -5,7 +5,7 @@ import numpy as np
 from engine.calibration import ScoreCalibrator
 from engine.config_loader import get_feature_list, load_config
 from engine.models import AnomalyModels
-from generate_data import generate_training_data
+from scripts.generate_data import generate_training_data
 
 
 class CalibrationTests(unittest.TestCase):

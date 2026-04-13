@@ -8,14 +8,21 @@ Creates 4 tables:
   4. EWS_ALERT_DETAILS  - output: per-feature contribution details
 
 Usage:
-    python setup_oracle.py
+    python scripts/setup_oracle.py
 """
 
 import numpy as np
 import pandas as pd
-from oracle_config import get_connection, SCHEMA, TABLE_TRAIN, TABLE_SCORING, TABLE_RESULTS, TABLE_DETAILS
-from config import ALL_FEATURES
-from generate_data import generate_training_data, generate_scoring_data
+from legacy.config import ALL_FEATURES
+from scripts.generate_data import generate_training_data, generate_scoring_data
+from scripts.oracle_config import (
+    SCHEMA,
+    TABLE_DETAILS,
+    TABLE_RESULTS,
+    TABLE_SCORING,
+    TABLE_TRAIN,
+    get_connection,
+)
 
 
 # ── DDL ──────────────────────────────────────────────────────────

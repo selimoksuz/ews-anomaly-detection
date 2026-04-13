@@ -1,4 +1,4 @@
-"""Airflow DAG scaffold for the EWS anomaly detection lifecycle."""
+"""Airflow DAG scaffold for the config-driven EWS batch pipeline."""
 
 from datetime import datetime
 
@@ -13,24 +13,9 @@ with DAG(
     catchup=False,
     max_active_runs=1,
 ) as dag:
-    score_live = BashOperator(
-        task_id="score_live",
-        bash_command="cd C:/Users/Acer/ews-anomaly-detection && .venv/Scripts/python.exe cli.py score-live",
+    run_batch = BashOperator(
+        task_id="run_batch",
+        bash_command="cd C:/Users/Acer/ews-anomaly-detection && .venv/Scripts/python.exe cli.py run-batch",
     )
 
-    retrain_candidate = BashOperator(
-        task_id="retrain_candidate",
-        bash_command="cd C:/Users/Acer/ews-anomaly-detection && .venv/Scripts/python.exe cli.py retrain",
-    )
-
-    compare_models = BashOperator(
-        task_id="compare_models",
-        bash_command="cd C:/Users/Acer/ews-anomaly-detection && .venv/Scripts/python.exe cli.py compare",
-    )
-
-    cleanup = BashOperator(
-        task_id="cleanup_runtime",
-        bash_command="cd C:/Users/Acer/ews-anomaly-detection && .venv/Scripts/python.exe cli.py cleanup",
-    )
-
-    score_live >> retrain_candidate >> compare_models >> cleanup
+    run_batch

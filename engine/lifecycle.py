@@ -40,6 +40,7 @@ class LifecycleManager:
         self.live_scoring_cfg = self.config.get("live_scoring", {})
         self.calibration_cfg = self.config.get("calibration", {})
         self.weight_cfg = self.config.get("weight_optimization", {})
+        self.batch_cfg = self.config.get("batch_execution", {})
         self.source_loader = SourceLoader(self.config, self.secrets)
         self.registry = RegistryManager(self.config)
         self.retention = RetentionManager(self.config)
@@ -102,6 +103,96 @@ class LifecycleManager:
             deleted = self.retention.cleanup()
             self.registry.finish_run(run, "completed", {"deleted": deleted})
             return deleted
+        except Exception as exc:
+            self.registry.finish_run(run, "failed", {"reason": str(exc)})
+            raise
+
+    def reset_runtime(self):
+        return self.retention.reset_runtime_state()
+
+    def run_batch(self, segment: Optional[str] = None):
+        segment_value = self._resolve_segment(segment)
+        run = self.registry.start_run("run-batch", segment_value, self.config)
+        try:
+            summary = {"segment": segment_value, "steps": {}}
+            champion = self.registry.get_champion(segment_value)
+            candidate_record = None
+
+            if champion is None and self.batch_cfg.get("bootstrap_if_missing_champion", True):
+                candidate_record = self.develop(segment=segment_value)
+                summary["steps"]["bootstrap_develop"] = {
+                    "model_version": candidate_record["model_version"],
+                }
+                if self.batch_cfg.get("tune_weights_enabled", True):
+                    summary["steps"]["tune_weights"] = self.tune_weights(
+                        segment=segment_value,
+                        model_version=candidate_record["model_version"],
+                        apply=True,
+                    )
+                if self.batch_cfg.get("evaluate_outcomes_enabled", True):
+                    summary["steps"]["evaluate_outcomes"] = self.evaluate_outcomes(
+                        segment=segment_value,
+                        model_version=candidate_record["model_version"],
+                    )
+                if self.batch_cfg.get("bootstrap_promote", True):
+                    summary["steps"]["promote"] = self.promote(
+                        segment=segment_value,
+                        model_version=candidate_record["model_version"],
+                    )
+                if self.batch_cfg.get("score_live_enabled", True):
+                    summary["steps"]["score_live"] = self.score_live(segment=segment_value)
+            else:
+                if self.batch_cfg.get("score_live_enabled", True):
+                    summary["steps"]["score_live"] = self.score_live(segment=segment_value)
+
+                if self.batch_cfg.get("refresh_candidate_enabled", True):
+                    candidate_run_type = str(self.batch_cfg.get("candidate_run_type", "retrain")).lower()
+                    if candidate_run_type == "develop":
+                        candidate_record = self.develop(segment=segment_value)
+                    else:
+                        candidate_record = self.retrain(segment=segment_value)
+                    summary["steps"]["candidate_refresh"] = {
+                        "run_type": candidate_run_type,
+                        "model_version": candidate_record["model_version"],
+                    }
+
+                if candidate_record is not None and self.batch_cfg.get("tune_weights_enabled", True):
+                    summary["steps"]["tune_weights"] = self.tune_weights(
+                        segment=segment_value,
+                        model_version=candidate_record["model_version"],
+                        apply=True,
+                    )
+
+                if candidate_record is not None and self.batch_cfg.get("evaluate_outcomes_enabled", True):
+                    summary["steps"]["evaluate_outcomes"] = self.evaluate_outcomes(
+                        segment=segment_value,
+                        model_version=candidate_record["model_version"],
+                    )
+
+                comparison = None
+                if candidate_record is not None and self.batch_cfg.get("compare_enabled", True):
+                    comparison = self.compare(
+                        segment=segment_value,
+                        challenger_version=candidate_record["model_version"],
+                    )
+                    summary["steps"]["compare"] = comparison
+
+                if (
+                    candidate_record is not None
+                    and comparison is not None
+                    and self.batch_cfg.get("promote_if_recommended", False)
+                    and comparison["recommendation"]["winner"] == candidate_record["model_version"]
+                ):
+                    summary["steps"]["promote"] = self.promote(
+                        segment=segment_value,
+                        model_version=candidate_record["model_version"],
+                    )
+
+            if self.batch_cfg.get("cleanup_after_run", False):
+                summary["steps"]["cleanup"] = self.cleanup()
+
+            self.registry.finish_run(run, "completed", summary)
+            return summary
         except Exception as exc:
             self.registry.finish_run(run, "failed", {"reason": str(exc)})
             raise

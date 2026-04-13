@@ -19,7 +19,7 @@ from sklearn.covariance import MinCovDet
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import rankdata
 
-from config import (
+from legacy.config import (
     ALL_FEATURES, FEATURE_LABELS,
     AE_LATENT_DIM, AE_HIDDEN_LAYERS, AE_EPOCHS, AE_LEARNING_RATE,
     ISO_N_ESTIMATORS, ISO_CONTAMINATION,
