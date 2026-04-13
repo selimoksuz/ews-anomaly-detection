@@ -73,6 +73,10 @@ models:
     epochs: 150
     learning_rate: 0.001
     batch_size: 256
+    validation_fraction: 0.1
+    early_stopping_patience: 20
+    min_epochs: 50
+    min_improvement: 1.0e-5
     dropout: 0.0
     reconstruction_loss: mse
   isolation_forest:
@@ -109,14 +113,139 @@ scoring:
   score_min: 0
   score_max: 100
   top_n_reasons: 3
+  persist_full_feature_effects: true
+  full_effect_scope: all
+
+training:
+  random_seed: 42
+
+stability:
+  report_path: models/ews_model_stability.json
+
+sources:
+  input_features:
+    backend: oracle
+    csv:
+      path: data/lifecycle_input_features.csv
+    oracle:
+      table: input_features
+  outcomes:
+    backend: oracle
+    csv:
+      path: data/lifecycle_outcomes.csv
+    oracle:
+      table: outcomes
+  outputs:
+    backend: oracle
+    csv:
+      directory: output/live_scores
+    oracle:
+      results_table_key: results
+      details_table_key: details
+      full_effects_table_key: full_effects
+
+development:
+  source_name: input_features
+  frequency: weekly
+  segment_column: segment
+  segment_value: null
+  sampling:
+    enabled: false
+    max_rows: null
+    max_rows_per_snapshot: null
+    random_seed: 42
+  windows:
+    mode: relative_periods
+    relative:
+      anchor_date: null
+      train_periods: 26
+      dev_periods: 8
+      calibration_periods: 4
+      oot_periods: 4
+    fixed:
+      train:
+        start: null
+        end: null
+      dev:
+        start: null
+        end: null
+      calibration:
+        start: null
+        end: null
+      oot:
+        start: null
+        end: null
+
+retraining:
+  source_name: development
+  auto_promote: false
+  promotion_metric: weighting.validation_metrics.primary.precision_at_top_percent
+  candidate_name_prefix: challenger
+
+calibration:
+  enabled: true
+  method: empirical_cdf
+  source_window: calibration
+  min_rows: 100
+  quantiles: 101
+
+weight_optimization:
+  enabled: true
+  source_name: outcomes
+  target_column: label_30dpd_8w
+  monitoring_columns:
+    - label_default_12m
+  training_window: dev
+  validation_window: oot
+  evaluation_windows:
+    - dev
+    - oot
+  grid_step: 0.1
+  min_positive_rows: 10
+  objective: precision_at_top_percent
+  top_percent: 0.1
+  auto_apply: true
+
+monitoring:
+  enabled: true
+  directory: meta/monitoring
+
+live_scoring:
+  source_name: input_features
+  snapshot:
+    selector: latest
+    explicit_date: null
+
+registry:
+  meta_dir: meta
+  artifacts_dir: artifacts
+  logs_dir: logs
+  run_registry_file: meta/run_registry.json
+  model_registry_file: meta/model_registry.json
+  champion_registry_file: meta/champions.json
+
+retention:
+  logs_days: 14
+  run_manifests_days: 30
+  artifacts_days: 60
+  keep_last_models_per_segment: 5
+
+orchestration:
+  airflow:
+    dag_id: ews_anomaly_detection
+    schedule: "0 6 * * 1"
+    max_active_runs: 1
 
 oracle:
   schema: ZT_VAR2
   tables:
+    input_features: EWS_INPUT_FEATURES
     training: EWS_TRAINING_DATA
     scoring: EWS_SCORING_DATA
+    outcomes: EWS_OUTCOME_LABELS
     results: EWS_ALERT_RESULTS
     details: EWS_ALERT_DETAILS
+    full_effects: EWS_ALERT_FEATURE_EFFECTS
 
 logging:
   logger_name: ews.pipeline

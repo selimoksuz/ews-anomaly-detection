@@ -1,16 +1,23 @@
-"""Pipeline orchestrator — train, score, setup steps."""
+"""Pipeline orchestrator - train, score, setup steps."""
 
+import json
 import logging
 import pickle
-from pathlib import Path
 from datetime import date, datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from engine.config_loader import load_config, load_secrets, get_feature_list
-from engine.oracle_io import OracleConnector
+from engine.config_loader import (
+    get_alert_bands,
+    get_ensemble_weights,
+    get_feature_list,
+    load_config,
+    load_secrets,
+)
 from engine.models import AnomalyModels
+from engine.oracle_io import OracleConnector
 from engine.scorer import AnomalyScorer
 
 logger = logging.getLogger(__name__)
@@ -27,13 +34,14 @@ class EWSPipeline:
         self.features = get_feature_list(self.config)
         self.id_col = self.config["pipeline"]["id_column"]
         self.time_col = self.config["pipeline"]["time_column"]
+        self.stability_cfg = self.config.get("stability", {})
         self.models = None
         self.scorer = None
 
     def _get_oracle(self):
         return OracleConnector(self.config, self.secrets)
 
-    # ── SETUP ──
+    # Setup
 
     def setup(self):
         logger.info("=== SETUP ===")
@@ -41,61 +49,28 @@ class EWSPipeline:
             ora.setup_tables(drop_existing=True)
         logger.info("Setup complete")
 
-    def load_data(self, train_df, scoring_df=None):
+    def load_data(self, train_df, scoring_df=None, outcomes_df=None):
         """DataFrame'leri Oracle'a yukle."""
         logger.info("=== LOAD DATA ===")
         with self._get_oracle() as ora:
             ora.setup_tables(drop_existing=True)
-
-            # Training data
-            self._insert_dataframe(ora, train_df, "training",
-                                   extra_cols=[self.config["pipeline"].get("split_column", "split_flag")])
-            logger.info(f"Training: {len(train_df)} rows loaded")
+            ora.replace_rows("training", train_df)
+            logger.info("Training: %s rows loaded", len(train_df))
 
             if scoring_df is not None:
-                self._insert_dataframe(ora, scoring_df, "scoring")
-                logger.info(f"Scoring: {len(scoring_df)} rows loaded")
+                ora.replace_rows("scoring", scoring_df)
+                logger.info("Scoring: %s rows loaded", len(scoring_df))
+            if outcomes_df is not None and "outcomes" in self.config.get("oracle", {}).get("tables", {}):
+                ora.replace_rows("outcomes", outcomes_df)
+                logger.info("Outcomes: %s rows loaded", len(outcomes_df))
 
-    def _insert_dataframe(self, ora, df, table_key, extra_cols=None):
-        """Generic DataFrame → Oracle insert."""
-        conn = ora.connect()
-        cursor = conn.cursor()
-
-        cols = [self.id_col, self.time_col]
-        if extra_cols:
-            cols += extra_cols
-        cols += self.features
-
-        col_names = [c.upper() for c in cols]
-        placeholders = ", ".join([f":{i+1}" for i in range(len(col_names))])
-        table = ora._qualified_table_name(table_key)
-        sql = f"INSERT INTO {table} ({', '.join(col_names)}) VALUES ({placeholders})"
-
-        rows = []
-        for _, row in df.iterrows():
-            vals = []
-            for c in cols:
-                v = row.get(c)
-                if isinstance(v, (pd.Timestamp, datetime)):
-                    vals.append(v.to_pydatetime() if isinstance(v, pd.Timestamp) else v)
-                elif pd.isna(v) if not isinstance(v, str) else False:
-                    vals.append(None)
-                else:
-                    vals.append(v)
-            rows.append(vals)
-
-        for i in range(0, len(rows), 500):
-            cursor.executemany(sql, rows[i:i+500])
-        conn.commit()
-        cursor.close()
-
-    # ── TRAIN ──
+    # Train
 
     def train(self):
         logger.info("=== TRAIN ===")
         with self._get_oracle() as ora:
             train_df = ora.read_training_data(split="TRAIN")
-            logger.info(f"Training data: {train_df.shape}")
+            logger.info("Training data: %s", train_df.shape)
 
             X_raw = train_df[self.features].fillna(0).values
             self.models = AnomalyModels(self.config)
@@ -108,7 +83,7 @@ class EWSPipeline:
 
         logger.info("Training complete")
 
-    # ── SCORE ──
+    # Score
 
     def score(self):
         logger.info("=== SCORE ===")
@@ -116,7 +91,7 @@ class EWSPipeline:
 
         with self._get_oracle() as ora:
             scoring_df = ora.read_scoring_data()
-            logger.info(f"Scoring data: {scoring_df.shape}")
+            logger.info("Scoring data: %s", scoring_df.shape)
 
             self.scorer = AnomalyScorer(self.config, self.models)
             results = self.scorer.score(scoring_df)
@@ -129,62 +104,64 @@ class EWSPipeline:
 
     def _write_to_oracle(self, ora, results, scoring_date):
         """Scorer ciktisini Codex OracleConnector formatina cevir ve yaz."""
-        # Results tablosu
         res = results.copy()
         res[self.time_col] = pd.Timestamp(scoring_date)
 
-        # Reasons: detay dict'ten string listesine cevir
         reasons = []
         for _, row in res.iterrows():
             parts = []
             if isinstance(row.get("detay"), dict):
                 for feat, d in row["detay"].items():
                     ico = "UP" if d["degisim_pct"] > 0 else "DN"
-                    parts.append(f"{d['label']}: {d['beklenen']}->{d['gerceklesen']} ({ico}%{abs(d['degisim_pct']):.0f})")
+                    parts.append(
+                        f"{d['label']}: {d['beklenen']}->{d['gerceklesen']} "
+                        f"({ico}%{abs(d['degisim_pct']):.0f})"
+                    )
             reasons.append(parts)
         res["reasons"] = reasons
 
         ora.write_results(res)
-        logger.info(f"Wrote {len(res)} results")
+        logger.info("Wrote %s results", len(res))
 
-        # Details tablosu
         alerts = results[results["alert_band"].isin(["KIRMIZI", "TURUNCU", "SARI"])]
         detail_rows = []
         for _, row in alerts.iterrows():
             if not isinstance(row.get("detay"), dict):
                 continue
             for rank, (feat, d) in enumerate(row["detay"].items(), 1):
-                detail_rows.append({
-                    self.id_col: row[self.id_col],
-                    self.time_col: pd.Timestamp(scoring_date),
-                    "feature_name": feat,
-                    "feature_label": d["label"],
-                    "expected_value": d["beklenen"],
-                    "actual_value": d["gerceklesen"],
-                    "delta_pct": d["degisim_pct"],
-                    "contribution_pct": d["katki_pct"],
-                    "rank": rank,
-                })
+                detail_rows.append(
+                    {
+                        self.id_col: row[self.id_col],
+                        self.time_col: pd.Timestamp(scoring_date),
+                        "feature_name": feat,
+                        "feature_label": d["label"],
+                        "expected_value": d["beklenen"],
+                        "actual_value": d["gerceklesen"],
+                        "delta_pct": d["degisim_pct"],
+                        "contribution_pct": d["katki_pct"],
+                        "rank": rank,
+                    }
+                )
 
         if detail_rows:
             details_df = pd.DataFrame(detail_rows)
             ora.write_details(details_df)
-            logger.info(f"Wrote {len(details_df)} detail rows")
+            logger.info("Wrote %s detail rows", len(details_df))
 
-    # ── TRAIN + SCORE ──
+    # Train + Score
 
     def run(self):
         self.train()
         return self.score()
 
-    # ── MODEL PERSISTENCE ──
+    # Model persistence
 
     def _save_model(self):
         MODEL_DIR.mkdir(exist_ok=True)
         path = MODEL_DIR / "ews_model.pkl"
         with open(path, "wb") as f:
             pickle.dump(self.models, f)
-        logger.info(f"Model saved: {path}")
+        logger.info("Model saved: %s", path)
 
     def _load_model(self):
         path = MODEL_DIR / "ews_model.pkl"
@@ -192,14 +169,133 @@ class EWSPipeline:
             raise FileNotFoundError(f"Model bulunamadi: {path}. Once 'train' calistirin.")
         with open(path, "rb") as f:
             self.models = pickle.load(f)
-        logger.info(f"Model loaded: {path}")
+        logger.info("Model loaded: %s", path)
+
+    def _score_to_band(self, scores):
+        bands = get_alert_bands(self.config)
+        result = []
+        for score in scores:
+            assigned = "NORMAL"
+            for band_name, (lo, hi) in bands.items():
+                if lo <= score < hi or (band_name == "KIRMIZI" and score >= lo):
+                    assigned = band_name
+            result.append(assigned)
+        return result
+
+    @staticmethod
+    def _summarize_distribution(values):
+        values = np.asarray(values, dtype=float)
+        return {
+            "mean": round(float(values.mean()), 4),
+            "median": round(float(np.median(values)), 4),
+            "p95": round(float(np.percentile(values, 95)), 4),
+            "p99": round(float(np.percentile(values, 99)), 4),
+        }
+
+    def _band_share(self, scores):
+        bands = pd.Series(self._score_to_band(scores))
+        total = len(bands)
+        return {
+            band: round(float((bands == band).sum() / total), 4)
+            for band in ("NORMAL", "SARI", "TURUNCU", "KIRMIZI")
+        }
+
+    def _save_stability_report(self, report):
+        report_path = Path(
+            self.stability_cfg.get("report_path", MODEL_DIR / "ews_model_stability.json")
+        )
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2, ensure_ascii=False)
+        logger.info("Stability report saved: %s", report_path)
 
     def _evaluate_stability(self, train_df, test_df):
         from scipy.stats import ks_2samp
+
+        weights = get_ensemble_weights(self.config)
         X_tr = self.models.transform(train_df[self.features].fillna(0).values)
         X_te = self.models.transform(test_df[self.features].fillna(0).values)
-        tr_err = self.models._ae_total_error(X_tr)
-        te_err = self.models._ae_total_error(X_te)
-        ks_stat, ks_pval = ks_2samp(tr_err, te_err)
-        ratio = te_err.mean() / tr_err.mean()
-        logger.info(f"Stability: AE ratio={ratio:.3f}x, KS p={ks_pval:.4f}")
+
+        train_metrics = {
+            "ae_raw": self.models.raw_ae_scores(X_tr),
+            "if_raw": self.models.raw_if_scores(X_tr),
+            "md_raw": self.models.raw_md_scores(X_tr),
+            "ae_score": self.models.ae_scores(X_tr),
+            "if_score": self.models.if_scores(X_tr),
+            "md_score": self.models.md_scores(X_tr),
+        }
+        test_metrics = {
+            "ae_raw": self.models.raw_ae_scores(X_te),
+            "if_raw": self.models.raw_if_scores(X_te),
+            "md_raw": self.models.raw_md_scores(X_te),
+            "ae_score": self.models.ae_scores(X_te),
+            "if_score": self.models.if_scores(X_te),
+            "md_score": self.models.md_scores(X_te),
+        }
+
+        train_metrics["ensemble_score"] = np.clip(
+            weights["autoencoder"] * train_metrics["ae_score"]
+            + weights["isolation_forest"] * train_metrics["if_score"]
+            + weights["mahalanobis"] * train_metrics["md_score"],
+            0,
+            100,
+        )
+        test_metrics["ensemble_score"] = np.clip(
+            weights["autoencoder"] * test_metrics["ae_score"]
+            + weights["isolation_forest"] * test_metrics["if_score"]
+            + weights["mahalanobis"] * test_metrics["md_score"],
+            0,
+            100,
+        )
+
+        report = {
+            "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "train_rows": int(len(train_df)),
+            "test_rows": int(len(test_df)),
+            "metrics": {},
+            "ensemble_alert_share": {
+                "train": self._band_share(train_metrics["ensemble_score"]),
+                "test": self._band_share(test_metrics["ensemble_score"]),
+            },
+        }
+
+        for metric_name in (
+            "ae_raw",
+            "if_raw",
+            "md_raw",
+            "ae_score",
+            "if_score",
+            "md_score",
+            "ensemble_score",
+        ):
+            train_values = train_metrics[metric_name]
+            test_values = test_metrics[metric_name]
+            ks_stat, ks_pval = ks_2samp(train_values, test_values)
+            train_summary = self._summarize_distribution(train_values)
+            test_summary = self._summarize_distribution(test_values)
+            mean_ratio = None
+            if abs(train_summary["mean"]) > 1e-12:
+                mean_ratio = round(float(test_summary["mean"] / train_summary["mean"]), 4)
+
+            report["metrics"][metric_name] = {
+                "train": train_summary,
+                "test": test_summary,
+                "mean_ratio": mean_ratio,
+                "ks_stat": round(float(ks_stat), 4),
+                "ks_pvalue": round(float(ks_pval), 4),
+            }
+            logger.info(
+                "Stability %s: mean_ratio=%s, train_p95=%.4f, test_p95=%.4f, KS p=%.4f",
+                metric_name,
+                mean_ratio,
+                train_summary["p95"],
+                test_summary["p95"],
+                ks_pval,
+            )
+
+        logger.info(
+            "Ensemble alert share train=%s test=%s",
+            report["ensemble_alert_share"]["train"],
+            report["ensemble_alert_share"]["test"],
+        )
+        self._save_stability_report(report)

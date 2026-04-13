@@ -403,6 +403,39 @@ def generate_scoring_data(n=N_CUSTOMERS, seed=99):
     return df, labels
 
 
+def generate_outcome_labels(feature_df, seed=2026):
+    rng = np.random.RandomState(seed)
+    frame = feature_df.copy()
+
+    risk_signal = (
+        0.10 * frame["dpd_current"].to_numpy(dtype=float)
+        + 2.8 * frame["utilization_ratio"].to_numpy(dtype=float)
+        + 0.85 * frame["cash_advance_ratio_4w"].to_numpy(dtype=float)
+        + 0.65 * frame["nsf_count_4w"].to_numpy(dtype=float)
+        + 0.55 * frame["payment_reversal_count_4w"].to_numpy(dtype=float)
+        + 0.40 * frame["overlimit_count_4w"].to_numpy(dtype=float)
+        - 0.00005 * frame["checking_balance"].to_numpy(dtype=float)
+        - 0.12 * frame["payment_to_min_ratio_4w"].to_numpy(dtype=float)
+    )
+    segment_bias = frame.get("segment", pd.Series(["STANDARD"] * len(frame))).map(
+        {"PREMIUM": -0.8, "STANDARD": 0.0, "RISKY": 0.9, "NEW": 0.25}
+    ).fillna(0.0)
+    noisy_signal = risk_signal + segment_bias.to_numpy(dtype=float) + rng.normal(0.0, 0.5, len(frame))
+
+    prob_30 = 1.0 / (1.0 + np.exp(-(noisy_signal - 2.8)))
+    prob_default = 1.0 / (1.0 + np.exp(-(noisy_signal - 4.0)))
+
+    outcomes = pd.DataFrame(
+        {
+            "customer_id": frame["customer_id"].astype(str),
+            "snapshot_date": pd.to_datetime(frame["snapshot_date"]),
+            "label_30dpd_8w": rng.binomial(1, np.clip(prob_30, 0.01, 0.95)),
+            "label_default_12m": rng.binomial(1, np.clip(prob_default, 0.001, 0.35)),
+        }
+    )
+    return outcomes
+
+
 def generate_inference_data(n=N_CUSTOMERS):
     return generate_scoring_data(n)
 
