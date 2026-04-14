@@ -6,22 +6,105 @@ Bu proje Oracle-first, config-driven ve batch orchestrated anomaly lifecycle ola
 
 ```mermaid
 flowchart TD
-    A["Oracle Input<br/>ZT_VAR2.EWS_INPUT_FEATURES"] --> B["Window Resolver<br/>train / dev / calibration / oot"]
-    A --> C["Live Snapshot Selector<br/>latest snapshot"]
-    D["Oracle Outcome Labels<br/>ZT_VAR2.EWS_OUTCOME_LABELS"] --> E["30+ Target Evaluation<br/>weight tuning + validation"]
+    A["Oracle input table<br/>customer_id + snapshot_date + raw columns"] --> B{"id/time kolonlari var mi?"}
+    B -- "Hayir" --> X1["Fail"]
+    B -- "Evet" --> C["Feature inference<br/>id,time,non-feature kolonlar feature listesinden dislanir<br/>ama raw frame'de kalir"]
 
-    B --> F["Model Training<br/>AE + IF + MD"]
-    F --> G["Calibration Fit<br/>empirical CDF"]
-    G --> H["Candidate Artifact"]
-    H --> E
-    E --> I["Registry<br/>candidate / champion / runs"]
+    C --> D["Snapshot listesini cek"]
+    D --> E["Window resolver<br/>train / test / calibration / oot"]
+    E --> F["OOT: latest N snapshot"]
+    E --> G["Calibration: latest M snapshot"]
+    E --> H["History: OOT baslangicindan once kalan tum snapshotlar"]
+    H --> I["Train/Test split<br/>snapshot bazinda oransal bol"]
 
-    I --> J["Live Scoring"]
-    C --> J
-    J --> K["ZT_VAR2.EWS_ALERT_RESULTS"]
-    J --> L["ZT_VAR2.EWS_ALERT_DETAILS"]
-    J --> M["ZT_VAR2.EWS_ALERT_FEATURE_EFFECTS"]
+    I --> J{"Sampling aktif mi<br/>ve train/test icin gerekli mi?"}
+    J -- "Hayir" --> K["Full train / full test"]
+    J -- "Evet" --> L["Time + missing + tail stratified sample"]
+    L --> M{"Validation gecti mi?"}
+    M -- "Hayir ve fallback=true" --> K
+    M -- "Hayir ve fallback=false" --> X2["Fail"]
+    M -- "Evet" --> N["Sampled train / sampled test"]
+
+    K --> O["Shared data contract"]
+    N --> O
+    G --> O
+    F --> O
+
+    O --> O1["Missing handling<br/>feature-level strategy uygula"]
+    O1 --> O2["Hard bounds apply"]
+    O2 --> O3{"Kategorik kolon include edildi mi?"}
+    O3 -- "Hayir" --> O4["Sadece numeric/raw features ile devam"]
+    O3 -- "Evet" --> O5["Secilen categorical transformlari uret"]
+    O4 --> P["Generated feature space"]
+    O5 --> P
+
+    P --> Q["Robust preprocessing fit/apply<br/>winsor + scaler"]
+    Q --> R["Feature selection + branch routing"]
+    R --> S1["AE feature set"]
+    R --> S2["IF feature set"]
+    R --> S3["MD feature set"]
+    S1 --> T["AE + IF + MD fit"]
+    S2 --> T
+    S3 --> T
+
+    T --> U{"Calibration enabled mi<br/>ve calibration rows >= min_rows mi?"}
+    U -- "Hayir" --> V["Calibration skip"]
+    U -- "Evet" --> W["Calibration fit<br/>raw component score -> percentile mapping"]
+
+    V --> Y["Candidate artifact + registry record"]
+    W --> Y
+
+    Y --> Z{"Shadow scoring aktif mi?"}
+    Z -- "Hayir" --> AA["Candidate hazir"]
+    Z -- "Evet" --> AB["Parallel shadow artifact fit<br/>opsiyonel diagnostic branch"]
+    AB --> AA
+
+    D2["Oracle outcome labels<br/>30+ primary, default monitoring"] --> AC{"Weight tuning yapilacak mi?"}
+    AA --> AC
+    AC -- "Hayir" --> AD["Manual weights"]
+    AC -- "Evet" --> AE["Tune weights on test<br/>validate on oot"]
+    AE --> AF["Weight version registry update"]
+    AD --> AG{"Promote edilsin mi?"}
+    AF --> AG
+    AG -- "Hayir" --> AH["Candidate olarak kalir"]
+    AG -- "Evet" --> AI["Champion pointer update"]
+
+    AI --> AJ["Live scoring"]
+    AH --> AJ
+    AJ --> AK["Latest snapshot'i Oracle'dan oku"]
+    AK --> AL["Ayni data contract'i apply et"]
+    AL --> AM["Ayni preprocessing artifact'i apply et"]
+    AM --> AN["AE / IF / MD raw score"]
+    AN --> AO{"Calibration artifact var mi?"}
+    AO -- "Hayir" --> AP["Raw score ile devam"]
+    AO -- "Evet" --> AQ["Calibrated score uret"]
+    AP --> AR["Final anomaly_score<br/>weight set ile"]
+    AQ --> AR
+    AR --> AS{"Shadow aktif mi?"}
+    AS -- "Hayir" --> AT["Primary result set"]
+    AS -- "Evet" --> AU["Raw shadow score + score_delta"]
+    AU --> AT
+
+    AT --> AV["Oracle output write"]
+    AV --> AV1["EWS_ALERT_RESULTS"]
+    AV --> AV2["EWS_ALERT_DETAILS"]
+    AV --> AV3["EWS_ALERT_FEATURE_EFFECTS"]
+    AT --> AW["Monitoring + metadata write"]
 ```
+
+## Flow Notes
+
+- `Missing handling` ve `hard bounds` akistan kopuk degil. Bunlar `shared data contract` icinde ard arda calisir ve sonra kategorik transform / preprocessing adimina gecilir.
+- `Calibration enabled ve rows >= min_rows` kontrolu su anlama gelir:
+  - calibration config'de acik degilse artifact uretilmez
+  - calibration window bos ise artifact uretilmez
+  - calibration window satir sayisi config'deki `calibration.min_rows` esiginden dusukse artifact uretilmez
+  - bu durumda model yine calisir, sadece `raw -> percentile` mapping olmadan devam eder
+- `Calibration fit: raw -> percentile mapping` demek:
+  - calibration window uzerinde `ae_raw`, `if_raw`, `md_raw` score dagilimlari olculur
+  - her bir raw score calibration dagilimindaki yuzdelik konumuna cevrilir
+  - boylece farkli model skorlarini ortak 0-100 uzayinda karsilastirabiliriz
+- `Shadow scoring` candidate yolunun devami degil, candidate artifact'e paralel opsiyonel bir diagnostic branch'tir. Champion secimini zorunlu olarak yonetmez; esas production score `primary/robust` branch'tir.
 
 ## Batch Execution
 
@@ -95,7 +178,7 @@ features:
 
 ## Train-Only Sampling
 
-Sampling sadece `development.train` penceresinde calisir. `dev`, `calibration`, `oot` ve `live scoring` full data ile devam eder.
+Sampling varsayilan olarak sadece `development.train` penceresinde calisir. Istersen config ile `test`, `calibration` ve `oot` pencerelerine de acabilirsin. `live scoring` full data ile devam eder.
 
 Varsayilan mantik:
 

@@ -21,9 +21,9 @@ class WindowSpec:
 
 
 class WindowResolver:
-    """Resolve configured train/dev/calibration/OOT windows from available snapshots."""
+    """Resolve configured train/test/calibration/OOT windows from available snapshots."""
 
-    WINDOW_ORDER = ("train", "dev", "calibration", "oot")
+    WINDOW_ORDER = ("train", "test", "calibration", "oot")
 
     def __init__(self, config: dict):
         self.config = config
@@ -51,24 +51,43 @@ class WindowResolver:
             if not snapshots:
                 raise ValueError(f"No snapshots available on or before anchor_date={anchor_date}.")
 
-        remaining = list(snapshots)
         windows: dict[str, WindowSpec] = {}
 
-        for name in ("oot", "calibration", "dev", "train"):
-            count = int(relative_cfg.get(f"{name}_periods", 0) or 0)
-            if count <= 0:
-                continue
-            if len(remaining) < count:
-                raise ValueError(
-                    f"Not enough snapshots to allocate {count} periods for window '{name}'."
-                )
-            window_snapshots = remaining[-count:]
-            windows[name] = WindowSpec(
-                name=name,
-                start=pd.Timestamp(window_snapshots[0]),
-                end=pd.Timestamp(window_snapshots[-1]),
+        oot_count = int(relative_cfg.get("oot_periods", 0) or 0)
+        calibration_count = int(relative_cfg.get("calibration_periods", 0) or 0)
+
+        if oot_count > 0:
+            if len(snapshots) < oot_count:
+                raise ValueError(f"Not enough snapshots to allocate {oot_count} periods for window 'oot'.")
+            oot_snapshots = snapshots[-oot_count:]
+            windows["oot"] = WindowSpec(
+                name="oot",
+                start=pd.Timestamp(oot_snapshots[0]),
+                end=pd.Timestamp(oot_snapshots[-1]),
             )
-            remaining = remaining[:-count]
+            history_snapshots = [snapshot for snapshot in snapshots if snapshot < pd.Timestamp(oot_snapshots[0])]
+        else:
+            history_snapshots = list(snapshots)
+
+        if calibration_count > 0:
+            if len(snapshots) < calibration_count:
+                raise ValueError(
+                    f"Not enough snapshots to allocate {calibration_count} periods for window 'calibration'."
+                )
+            calibration_snapshots = snapshots[-calibration_count:]
+            windows["calibration"] = WindowSpec(
+                name="calibration",
+                start=pd.Timestamp(calibration_snapshots[0]),
+                end=pd.Timestamp(calibration_snapshots[-1]),
+            )
+
+        if not history_snapshots:
+            raise ValueError("No historical snapshots remain before OOT to allocate train/test windows.")
+
+        history_start = pd.Timestamp(history_snapshots[0])
+        history_end = pd.Timestamp(history_snapshots[-1])
+        windows["train"] = WindowSpec(name="train", start=history_start, end=history_end)
+        windows["test"] = WindowSpec(name="test", start=history_start, end=history_end)
 
         return {name: windows[name] for name in self.WINDOW_ORDER if name in windows}
 

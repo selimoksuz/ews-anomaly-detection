@@ -135,7 +135,7 @@ class LifecycleManager:
             default_weights = get_ensemble_weights(self.config)
 
             live_frame = self._load_live_frame(segment_value)
-            evaluation_frames = [frame for name, frame in frames.items() if name in {"dev", "oot"} and frame is not None and not frame.empty]
+            evaluation_frames = [frame for name, frame in frames.items() if name in {"test", "oot"} and frame is not None and not frame.empty]
             if not evaluation_frames:
                 raise ValueError("No non-empty evaluation frames found for preprocessing comparison.")
             label_frame = self._load_label_frame(
@@ -149,7 +149,7 @@ class LifecycleManager:
                 baseline_config,
                 segment_value=segment_value,
                 train_df=train_df,
-                dev_df=frames.get("dev"),
+                test_df=frames.get("test"),
                 calibration_df=calibration_df,
                 oot_df=oot_df,
                 live_df=live_frame,
@@ -161,7 +161,7 @@ class LifecycleManager:
                 robust_config,
                 segment_value=segment_value,
                 train_df=train_df,
-                dev_df=frames.get("dev"),
+                test_df=frames.get("test"),
                 calibration_df=calibration_df,
                 oot_df=oot_df,
                 live_df=live_frame,
@@ -259,7 +259,7 @@ class LifecycleManager:
             default_weights = get_ensemble_weights(self.config)
 
             live_frame = self._load_live_frame(segment_value)
-            evaluation_frames = [frame for name, frame in frames.items() if name in {"dev", "oot"} and frame is not None and not frame.empty]
+            evaluation_frames = [frame for name, frame in frames.items() if name in {"test", "oot"} and frame is not None and not frame.empty]
             if not evaluation_frames:
                 raise ValueError("No non-empty evaluation frames found for feature selection comparison.")
             label_frame = self._load_label_frame(
@@ -273,7 +273,7 @@ class LifecycleManager:
                 baseline_config,
                 segment_value=segment_value,
                 train_df=train_df,
-                dev_df=frames.get("dev"),
+                test_df=frames.get("test"),
                 calibration_df=calibration_df,
                 oot_df=oot_df,
                 live_df=live_frame,
@@ -285,7 +285,7 @@ class LifecycleManager:
                 routed_config,
                 segment_value=segment_value,
                 train_df=train_df,
-                dev_df=frames.get("dev"),
+                test_df=frames.get("test"),
                 calibration_df=calibration_df,
                 oot_df=oot_df,
                 live_df=live_frame,
@@ -399,8 +399,8 @@ class LifecycleManager:
             label_frame = self._load_label_frame(
                 self.weight_cfg.get("source_name", "outcomes"),
                 segment_value,
-                start_date=min(pd.to_datetime(frame[self.time_column]).min() for frame in (baseline_frames.get("dev"), baseline_frames.get("oot")) if frame is not None and not frame.empty),
-                end_date=max(pd.to_datetime(frame[self.time_column]).max() for frame in (baseline_frames.get("dev"), baseline_frames.get("oot")) if frame is not None and not frame.empty),
+                start_date=min(pd.to_datetime(frame[self.time_column]).min() for frame in (baseline_frames.get("test"), baseline_frames.get("oot")) if frame is not None and not frame.empty),
+                end_date=max(pd.to_datetime(frame[self.time_column]).max() for frame in (baseline_frames.get("test"), baseline_frames.get("oot")) if frame is not None and not frame.empty),
             )
             default_weights = get_ensemble_weights(self.config)
 
@@ -408,7 +408,7 @@ class LifecycleManager:
                 baseline_config,
                 segment_value=segment_value,
                 train_df=baseline_frames.get("train"),
-                dev_df=baseline_frames.get("dev"),
+                test_df=baseline_frames.get("test"),
                 calibration_df=baseline_frames.get(calibration_window),
                 oot_df=baseline_frames.get(oot_window),
                 live_df=live_frame,
@@ -420,7 +420,7 @@ class LifecycleManager:
                 sampled_config,
                 segment_value=segment_value,
                 train_df=sampled_frames.get("train"),
-                dev_df=sampled_frames.get("dev"),
+                test_df=sampled_frames.get("test"),
                 calibration_df=sampled_frames.get(calibration_window),
                 oot_df=sampled_frames.get(oot_window),
                 live_df=live_frame,
@@ -667,7 +667,7 @@ class LifecycleManager:
             calibration_artifact = self._load_calibration_artifact(model_record)
             frames, _ = self._load_development_frames(segment_value)
 
-            tuning_window = self.weight_cfg.get("training_window", "dev")
+            tuning_window = self.weight_cfg.get("training_window", "test")
             validation_window = self.weight_cfg.get("validation_window", "oot")
             tuning_frame = frames.get(tuning_window)
             validation_frame = frames.get(validation_window)
@@ -765,7 +765,7 @@ class LifecycleManager:
             weights = self._resolve_active_weights(model_record)
             frames, _ = self._load_development_frames(segment_value)
 
-            evaluation_windows = list(self.weight_cfg.get("evaluation_windows", ["dev", "oot"]))
+            evaluation_windows = list(self.weight_cfg.get("evaluation_windows", ["test", "oot"]))
             selected = [frames[name] for name in evaluation_windows if name in frames and not frames[name].empty]
             if not selected:
                 raise ValueError("No development windows available for outcome evaluation.")
@@ -983,6 +983,7 @@ class LifecycleManager:
         development_cfg = config_variant.get("development", {})
         source_loader = SourceLoader(config_variant, self.secrets)
         data_loader = DataLoader(config_variant)
+        windows_mode = ((development_cfg.get("windows", {}) or {}).get("mode", "relative_periods") or "relative_periods").strip().lower()
         sampler = TrainSampler(
             config_variant,
             id_column=config_variant["pipeline"]["id_column"],
@@ -999,7 +1000,19 @@ class LifecycleManager:
         windows = WindowResolver(config_variant).resolve(snapshots)
 
         raw_frames = {}
+        shared_history_frame = None
         for name, spec in windows.items():
+            if windows_mode == "relative_periods" and name in {"train", "test"}:
+                if shared_history_frame is None:
+                    shared_history_frame = source_loader.load_frame(
+                        source_name,
+                        start_date=spec.start,
+                        end_date=spec.end,
+                        segment_column=segment_column,
+                        segment_value=None if segment_value == "ALL" else segment_value,
+                    )
+                raw_frames[name] = shared_history_frame.copy()
+                continue
             frame = source_loader.load_frame(
                 source_name,
                 start_date=spec.start,
@@ -1009,7 +1022,12 @@ class LifecycleManager:
             )
             raw_frames[name] = frame
 
-        reference_frame = raw_frames.get("train")
+        if windows_mode == "relative_periods" and shared_history_frame is not None:
+            train_frame, test_frame = self._split_train_test_frame(shared_history_frame, config_variant)
+            raw_frames["train"] = train_frame
+            raw_frames["test"] = test_frame
+
+        reference_frame = shared_history_frame if shared_history_frame is not None else raw_frames.get("train")
         if reference_frame is None or reference_frame.empty:
             reference_frame = next((frame for frame in raw_frames.values() if frame is not None and not frame.empty), None)
 
@@ -1042,6 +1060,53 @@ class LifecycleManager:
             else:
                 frames[name] = frame_to_validate
         return frames, windows, sampling_reports
+
+    def _split_train_test_frame(self, frame: pd.DataFrame, config_variant: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+        relative_cfg = ((config_variant.get("development", {}) or {}).get("windows", {}) or {}).get("relative", {}) or {}
+        test_size = float(relative_cfg.get("test_size", 0.25))
+        seed = int(relative_cfg.get("split_seed", 42))
+        if not 0 < test_size < 1:
+            raise ValueError(f"development.windows.relative.test_size must be between 0 and 1, got {test_size}.")
+        if frame is None or frame.empty:
+            return frame.copy(), frame.copy()
+
+        rng = np.random.default_rng(seed)
+        working = frame.copy()
+        working[self.time_column] = pd.to_datetime(working[self.time_column])
+
+        train_parts: list[pd.DataFrame] = []
+        test_parts: list[pd.DataFrame] = []
+        for _, group in working.groupby(self.time_column, sort=True):
+            group = group.sort_values([self.time_column, self.id_column])
+            indices = group.index.to_numpy()
+            if len(indices) == 1:
+                train_parts.append(group)
+                continue
+
+            proposed_test_count = int(round(len(indices) * test_size))
+            test_count = min(len(indices) - 1, max(1, proposed_test_count))
+            chosen = rng.choice(indices, size=test_count, replace=False)
+            chosen_set = set(chosen.tolist())
+            test_group = group.loc[group.index.isin(chosen_set)]
+            train_group = group.loc[~group.index.isin(chosen_set)]
+            train_parts.append(train_group)
+            test_parts.append(test_group)
+
+        train_frame = (
+            pd.concat(train_parts, ignore_index=True)
+            .sort_values([self.time_column, self.id_column])
+            .reset_index(drop=True)
+            if train_parts
+            else working.iloc[0:0].copy()
+        )
+        test_frame = (
+            pd.concat(test_parts, ignore_index=True)
+            .sort_values([self.time_column, self.id_column])
+            .reset_index(drop=True)
+            if test_parts
+            else working.iloc[0:0].copy()
+        )
+        return train_frame, test_frame
 
     @staticmethod
     def _infer_raw_type_overrides(config_variant: dict, frame: pd.DataFrame, feature_names: list[str]) -> dict[str, str]:
@@ -1422,7 +1487,7 @@ class LifecycleManager:
         *,
         segment_value: str,
         train_df: pd.DataFrame,
-        dev_df: pd.DataFrame | None,
+        test_df: pd.DataFrame | None,
         calibration_df: pd.DataFrame | None,
         oot_df: pd.DataFrame,
         live_df: pd.DataFrame,
@@ -1490,9 +1555,9 @@ class LifecycleManager:
             monitoring_columns=list(self.weight_cfg.get("monitoring_columns", [])),
         )
         tuned_artifact = None
-        if dev_df is not None and not dev_df.empty:
-            scored_dev = scorer.score(dev_df)
-            tune_dataset = scored_dev.merge(
+        if test_df is not None and not test_df.empty:
+            scored_test = scorer.score(test_df)
+            tune_dataset = scored_test.merge(
                 label_frame,
                 on=[self.id_column, self.time_column],
                 how="inner",

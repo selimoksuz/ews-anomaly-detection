@@ -25,6 +25,11 @@ class TrainSampler:
         self.time_column = time_column
         self.sampling_cfg = (config.get("development", {}) or {}).get("sampling", {}) or {}
         self.validation_cfg = (self.sampling_cfg.get("validation", {}) or {})
+        self.sampled_windows = {
+            str(item).strip().lower()
+            for item in self.sampling_cfg.get("windows", ["train"]) or ["train"]
+            if str(item).strip()
+        }
 
     def sample(
         self,
@@ -36,8 +41,11 @@ class TrainSampler:
     ) -> SamplingResult:
         if frame.empty:
             return SamplingResult(frame=frame.copy(), report={"window": window_name, "status": "empty"})
-        if window_name != "train":
-            return SamplingResult(frame=frame.reset_index(drop=True), report={"window": window_name, "status": "skipped_non_train"})
+        if str(window_name).strip().lower() not in self.sampled_windows:
+            return SamplingResult(
+                frame=frame.reset_index(drop=True),
+                report={"window": window_name, "status": "skipped_window"},
+            )
         if not bool(self.sampling_cfg.get("enabled", False)):
             return SamplingResult(frame=frame.reset_index(drop=True), report={"window": window_name, "status": "disabled"})
 

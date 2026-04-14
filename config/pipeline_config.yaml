@@ -258,6 +258,8 @@ development:
   segment_value: null
   sampling:
     enabled: false
+    windows:
+      - train
     activate_if_rows_gt: 1000000
     max_rows: null
     compare_max_rows: null
@@ -274,15 +276,15 @@ development:
     mode: relative_periods
     relative:
       anchor_date: null
-      train_periods: 26
-      dev_periods: 8
       calibration_periods: 4
       oot_periods: 4
+      test_size: 0.25
+      split_seed: 42
     fixed:
       train:
         start: null
         end: null
-      dev:
+      test:
         start: null
         end: null
       calibration:
@@ -311,10 +313,10 @@ weight_optimization:
   target_column: label_30dpd_8w
   monitoring_columns:
     - label_default_12m
-  training_window: dev
+  training_window: test
   validation_window: oot
   evaluation_windows:
-    - dev
+    - test
     - oot
   grid_step: 0.1
   min_component_weight: 0.1
