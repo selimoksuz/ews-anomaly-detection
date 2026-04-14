@@ -15,6 +15,7 @@ from engine.config_loader import (
     get_feature_list,
     load_config,
     load_secrets,
+    resolve_feature_list,
 )
 from engine.models import AnomalyModels
 from engine.oracle_io import OracleConnector
@@ -72,9 +73,9 @@ class EWSPipeline:
             train_df = ora.read_training_data(split="TRAIN")
             logger.info("Training data: %s", train_df.shape)
 
-            X_raw = train_df[self.features].fillna(0).values
-            self.models = AnomalyModels(self.config)
-            self.models.fit(X_raw)
+            self.features = resolve_feature_list(self.config, train_df)
+            self.models = AnomalyModels(self.config, feature_names=self.features)
+            self.models.fit(train_df, feature_names=self.features)
             self._save_model()
 
             test_df = ora.read_training_data(split="TEST")
@@ -88,6 +89,7 @@ class EWSPipeline:
     def score(self):
         logger.info("=== SCORE ===")
         self._load_model()
+        self.features = list(self.models.feature_names)
 
         with self._get_oracle() as ora:
             scoring_df = ora.read_scoring_data()
@@ -213,8 +215,8 @@ class EWSPipeline:
         from scipy.stats import ks_2samp
 
         weights = get_ensemble_weights(self.config)
-        X_tr = self.models.transform(train_df[self.features].fillna(0).values)
-        X_te = self.models.transform(test_df[self.features].fillna(0).values)
+        X_tr = self.models.transform(train_df)
+        X_te = self.models.transform(test_df)
 
         train_metrics = {
             "ae_raw": self.models.raw_ae_scores(X_tr),

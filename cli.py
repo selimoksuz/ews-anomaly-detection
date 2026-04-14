@@ -15,6 +15,8 @@ Usage:
     python cli.py score-live [segment]
     python cli.py run-batch [segment]
     python cli.py compare-preprocessing [segment]
+    python cli.py compare-feature-selection [segment]
+    python cli.py compare-sampling [segment]
     python cli.py reset-runtime
     python cli.py cleanup
 """
@@ -22,6 +24,7 @@ Usage:
 import logging
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from engine.config_loader import load_config
 from engine.lifecycle import LifecycleManager
@@ -127,6 +130,18 @@ def cmd_compare_preprocessing(*args):
     print(result["comparison_path"])
 
 
+def cmd_compare_feature_selection(*args):
+    manager = LifecycleManager()
+    result = manager.compare_feature_selection(segment=args[0] if args else None)
+    print(result["comparison_path"])
+
+
+def cmd_compare_sampling(*args):
+    manager = LifecycleManager()
+    result = manager.compare_sampling(segment=args[0] if args else None)
+    print(result["comparison_path"])
+
+
 def cmd_reset_runtime(*_):
     manager = LifecycleManager()
     result = manager.reset_runtime()
@@ -174,6 +189,8 @@ COMMANDS = {
     "score-live": cmd_score_live,
     "run-batch": cmd_run_batch,
     "compare-preprocessing": cmd_compare_preprocessing,
+    "compare-feature-selection": cmd_compare_feature_selection,
+    "compare-sampling": cmd_compare_sampling,
     "reset-runtime": cmd_reset_runtime,
     "cleanup": cmd_cleanup,
 }

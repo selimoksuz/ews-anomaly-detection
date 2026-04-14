@@ -14,13 +14,20 @@ import pandas as pd
 from scipy.stats import ks_2samp
 
 from engine.calibration import ScoreCalibrator
-from engine.config_loader import get_alert_bands, get_ensemble_weights, get_feature_list, load_config, load_secrets
+from engine.config_loader import (
+    get_alert_bands,
+    get_ensemble_weights,
+    get_included_categorical_features,
+    load_config,
+    load_secrets,
+)
 from engine.data_loader import DataLoader
 from engine.models import AnomalyModels
 from engine.monitoring import MonitoringManager
 from engine.output_writer import OutputWriter
 from engine.registry import RegistryManager
 from engine.retention import RetentionManager
+from engine.sampling import TrainSampler
 from engine.scorer import AnomalyScorer
 from engine.source_loader import SourceLoader
 from engine.weight_tuning import WeightOptimizer
@@ -33,7 +40,7 @@ class LifecycleManager:
     def __init__(self, config_path=None, secrets_path=None):
         self.config = load_config(config_path)
         self.secrets = load_secrets(secrets_path)
-        self.features = get_feature_list(self.config)
+        self.features = []
         self.id_column = self.config["pipeline"]["id_column"]
         self.time_column = self.config["pipeline"]["time_column"]
         self.development_cfg = self.config.get("development", {})
@@ -49,6 +56,7 @@ class LifecycleManager:
         self.output_writer = OutputWriter(self.config, self.secrets)
         self.monitoring = MonitoringManager(self.config)
         self.data_loader = DataLoader(self.config)
+        self.sampling_reports = {}
 
     def develop(self, segment: Optional[str] = None):
         return self._run_training_lifecycle(run_type="develop", segment=segment)
@@ -226,6 +234,269 @@ class LifecycleManager:
             self.registry.finish_run(run, "failed", {"reason": str(exc)})
             raise
 
+    def compare_feature_selection(self, segment: Optional[str] = None):
+        segment_value = self._resolve_segment(segment)
+        run = self.registry.start_run("compare-feature-selection", segment_value, self.config)
+        try:
+            frames, _ = self._load_development_frames(segment_value)
+            train_df = frames.get("train")
+            calibration_df = frames.get(self.calibration_cfg.get("source_window", "calibration"))
+            oot_df = frames.get(self.weight_cfg.get("validation_window", "oot"))
+            if train_df is None or train_df.empty:
+                raise ValueError("Train window is empty; cannot compare feature selection.")
+            if oot_df is None or oot_df.empty:
+                raise ValueError("OOT window is empty; cannot compare feature selection.")
+
+            preprocessing_enabled = bool(self.config.get("preprocessing", {}).get("enabled", False))
+            baseline_config = self._build_config_variant(
+                preprocessing_enabled=preprocessing_enabled,
+                feature_selection_enabled=False,
+            )
+            routed_config = self._build_config_variant(
+                preprocessing_enabled=preprocessing_enabled,
+                feature_selection_enabled=True,
+            )
+            default_weights = get_ensemble_weights(self.config)
+
+            live_frame = self._load_live_frame(segment_value)
+            evaluation_frames = [frame for name, frame in frames.items() if name in {"dev", "oot"} and frame is not None and not frame.empty]
+            if not evaluation_frames:
+                raise ValueError("No non-empty evaluation frames found for feature selection comparison.")
+            label_frame = self._load_label_frame(
+                self.weight_cfg.get("source_name", "outcomes"),
+                segment_value,
+                start_date=min(pd.to_datetime(frame[self.time_column]).min() for frame in evaluation_frames),
+                end_date=max(pd.to_datetime(frame[self.time_column]).max() for frame in evaluation_frames),
+            )
+
+            baseline_report = self._evaluate_preprocessing_variant(
+                baseline_config,
+                segment_value=segment_value,
+                train_df=train_df,
+                dev_df=frames.get("dev"),
+                calibration_df=calibration_df,
+                oot_df=oot_df,
+                live_df=live_frame,
+                label_frame=label_frame,
+                weights=default_weights,
+                tag="feature-baseline",
+            )
+            routed_report = self._evaluate_preprocessing_variant(
+                routed_config,
+                segment_value=segment_value,
+                train_df=train_df,
+                dev_df=frames.get("dev"),
+                calibration_df=calibration_df,
+                oot_df=oot_df,
+                live_df=live_frame,
+                label_frame=label_frame,
+                weights=default_weights,
+                tag="feature-routed",
+            )
+
+            sample = self._build_preprocessing_sample_comparison(
+                baseline_report["live_scores"],
+                routed_report["live_scores"],
+            )
+
+            comparison = {
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "segment": segment_value,
+                "fixed_weights": default_weights,
+                "baseline": baseline_report["summary"],
+                "routed": routed_report["summary"],
+                "delta": {
+                    "oot_primary_precision_delta": round(
+                        routed_report["summary"]["outcomes"]["primary"]["precision_at_top_percent"]
+                        - baseline_report["summary"]["outcomes"]["primary"]["precision_at_top_percent"],
+                        4,
+                    ),
+                    "oot_primary_lift_delta": round(
+                        routed_report["summary"]["outcomes"]["primary"]["lift_at_top_percent"]
+                        - baseline_report["summary"]["outcomes"]["primary"]["lift_at_top_percent"],
+                        4,
+                    ),
+                    "oot_tuned_precision_delta": round(
+                        routed_report["summary"]["tuned_outcomes"]["primary"]["precision_at_top_percent"]
+                        - baseline_report["summary"]["tuned_outcomes"]["primary"]["precision_at_top_percent"],
+                        4,
+                    ),
+                    "oot_tuned_lift_delta": round(
+                        routed_report["summary"]["tuned_outcomes"]["primary"]["lift_at_top_percent"]
+                        - baseline_report["summary"]["tuned_outcomes"]["primary"]["lift_at_top_percent"],
+                        4,
+                    ),
+                    "oot_ensemble_ks_delta": round(
+                        routed_report["summary"]["stability"]["metrics"]["ensemble_score"]["ks_stat"]
+                        - baseline_report["summary"]["stability"]["metrics"]["ensemble_score"]["ks_stat"],
+                        4,
+                    ),
+                    "live_red_share_delta": round(
+                        routed_report["summary"]["live_scores"]["band_share"]["KIRMIZI"]
+                        - baseline_report["summary"]["live_scores"]["band_share"]["KIRMIZI"],
+                        4,
+                    ),
+                },
+                "sample_customer": sample,
+            }
+
+            json_path = run.run_dir / "feature_selection_comparison.json"
+            with open(json_path, "w", encoding="utf-8") as handle:
+                json.dump(comparison, handle, indent=2, ensure_ascii=False)
+            markdown_path = run.run_dir / "feature_selection_comparison.md"
+            markdown_path.write_text(self._render_feature_selection_comparison_markdown(comparison), encoding="utf-8")
+
+            summary = {
+                "segment": segment_value,
+                "comparison_path": str(json_path),
+                "markdown_path": str(markdown_path),
+                "sample_customer_id": sample.get("customer_id"),
+            }
+            self.registry.finish_run(run, "completed", summary)
+            return summary
+        except Exception as exc:
+            self.registry.finish_run(run, "failed", {"reason": str(exc)})
+            raise
+
+    def compare_sampling(self, segment: Optional[str] = None):
+        segment_value = self._resolve_segment(segment)
+        run = self.registry.start_run("compare-sampling", segment_value, self.config)
+        try:
+            preprocessing_enabled = bool(self.config.get("preprocessing", {}).get("enabled", False))
+            feature_selection_enabled = bool(self.config.get("feature_selection", {}).get("enabled", False))
+            baseline_config = self._build_config_variant(
+                preprocessing_enabled=preprocessing_enabled,
+                feature_selection_enabled=feature_selection_enabled,
+            )
+            baseline_config.setdefault("development", {}).setdefault("sampling", {})
+            baseline_config["development"]["sampling"]["enabled"] = False
+
+            baseline_frames, _, baseline_sampling = self._load_development_frames_for_config(baseline_config, segment_value)
+            train_frame = baseline_frames.get("train")
+            train_rows = len(train_frame) if train_frame is not None else 0
+            configured_compare_max_rows = self.config.get("development", {}).get("sampling", {}).get("compare_max_rows")
+            if configured_compare_max_rows in (None, "", 0):
+                compare_max_rows = max(500, min(5000, max(1, train_rows // 2)))
+            else:
+                compare_max_rows = int(configured_compare_max_rows)
+
+            sampled_config = self._build_config_variant(
+                preprocessing_enabled=preprocessing_enabled,
+                feature_selection_enabled=feature_selection_enabled,
+            )
+            sampled_config.setdefault("development", {}).setdefault("sampling", {})
+            sampled_sampling_cfg = sampled_config["development"]["sampling"]
+            sampled_sampling_cfg["enabled"] = True
+            sampled_sampling_cfg["activate_if_rows_gt"] = 0
+            sampled_sampling_cfg["max_rows"] = compare_max_rows
+            sampled_sampling_cfg.setdefault("validation", {})
+
+            sampled_frames, _, sampled_sampling = self._load_development_frames_for_config(sampled_config, segment_value)
+
+            calibration_window = self.calibration_cfg.get("source_window", "calibration")
+            oot_window = self.weight_cfg.get("validation_window", "oot")
+            live_frame = self._load_live_frame(segment_value)
+            label_frame = self._load_label_frame(
+                self.weight_cfg.get("source_name", "outcomes"),
+                segment_value,
+                start_date=min(pd.to_datetime(frame[self.time_column]).min() for frame in (baseline_frames.get("dev"), baseline_frames.get("oot")) if frame is not None and not frame.empty),
+                end_date=max(pd.to_datetime(frame[self.time_column]).max() for frame in (baseline_frames.get("dev"), baseline_frames.get("oot")) if frame is not None and not frame.empty),
+            )
+            default_weights = get_ensemble_weights(self.config)
+
+            baseline_report = self._evaluate_preprocessing_variant(
+                baseline_config,
+                segment_value=segment_value,
+                train_df=baseline_frames.get("train"),
+                dev_df=baseline_frames.get("dev"),
+                calibration_df=baseline_frames.get(calibration_window),
+                oot_df=baseline_frames.get(oot_window),
+                live_df=live_frame,
+                label_frame=label_frame,
+                weights=default_weights,
+                tag="sampling-baseline",
+            )
+            sampled_report = self._evaluate_preprocessing_variant(
+                sampled_config,
+                segment_value=segment_value,
+                train_df=sampled_frames.get("train"),
+                dev_df=sampled_frames.get("dev"),
+                calibration_df=sampled_frames.get(calibration_window),
+                oot_df=sampled_frames.get(oot_window),
+                live_df=live_frame,
+                label_frame=label_frame,
+                weights=default_weights,
+                tag="sampling-sampled",
+            )
+
+            sample = self._build_preprocessing_sample_comparison(
+                baseline_report["live_scores"],
+                sampled_report["live_scores"],
+            )
+
+            comparison = {
+                "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "segment": segment_value,
+                "fixed_weights": default_weights,
+                "baseline": baseline_report["summary"],
+                "sampled": sampled_report["summary"],
+                "sampling": {
+                    "baseline": baseline_sampling,
+                    "sampled": sampled_sampling,
+                },
+                "delta": {
+                    "oot_primary_precision_delta": round(
+                        sampled_report["summary"]["outcomes"]["primary"]["precision_at_top_percent"]
+                        - baseline_report["summary"]["outcomes"]["primary"]["precision_at_top_percent"],
+                        4,
+                    ),
+                    "oot_primary_lift_delta": round(
+                        sampled_report["summary"]["outcomes"]["primary"]["lift_at_top_percent"]
+                        - baseline_report["summary"]["outcomes"]["primary"]["lift_at_top_percent"],
+                        4,
+                    ),
+                    "oot_tuned_precision_delta": round(
+                        sampled_report["summary"]["tuned_outcomes"]["primary"]["precision_at_top_percent"]
+                        - baseline_report["summary"]["tuned_outcomes"]["primary"]["precision_at_top_percent"],
+                        4,
+                    ),
+                    "oot_tuned_lift_delta": round(
+                        sampled_report["summary"]["tuned_outcomes"]["primary"]["lift_at_top_percent"]
+                        - baseline_report["summary"]["tuned_outcomes"]["primary"]["lift_at_top_percent"],
+                        4,
+                    ),
+                    "oot_ensemble_ks_delta": round(
+                        sampled_report["summary"]["stability"]["metrics"]["ensemble_score"]["ks_stat"]
+                        - baseline_report["summary"]["stability"]["metrics"]["ensemble_score"]["ks_stat"],
+                        4,
+                    ),
+                    "live_red_share_delta": round(
+                        sampled_report["summary"]["live_scores"]["band_share"]["KIRMIZI"]
+                        - baseline_report["summary"]["live_scores"]["band_share"]["KIRMIZI"],
+                        4,
+                    ),
+                },
+                "sample_customer": sample,
+            }
+
+            json_path = run.run_dir / "sampling_comparison.json"
+            with open(json_path, "w", encoding="utf-8") as handle:
+                json.dump(comparison, handle, indent=2, ensure_ascii=False)
+            markdown_path = run.run_dir / "sampling_comparison.md"
+            markdown_path.write_text(self._render_sampling_comparison_markdown(comparison), encoding="utf-8")
+
+            summary = {
+                "segment": segment_value,
+                "comparison_path": str(json_path),
+                "markdown_path": str(markdown_path),
+                "sample_customer_id": sample.get("customer_id"),
+            }
+            self.registry.finish_run(run, "completed", summary)
+            return summary
+        except Exception as exc:
+            self.registry.finish_run(run, "failed", {"reason": str(exc)})
+            raise
+
     def reset_runtime(self):
         return self.retention.reset_runtime_state()
 
@@ -339,7 +610,7 @@ class LifecycleManager:
             )
             if frame.empty:
                 raise ValueError("No rows returned for live scoring.")
-            frame = self.data_loader.validate_data(frame)
+            frame = self.data_loader.validate_data(frame, feature_names=model.raw_feature_names)
 
             scorer = self._build_scorer(model, champion, run.run_id, segment_value)
             results = scorer.score(frame)
@@ -354,7 +625,7 @@ class LifecycleManager:
             effective_snapshot = pd.to_datetime(frame[self.time_column]).max()
 
             monitoring_payload = {
-                "input": self.monitoring.summarize_input(frame, self.features),
+                    "input": self.monitoring.summarize_input(frame, model.raw_feature_names),
                 "scores": self.monitoring.summarize_scores(results),
             }
             monitoring_path = run.run_dir / "monitoring.json"
@@ -570,8 +841,8 @@ class LifecycleManager:
             if train_df is None or train_df.empty:
                 raise ValueError("Train window is empty; cannot fit model.")
 
-            model = AnomalyModels(self.config)
-            model.fit(train_df[self.features])
+            model = AnomalyModels(self.config, feature_names=self.features)
+            model.fit(train_df, feature_names=self.features)
 
             model_version = self._build_model_version(segment_value, run_type)
             model_path = run.artifact_dir / "model.pkl"
@@ -597,7 +868,7 @@ class LifecycleManager:
             monitoring_payload = {"input": {}, "scores": {}}
             default_weights = get_ensemble_weights(self.config)
             for window_name, frame in frames.items():
-                monitoring_payload["input"][window_name] = self.monitoring.summarize_input(frame, self.features)
+                monitoring_payload["input"][window_name] = self.monitoring.summarize_input(frame, model.raw_feature_names)
                 if frame.empty:
                     continue
                 scorer = self._build_scorer(
@@ -623,8 +894,13 @@ class LifecycleManager:
             stability_path = run.artifact_dir / "stability.json"
             with open(stability_path, "w", encoding="utf-8") as handle:
                 json.dump(stability, handle, indent=2, ensure_ascii=False)
+            feature_selection_path = run.artifact_dir / "feature_selection.json"
+            with open(feature_selection_path, "w", encoding="utf-8") as handle:
+                json.dump(model.feature_selection_summary(), handle, indent=2, ensure_ascii=False)
             monitoring_path = run.run_dir / "monitoring.json"
             self.monitoring.write_json(monitoring_path, monitoring_payload)
+            sampling_path = run.run_dir / "sampling.json"
+            self.monitoring.write_json(sampling_path, self.sampling_reports)
 
             record = {
                 "model_version": model_version,
@@ -636,10 +912,14 @@ class LifecycleManager:
                 "artifact_dir": str(run.artifact_dir),
                 "stability_path": str(stability_path),
                 "monitoring_path": str(monitoring_path),
+                "sampling_path": str(sampling_path),
+                "feature_selection_path": str(feature_selection_path),
                 "windows": {name: summarize_window(frame, self.time_column) for name, frame in frames.items()},
+                "sampling": self.sampling_reports,
                 "calibration": calibration_record,
                 "shadow_scoring": shadow_record,
                 "preprocessing": model.preprocessing_summary(),
+                "feature_selection": model.feature_selection_summary(),
                 "weighting": {
                     "status": "config_default",
                     "source": "config",
@@ -655,10 +935,14 @@ class LifecycleManager:
                 "artifact_path": str(model_path),
                 "stability_path": str(stability_path),
                 "monitoring_path": str(monitoring_path),
+                "sampling_path": str(sampling_path),
+                "feature_selection_path": str(feature_selection_path),
                 "windows": {name: self._window_boundaries(spec) for name, spec in windows.items()},
+                "sampling": self.sampling_reports,
                 "calibration_status": calibration_record["status"],
                 "shadow_status": shadow_record["status"],
                 "preprocessing": model.preprocessing_summary(),
+                "feature_selection": model.feature_selection_summary(),
             }
             self.registry.finish_run(run, "completed", summary)
             return record
@@ -691,29 +975,87 @@ class LifecycleManager:
             return pickle.load(handle)
 
     def _load_development_frames(self, segment_value: str):
-        source_name = self.development_cfg.get("source_name", "development")
-        segment_column = self.development_cfg.get("segment_column")
-        snapshots = self.source_loader.list_snapshots(
+        frames, windows, sampling_reports = self._load_development_frames_for_config(self.config, segment_value)
+        self.sampling_reports = sampling_reports
+        return frames, windows
+
+    def _load_development_frames_for_config(self, config_variant: dict, segment_value: str):
+        development_cfg = config_variant.get("development", {})
+        source_loader = SourceLoader(config_variant, self.secrets)
+        data_loader = DataLoader(config_variant)
+        sampler = TrainSampler(
+            config_variant,
+            id_column=config_variant["pipeline"]["id_column"],
+            time_column=config_variant["pipeline"]["time_column"],
+        )
+
+        source_name = development_cfg.get("source_name", "development")
+        segment_column = development_cfg.get("segment_column")
+        snapshots = source_loader.list_snapshots(
             source_name,
             segment_column=segment_column,
             segment_value=None if segment_value == "ALL" else segment_value,
         )
-        windows = WindowResolver(self.config).resolve(snapshots)
+        windows = WindowResolver(config_variant).resolve(snapshots)
 
-        frames = {}
-        for offset, (name, spec) in enumerate(windows.items()):
-            frame = self.source_loader.load_frame(
+        raw_frames = {}
+        for name, spec in windows.items():
+            frame = source_loader.load_frame(
                 source_name,
                 start_date=spec.start,
                 end_date=spec.end,
                 segment_column=segment_column,
                 segment_value=None if segment_value == "ALL" else segment_value,
             )
-            frame = self._apply_sampling(frame, per_window_seed_offset=offset)
-            if not frame.empty:
-                frame = self.data_loader.validate_data(frame)
-            frames[name] = frame
-        return frames, windows
+            raw_frames[name] = frame
+
+        reference_frame = raw_frames.get("train")
+        if reference_frame is None or reference_frame.empty:
+            reference_frame = next((frame for frame in raw_frames.values() if frame is not None and not frame.empty), None)
+
+        resolved_features = self.features
+        if reference_frame is not None and not reference_frame.empty:
+            resolved_features = data_loader.resolve_feature_names(reference_frame)
+            raw_type_overrides = self._infer_raw_type_overrides(config_variant, reference_frame, resolved_features)
+            config_variant.setdefault("features", {})["raw_type_overrides"] = raw_type_overrides
+            if config_variant is self.config:
+                self.features = resolved_features
+
+        frames = {}
+        sampling_reports = {}
+        for offset, (name, frame) in enumerate(raw_frames.items()):
+            if frame is not None and not frame.empty and resolved_features:
+                sampled = sampler.sample(
+                    frame,
+                    feature_names=resolved_features,
+                    window_name=name,
+                    seed_offset=offset,
+                )
+                sampling_reports[name] = sampled.report
+                frame_to_validate = sampled.frame
+            else:
+                sampling_reports[name] = {"window": name, "status": "empty" if frame is not None and frame.empty else "unresolved_features"}
+                frame_to_validate = frame
+
+            if frame_to_validate is not None and not frame_to_validate.empty and resolved_features:
+                frames[name] = data_loader.validate_data(frame_to_validate, feature_names=resolved_features)
+            else:
+                frames[name] = frame_to_validate
+        return frames, windows, sampling_reports
+
+    @staticmethod
+    def _infer_raw_type_overrides(config_variant: dict, frame: pd.DataFrame, feature_names: list[str]) -> dict[str, str]:
+        categorical_features = get_included_categorical_features(config_variant)
+        overrides: dict[str, str] = {}
+        for feature in feature_names:
+            if feature in categorical_features or feature not in frame.columns:
+                continue
+            series = pd.to_numeric(frame[feature], errors="coerce").dropna()
+            if series.empty:
+                continue
+            unique_values = set(series.tolist())
+            overrides[feature] = "binary" if unique_values.issubset({0.0, 1.0}) else "continuous"
+        return overrides
 
     def _load_label_frame(self, source_name: str, segment_value: str, *, start_date, end_date):
         frame = self.source_loader.load_frame(
@@ -757,7 +1099,7 @@ class LifecycleManager:
                 "required_rows": min_rows,
             }
 
-        X = model.transform(frame[self.features])
+        X = model.transform(frame)
         calibrator = ScoreCalibrator(calibrator_config)
         artifact = calibrator.fit(
             {
@@ -837,31 +1179,6 @@ class LifecycleManager:
     def _resolve_active_weights(self, model_record: dict):
         return model_record.get("weighting", {}).get("weights", get_ensemble_weights(self.config))
 
-    def _apply_sampling(self, frame: pd.DataFrame, *, per_window_seed_offset: int = 0) -> pd.DataFrame:
-        sampling_cfg = self.development_cfg.get("sampling", {})
-        if not sampling_cfg.get("enabled", False) or frame.empty:
-            return frame.reset_index(drop=True)
-
-        seed = int(sampling_cfg.get("random_seed", 42)) + per_window_seed_offset
-        rng = np.random.default_rng(seed)
-        result = frame.copy()
-        max_rows_per_snapshot = sampling_cfg.get("max_rows_per_snapshot")
-        max_rows = sampling_cfg.get("max_rows")
-
-        if max_rows_per_snapshot:
-            pieces = []
-            for _, group in result.groupby(self.time_column):
-                take = min(len(group), int(max_rows_per_snapshot))
-                idx = rng.choice(group.index.to_numpy(), size=take, replace=False)
-                pieces.append(group.loc[idx])
-            result = pd.concat(pieces, ignore_index=True) if pieces else result.iloc[0:0]
-
-        if max_rows and len(result) > int(max_rows):
-            idx = rng.choice(result.index.to_numpy(), size=int(max_rows), replace=False)
-            result = result.loc[idx]
-
-        return result.sort_values([self.time_column, self.id_column]).reset_index(drop=True)
-
     def _evaluate_stability_window(self, model, train_df, reference_df, *, calibration_artifact, weights):
         train_scores = self._compute_model_scores(
             model,
@@ -906,7 +1223,7 @@ class LifecycleManager:
         return report
 
     def _compute_model_scores(self, model, frame, *, calibration_artifact, weights):
-        X = model.transform(frame[self.features])
+        X = model.transform(frame)
         raw_scores = {
             "ae_raw": model.raw_ae_scores(X),
             "if_raw": model.raw_if_scores(X),
@@ -1011,10 +1328,15 @@ class LifecycleManager:
             "end": pd.Timestamp(spec.end).date().isoformat(),
         }
 
-    def _build_config_variant(self, *, preprocessing_enabled: bool) -> dict:
+    def _build_config_variant(self, *, preprocessing_enabled: bool, feature_selection_enabled: bool | None = None) -> dict:
         variant = copy.deepcopy(self.config)
         variant.setdefault("preprocessing", {})
         variant["preprocessing"]["enabled"] = preprocessing_enabled
+        variant.setdefault("feature_selection", {})
+        if feature_selection_enabled is not None:
+            variant["feature_selection"]["enabled"] = feature_selection_enabled
+            variant.setdefault("feature_selection", {}).setdefault("branch_routing", {})
+            variant["feature_selection"]["branch_routing"]["enabled"] = feature_selection_enabled
         if not preprocessing_enabled:
             variant["preprocessing"]["missing"] = {"strategy": "zero"}
             variant["preprocessing"]["winsorization"] = {"enabled": False}
@@ -1042,6 +1364,9 @@ class LifecycleManager:
         return variant
 
     def _load_live_frame(self, segment_value: str) -> pd.DataFrame:
+        return self._load_live_frame_for_features(segment_value, feature_names=self.features or None)
+
+    def _load_live_frame_for_features(self, segment_value: str, feature_names: list[str] | None) -> pd.DataFrame:
         source_name = self.live_scoring_cfg.get("source_name", "input_features")
         snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})
         selector = snapshot_cfg.get("selector", "latest")
@@ -1055,15 +1380,20 @@ class LifecycleManager:
         )
         if frame.empty:
             raise ValueError("No rows returned for live scoring comparison.")
-        return self.data_loader.validate_data(frame)
+        validated = self.data_loader.validate_data(frame, feature_names=feature_names)
+        if feature_names:
+            self.features = list(feature_names)
+        else:
+            self.features = list(self.data_loader.feature_names)
+        return validated
 
     def _fit_shadow_branch(self, *, train_df, calibration_frame, model_version: str, segment_value: str, run):
         if not bool(self.shadow_cfg.get("enabled", False)):
             return {"enabled": False, "status": "disabled", "version": None}
 
         shadow_config = self._build_shadow_config()
-        shadow_model = AnomalyModels(shadow_config)
-        shadow_model.fit(train_df[self.features])
+        shadow_model = AnomalyModels(shadow_config, feature_names=self.features)
+        shadow_model.fit(train_df, feature_names=self.features)
         shadow_model_path = run.artifact_dir / "shadow_model.pkl"
         self._save_model(shadow_model, shadow_model_path)
 
@@ -1100,12 +1430,12 @@ class LifecycleManager:
         weights: dict,
         tag: str,
     ) -> dict:
-        model = AnomalyModels(variant_config)
-        model.fit(train_df[self.features])
+        model = AnomalyModels(variant_config, feature_names=self.features)
+        model.fit(train_df, feature_names=self.features)
 
         calibration_artifact = None
         if bool(variant_config.get("calibration", {}).get("enabled", False)) and calibration_df is not None and not calibration_df.empty:
-            X_cal = model.transform(calibration_df[self.features])
+            X_cal = model.transform(calibration_df)
             calibration_artifact = ScoreCalibrator(variant_config).fit(
                 {
                     "ae_raw": model.raw_ae_scores(X_cal),
@@ -1180,14 +1510,15 @@ class LifecycleManager:
                 )
         summary = {
             "preprocessing": model.preprocessing_summary(),
+            "feature_selection": model.feature_selection_summary(),
             "stability": stability,
             "outcomes": outcome_metrics,
             "tuned_weights": tuned_artifact["weights"] if tuned_artifact else weights,
             "tuned_outcomes": tuned_artifact["validation_metrics"] if tuned_artifact else outcome_metrics,
             "live_scores": self.monitoring.summarize_scores(scored_live),
-            "train_inspection": model.preprocessor.inspect_frame(train_df[self.features]),
-            "oot_inspection": model.preprocessor.inspect_frame(oot_df[self.features]),
-            "live_inspection": model.preprocessor.inspect_frame(live_df[self.features]),
+            "train_inspection": model.preprocessor.inspect_frame(train_df),
+            "oot_inspection": model.preprocessor.inspect_frame(oot_df),
+            "live_inspection": model.preprocessor.inspect_frame(live_df),
         }
         return {
             "summary": summary,
@@ -1300,6 +1631,87 @@ class LifecycleManager:
                 f"- Baseline tuned precision@top%: `{payload['baseline']['tuned_outcomes']['primary']['precision_at_top_percent']}`",
                 f"- Robust tuned precision@top%: `{payload['robust']['tuned_outcomes']['primary']['precision_at_top_percent']}`",
                 f"- OOT ensemble KS delta: `{payload['delta']['oot_ensemble_ks_delta']}`",
+                "",
+                "## Sample Customer",
+                "",
+                f"- Customer: `{payload['sample_customer']['customer_id']}`",
+                f"- Snapshot: `{payload['sample_customer']['snapshot_date']}`",
+                f"- Old score/band: `{payload['sample_customer']['old']['anomaly_score']}` / `{payload['sample_customer']['old']['alert_band']}`",
+                f"- New score/band: `{payload['sample_customer']['new']['anomaly_score']}` / `{payload['sample_customer']['new']['alert_band']}`",
+            ]
+        )
+
+    @staticmethod
+    def _render_feature_selection_comparison_markdown(payload: dict) -> str:
+        return "\n".join(
+            [
+                "# Feature Selection Comparison",
+                "",
+                f"- Segment: `{payload['segment']}`",
+                f"- Fixed weights: `{payload['fixed_weights']}`",
+                "",
+                "## Primary Metrics",
+                "",
+                f"- Baseline precision@top%: `{payload['baseline']['outcomes']['primary']['precision_at_top_percent']}`",
+                f"- Routed precision@top%: `{payload['routed']['outcomes']['primary']['precision_at_top_percent']}`",
+                f"- Baseline lift@top%: `{payload['baseline']['outcomes']['primary']['lift_at_top_percent']}`",
+                f"- Routed lift@top%: `{payload['routed']['outcomes']['primary']['lift_at_top_percent']}`",
+                f"- OOT ensemble KS delta: `{payload['delta']['oot_ensemble_ks_delta']}`",
+                f"- Live red share delta: `{payload['delta']['live_red_share_delta']}`",
+                "",
+                "## Feature Counts",
+                "",
+                f"- Baseline generated features: `{payload['baseline']['feature_selection']['generated_feature_count']}`",
+                f"- Routed generated features: `{payload['routed']['feature_selection']['generated_feature_count']}`",
+                f"- Baseline MD features: `{payload['baseline']['feature_selection']['branch_counts']['mahalanobis']}`",
+                f"- Routed MD features: `{payload['routed']['feature_selection']['branch_counts']['mahalanobis']}`",
+                "",
+                "## Sample Customer",
+                "",
+                f"- Customer: `{payload['sample_customer']['customer_id']}`",
+                f"- Snapshot: `{payload['sample_customer']['snapshot_date']}`",
+                f"- Old score/band: `{payload['sample_customer']['old']['anomaly_score']}` / `{payload['sample_customer']['old']['alert_band']}`",
+                f"- New score/band: `{payload['sample_customer']['new']['anomaly_score']}` / `{payload['sample_customer']['new']['alert_band']}`",
+            ]
+        )
+
+    @staticmethod
+    def _render_sampling_comparison_markdown(payload: dict) -> str:
+        sampled_train = payload["sampling"]["sampled"].get("train", {})
+        validation = sampled_train.get("validation", {})
+        return "\n".join(
+            [
+                "# Sampling Comparison",
+                "",
+                f"- Segment: `{payload['segment']}`",
+                f"- Fixed weights: `{payload['fixed_weights']}`",
+                "",
+                "## Sampling Summary",
+                "",
+                f"- Baseline train status: `{payload['sampling']['baseline'].get('train', {}).get('status')}`",
+                f"- Sampled train status: `{sampled_train.get('status')}`",
+                f"- Original rows: `{sampled_train.get('original_rows')}`",
+                f"- Sampled rows: `{sampled_train.get('sampled_rows')}`",
+                f"- Used rows: `{sampled_train.get('used_rows')}`",
+                f"- Sample rate: `{sampled_train.get('sample_rate')}`",
+                "",
+                "## Validation",
+                "",
+                f"- Max snapshot share delta: `{validation.get('max_snapshot_share_delta')}`",
+                f"- Max tail share delta: `{validation.get('max_tail_share_delta')}`",
+                f"- Max missing share delta: `{validation.get('max_missing_share_delta')}`",
+                f"- Max feature missing delta: `{validation.get('max_feature_missing_delta')}`",
+                f"- Max feature KS: `{validation.get('max_feature_ks')}`",
+                f"- Median feature KS: `{validation.get('median_feature_ks')}`",
+                "",
+                "## Primary Metrics",
+                "",
+                f"- Baseline precision@top%: `{payload['baseline']['outcomes']['primary']['precision_at_top_percent']}`",
+                f"- Sampled precision@top%: `{payload['sampled']['outcomes']['primary']['precision_at_top_percent']}`",
+                f"- Baseline lift@top%: `{payload['baseline']['outcomes']['primary']['lift_at_top_percent']}`",
+                f"- Sampled lift@top%: `{payload['sampled']['outcomes']['primary']['lift_at_top_percent']}`",
+                f"- OOT ensemble KS delta: `{payload['delta']['oot_ensemble_ks_delta']}`",
+                f"- Live red share delta: `{payload['delta']['live_red_share_delta']}`",
                 "",
                 "## Sample Customer",
                 "",

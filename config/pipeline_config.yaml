@@ -4,8 +4,28 @@ pipeline:
   id_column: customer_id
   time_column: snapshot_date
   split_column: split_flag
+  non_feature_columns: []
 
 features:
+  mode: infer
+  include_columns: []
+  exclude_columns: []
+  label_overrides: {}
+  categorical:
+    default_include: false
+    low_cardinality_threshold: 8
+    per_feature: {}
+    # Example:
+    # per_feature:
+    #   risk_band:
+    #     include: true
+    #     transforms:
+    #       - ordinal
+    #       - is_unseen
+    #     order:
+    #       - low
+    #       - medium
+    #       - high
   instant:
     - name: dpd_current
       label_tr: "Mevcut Gecikme Günü"
@@ -119,6 +139,24 @@ scoring:
 training:
   random_seed: 42
 
+feature_selection:
+  enabled: true
+  drop_zero_variance_continuous: true
+  drop_exact_duplicates: true
+  branch_routing:
+    enabled: true
+    autoencoder:
+      exclude_raw_types: []
+      exclude_transforms: []
+    isolation_forest:
+      exclude_raw_types: []
+      exclude_transforms: []
+    mahalanobis:
+      exclude_raw_types:
+        - binary
+      exclude_transforms:
+        - one_hot
+
 preprocessing:
   enabled: true
   missing:
@@ -220,9 +258,18 @@ development:
   segment_value: null
   sampling:
     enabled: false
+    activate_if_rows_gt: 1000000
     max_rows: null
-    max_rows_per_snapshot: null
+    compare_max_rows: null
+    tail_z_threshold: 3.5
     random_seed: 42
+    validation:
+      max_snapshot_share_delta: 0.02
+      max_tail_share_delta: 0.02
+      max_missing_share_delta: 0.02
+      max_feature_missing_delta: 0.01
+      max_feature_ks: 0.10
+      fallback_to_full_on_fail: true
   windows:
     mode: relative_periods
     relative:

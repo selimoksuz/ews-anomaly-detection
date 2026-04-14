@@ -10,15 +10,17 @@ from engine.scorer import AnomalyScorer
 class _StubModels:
     def __init__(self, features):
         self.features = features
+        self.feature_names = features
+        self.raw_feature_names = features
 
     def transform(self, frame):
-        return frame.fillna(0).to_numpy(dtype=float)
+        return frame[self.raw_feature_names].fillna(0).to_numpy(dtype=float)
 
     def ae_reconstruct(self, X):
         return np.zeros_like(X)
 
     def actual_values(self, frame):
-        return frame.fillna(0).to_numpy(dtype=float)
+        return frame[self.raw_feature_names].fillna(0).to_numpy(dtype=float)
 
     def inverse_transform(self, X):
         return X

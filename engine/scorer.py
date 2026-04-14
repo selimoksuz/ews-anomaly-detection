@@ -11,9 +11,9 @@ from engine.calibration import ScoreCalibrator
 from engine.config_loader import (
     get_alert_bands,
     get_ensemble_weights,
-    get_feature_list,
     get_label,
     normalize_ensemble_weights,
+    resolve_feature_list,
 )
 
 
@@ -34,7 +34,15 @@ class AnomalyScorer:
     ):
         self.config = config
         self.models = models
-        self.features = get_feature_list(config)
+        self.features = list(
+            getattr(models, "feature_names", None)
+            or getattr(models, "features", None)
+            or []
+        )
+        self.raw_features = list(
+            getattr(models, "raw_feature_names", None)
+            or self.features
+        )
         self.weights = normalize_ensemble_weights(weights or get_ensemble_weights(config))
         self.top_n = config.get("scoring", {}).get("top_n_reasons", 3)
         self.z_threshold = config.get("scoring", {}).get("univariate_z_threshold", 2.5)
@@ -49,16 +57,16 @@ class AnomalyScorer:
         id_col = self.config["pipeline"]["id_column"]
         time_col = self.config["pipeline"]["time_column"]
         segment_col = self.config.get("development", {}).get("segment_column")
+        self.features = self._resolve_features(df)
 
-        raw_feature_frame = df[self.features]
-        X = self.models.transform(raw_feature_frame)
+        X = self.models.transform(df)
         n_rows = len(X)
 
         component = self.component_scores(df)
         expected_X = self.models.ae_reconstruct(X)
         ae_weight = float(self.weights["autoencoder"])
         baseline_X = ae_weight * expected_X
-        actual_values = self.models.actual_values(raw_feature_frame)
+        actual_values = self.models.actual_values(df)
         expected_values = self.models.inverse_transform(baseline_X)
 
         ae_c = self.models.ae_contribution(X)
@@ -161,7 +169,8 @@ class AnomalyScorer:
         return result
 
     def component_scores(self, df: pd.DataFrame) -> dict[str, np.ndarray]:
-        X = self.models.transform(df[self.features])
+        self.features = self._resolve_features(df)
+        X = self.models.transform(df)
         raw_scores = {
             "ae_raw": self.models.raw_ae_scores(X),
             "if_raw": self.models.raw_if_scores(X),
@@ -188,6 +197,14 @@ class AnomalyScorer:
             **calibrated_scores,
             "ensemble_score": ensemble,
         }
+
+    def _resolve_features(self, df: pd.DataFrame) -> list[str]:
+        if getattr(self.models, "feature_names", None):
+            return list(self.models.feature_names)
+        if self.features:
+            return list(self.features)
+        self.features = resolve_feature_list(self.config, df)
+        return list(self.features)
 
     @staticmethod
     def _reason_at_position(value: str, position: int):

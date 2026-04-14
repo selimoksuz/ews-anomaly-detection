@@ -102,10 +102,17 @@ class OracleConnector:
 
     @property
     def feature_labels(self) -> dict[str, str]:
-        return {
+        labels = {
             item["name"]: item.get("label_tr", item["name"])
             for item in self.feature_definitions
         }
+        labels.update(
+            {
+                str(name).strip().lower(): value
+                for name, value in (self.pipeline_config.get("features", {}).get("label_overrides", {}) or {}).items()
+            }
+        )
+        return labels
 
     @property
     def top_n_reasons(self) -> int:
@@ -314,14 +321,9 @@ class OracleConnector:
 
         frame[self.time_column] = pd.to_datetime(frame[self.time_column], errors="raise")
         frame["feature_name"] = frame["feature_name"].astype(str).str.strip().str.lower()
-        unknown_features = sorted(set(frame["feature_name"]) - set(self.feature_names))
-        if unknown_features:
-            raise ValueError(
-                f"Details DataFrame contains features not defined in config: {', '.join(unknown_features)}"
-            )
 
         if "feature_label" not in frame.columns:
-            frame["feature_label"] = frame["feature_name"].map(self.feature_labels)
+            frame["feature_label"] = frame["feature_name"].map(self.feature_labels).fillna(frame["feature_name"])
 
         if "delta_pct" not in frame.columns:
             frame["delta_pct"] = frame.apply(self._compute_delta_pct, axis=1)
@@ -386,7 +388,7 @@ class OracleConnector:
         frame["feature_name"] = frame["feature_name"].astype(str).str.strip().str.lower()
 
         if "feature_label" not in frame.columns:
-            frame["feature_label"] = frame["feature_name"].map(self.feature_labels)
+            frame["feature_label"] = frame["feature_name"].map(self.feature_labels).fillna(frame["feature_name"])
         if "delta_pct" not in frame.columns:
             frame["delta_pct"] = frame.apply(self._compute_delta_pct, axis=1)
         if "is_top_reason" not in frame.columns:

@@ -60,6 +60,85 @@ Champion varsa steady-state batch akisi:
 - `ZT_VAR2.EWS_ALERT_FEATURE_EFFECTS`
   Tum feature efektleri, human-readable uzun format explainability tablosu.
 
+## Feature Inference And Categorical Config
+
+Varsayilan davranis:
+
+- `pipeline.id_column` ve `pipeline.time_column` feature degildir.
+- Bunlar disindaki numeric kolonlar otomatik feature olarak infer edilir.
+- Kategorik kolonlar varsayilan olarak modele girmez.
+
+Bir kategorik kolonu modele dahil etmek istersen `features.categorical.per_feature` altinda acikca tanimlarsin. `transforms` alani her zaman YAML liste formunda yazilir:
+
+```yaml
+features:
+  mode: infer
+  categorical:
+    default_include: false
+    low_cardinality_threshold: 8
+    per_feature:
+      risk_band:
+        include: true
+        transforms:
+          - ordinal
+          - is_unseen
+        order:
+          - low
+          - medium
+          - high
+      channel:
+        include: true
+        transforms:
+          - one_hot
+          - rarity
+```
+
+## Train-Only Sampling
+
+Sampling sadece `development.train` penceresinde calisir. `dev`, `calibration`, `oot` ve `live scoring` full data ile devam eder.
+
+Varsayilan mantik:
+
+- `development.sampling.enabled: false`
+- `activate_if_rows_gt` esigi gecilmezse sample alinmaz
+- sample alindiginda zaman, missing ve tail dagilimi korunmaya calisilir
+- validation fail ederse sistem full train'e geri doner
+
+Ornek config:
+
+```yaml
+development:
+  sampling:
+    enabled: true
+    activate_if_rows_gt: 1000000
+    max_rows: 500000
+    compare_max_rows: 5000
+    tail_z_threshold: 3.5
+    random_seed: 42
+    validation:
+      max_snapshot_share_delta: 0.02
+      max_tail_share_delta: 0.02
+      max_missing_share_delta: 0.02
+      max_feature_missing_delta: 0.01
+      max_feature_ks: 0.10
+      fallback_to_full_on_fail: true
+```
+
+Karsilastirma icin:
+
+- `python cli.py compare-sampling [segment]`
+
+Bu komut baseline vs sampled train kosusunu karsilastirir ve `sampling_comparison.json` ile `sampling_comparison.md` uretir.
+
+Desteklenen kategorik transformlar:
+
+- `one_hot`
+- `freq`
+- `rarity`
+- `is_unseen`
+- `changed_from_prev`
+- `ordinal`
+
 ## Local Runtime State
 
 ```mermaid

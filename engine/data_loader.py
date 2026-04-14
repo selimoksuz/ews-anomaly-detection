@@ -8,6 +8,11 @@ from typing import Any, Optional, Union
 
 import pandas as pd
 
+from .config_loader import (
+    get_feature_list,
+    get_included_categorical_features,
+    resolve_feature_list,
+)
 from .oracle_io import DEFAULT_PIPELINE_CONFIG, OracleConnector, load_yaml_config
 
 
@@ -48,7 +53,28 @@ class DataLoader:
             self._apply_pipeline_config(self.pipeline_config)
         return self.validate_data(df)
 
-    def validate_data(self, df: pd.DataFrame) -> pd.DataFrame:
+    def resolve_feature_names(
+        self,
+        df: pd.DataFrame,
+        feature_names: Optional[list[str]] = None,
+    ) -> list[str]:
+        if feature_names is not None:
+            resolved = [str(column).strip().lower() for column in feature_names]
+        else:
+            resolved = resolve_feature_list(self.pipeline_config, df)
+        if not resolved:
+            raise ValueError(
+                "No feature columns resolved from the input DataFrame. "
+                "Define explicit/configured features in config or provide inferable numeric feature columns."
+            )
+        self.feature_names = resolved
+        return resolved
+
+    def validate_data(
+        self,
+        df: pd.DataFrame,
+        feature_names: Optional[list[str]] = None,
+    ) -> pd.DataFrame:
         """Validate required columns, nulls, duplicate keys, and numeric typing."""
         if df.empty:
             raise ValueError("Input DataFrame is empty.")
@@ -56,7 +82,9 @@ class DataLoader:
         frame = df.copy()
         frame.columns = [str(column).strip().lower() for column in frame.columns]
 
-        required_columns = [self.id_column, self.time_column, *self.feature_names]
+        resolved_features = self.resolve_feature_names(frame, feature_names=feature_names)
+
+        required_columns = [self.id_column, self.time_column, *resolved_features]
         missing_columns = [column for column in required_columns if column not in frame.columns]
         if missing_columns:
             raise ValueError(
@@ -86,8 +114,15 @@ class DataLoader:
                 f"Column '{self.time_column}' must contain valid datetime values."
             ) from exc
 
+        categorical_features = get_included_categorical_features(self.pipeline_config)
         invalid_numeric_columns: list[str] = []
-        for feature_name in self.feature_names:
+        for feature_name in resolved_features:
+            if feature_name in categorical_features:
+                frame[feature_name] = frame[feature_name].where(
+                    frame[feature_name].isnull(),
+                    frame[feature_name].astype(str).str.strip(),
+                )
+                continue
             converted = pd.to_numeric(frame[feature_name], errors="coerce")
             invalid_mask = converted.isnull() & frame[feature_name].notnull()
             if invalid_mask.any():
@@ -123,20 +158,13 @@ class DataLoader:
         ordered_columns = [self.id_column, self.time_column]
         if self.split_column in frame.columns:
             ordered_columns.append(self.split_column)
-        ordered_columns.extend(self.feature_names)
+        ordered_columns.extend(resolved_features)
         remaining_columns = [column for column in frame.columns if column not in ordered_columns]
         return frame[ordered_columns + remaining_columns]
 
     def _apply_pipeline_config(self, config: Mapping[str, Any]) -> None:
         pipeline_settings = config["pipeline"]
-        feature_settings = config.get("features", {})
-
         self.id_column = str(pipeline_settings["id_column"]).lower()
         self.time_column = str(pipeline_settings["time_column"]).lower()
         self.split_column = str(pipeline_settings.get("split_column", "split_flag")).lower()
-
-        self.feature_names = [
-            str(item["name"]).lower()
-            for group_name in ("instant", "rolling_4w", "trend")
-            for item in feature_settings.get(group_name, [])
-        ]
+        self.feature_names = get_feature_list(config)
