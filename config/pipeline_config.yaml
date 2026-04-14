@@ -334,8 +334,10 @@ monitoring:
 live_scoring:
   source_name: input_features
   snapshot:
-    selector: latest
+    selector: today
     explicit_date: null
+    start_date: null
+    end_date: null
 
 shadow_scoring:
   enabled: true

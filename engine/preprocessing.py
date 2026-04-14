@@ -108,6 +108,32 @@ class FeaturePreprocessor:
         self.raw_feature_types_: dict[str, str] = {}
         self.feature_registry_: dict[str, dict[str, Any]] = {}
 
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        raw_feature_names = getattr(self, "raw_feature_names", None) or getattr(self, "feature_names", None) or []
+        normalized_raw = [str(name).strip().lower() for name in raw_feature_names if str(name).strip()]
+        self.raw_feature_names = normalized_raw
+        output_feature_names = getattr(self, "output_feature_names", None) or getattr(self, "feature_names", None) or normalized_raw
+        self.output_feature_names = [str(name).strip().lower() for name in output_feature_names if str(name).strip()]
+        self.feature_names = list(self.output_feature_names)
+        self.categorical_settings = getattr(self, "categorical_settings", {}) or {}
+        self.numeric_raw_features = getattr(self, "numeric_raw_features", None) or [
+            feature for feature in self.raw_feature_names if feature not in self.categorical_settings
+        ]
+        self.hard_bounds_rules = getattr(self, "hard_bounds_rules", {}) or {}
+        self.fill_values_ = getattr(self, "fill_values_", {}) or {}
+        self.winsor_bounds_ = getattr(self, "winsor_bounds_", {}) or {}
+        self.output_feature_names = list(self.feature_names)
+        self.category_levels_ = getattr(self, "category_levels_", {}) or {}
+        self.category_frequency_ = getattr(self, "category_frequency_", {}) or {}
+        self.category_rarity_cap_ = getattr(self, "category_rarity_cap_", {}) or {}
+        self.ordinal_mapping_ = getattr(self, "ordinal_mapping_", {}) or {}
+        self._one_hot_feature_names = getattr(self, "_one_hot_feature_names", {}) or {}
+        self.raw_feature_types_ = getattr(self, "raw_feature_types_", {}) or {}
+        self.feature_registry_ = getattr(self, "feature_registry_", {}) or {}
+        self.fit_statistics_ = getattr(self, "fit_statistics_", {}) or {}
+        self.is_fitted = bool(getattr(self, "is_fitted", False) or getattr(self, "scaler", None) is not None)
+
     def fit(self, X_raw) -> "FeaturePreprocessor":
         raw_frame = self._to_input_frame(X_raw)
         numeric_frame = self._prepare_numeric_raw_frame(raw_frame)

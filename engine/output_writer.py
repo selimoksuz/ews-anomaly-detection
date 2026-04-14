@@ -26,9 +26,9 @@ class OutputWriter:
             raise ValueError(
                 f"Output backend '{backend}' is configured, but this project now supports Oracle only."
             )
-        return self._write_oracle(results, snapshot_date)
+        return self._write_oracle(results, snapshot_date, segment=segment)
 
-    def _write_oracle(self, results: pd.DataFrame, snapshot_date):
+    def _write_oracle(self, results: pd.DataFrame, snapshot_date, *, segment: str):
         results_frame = results.copy()
         results_frame[self.time_column] = pd.Timestamp(snapshot_date)
         results_frame["reasons"] = self._build_reasons(results_frame)
@@ -48,6 +48,7 @@ class OutputWriter:
             )
 
         with OracleConnector(self.config, self.secrets) as ora:
+            deleted = ora.delete_scored_snapshot(snapshot_date, segment=segment)
             inserted_results = ora.write_results(results_frame)
             inserted_details = 0
             inserted_full_effects = 0
@@ -57,6 +58,9 @@ class OutputWriter:
                 inserted_full_effects = ora.write_full_effects(pd.DataFrame(full_effect_rows))
         return {
             "backend": "oracle",
+            "deleted_results": deleted.get("results", 0),
+            "deleted_details": deleted.get("details", 0),
+            "deleted_full_effects": deleted.get("full_effects", 0),
             "inserted_results": inserted_results,
             "inserted_details": inserted_details,
             "inserted_full_effects": inserted_full_effects,

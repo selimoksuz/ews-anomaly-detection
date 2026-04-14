@@ -67,6 +67,34 @@ class AnomalyModels:
         self.branch_feature_names = {}
         self.branch_feature_indices = {}
 
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        raw_feature_names = getattr(self, "raw_feature_names", None) or getattr(self, "feature_names", None) or []
+        self.raw_feature_names = self._normalize_feature_names(raw_feature_names)
+        self.feature_names = self._normalize_feature_names(getattr(self, "feature_names", None) or self.raw_feature_names)
+        if getattr(self, "preprocessor", None) is not None:
+            preprocessor_raw = getattr(self.preprocessor, "raw_feature_names", None) or self.raw_feature_names
+            self.preprocessor.raw_feature_names = self._normalize_feature_names(preprocessor_raw)
+            preprocessor_features = getattr(self.preprocessor, "feature_names", None) or self.feature_names
+            self.preprocessor.feature_names = self._normalize_feature_names(preprocessor_features)
+        self.scaler = getattr(self, "scaler", None) or getattr(getattr(self, "preprocessor", None), "scaler", None)
+        self.feature_selection = getattr(self, "feature_selection", {}) or {}
+        default_branch_features = {
+            "autoencoder": list(self.feature_names),
+            "isolation_forest": list(self.feature_names),
+            "mahalanobis": list(self.feature_names),
+        }
+        self.branch_feature_names = getattr(self, "branch_feature_names", None) or default_branch_features
+        if not self.branch_feature_names:
+            self.branch_feature_names = default_branch_features
+        self.branch_feature_indices = getattr(self, "branch_feature_indices", None) or {
+            branch: [self.feature_names.index(name) for name in names if name in self.feature_names]
+            for branch, names in self.branch_feature_names.items()
+        }
+        self.n_features = getattr(self, "n_features", None) or len(self.feature_names)
+        self.ae_history = getattr(self, "ae_history", []) or []
+        self.is_fitted = bool(getattr(self, "is_fitted", False) or getattr(self, "ae", None) is not None)
+
     def fit(self, X_raw, feature_names=None):
         """X_raw: numpy array (n_samples, n_features)."""
         self._set_random_seed()

@@ -18,6 +18,12 @@ def load_config(config_path=None):
         return yaml.safe_load(handle)
 
 
+def save_config(config: dict, config_path=None):
+    path = Path(config_path) if config_path else PROJECT_ROOT / "config" / "pipeline_config.yaml"
+    with open(path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
+
+
 def load_secrets(secrets_path=None):
     path = Path(secrets_path) if secrets_path else PROJECT_ROOT / "config" / "secrets.yaml"
     with open(path, "r", encoding="utf-8") as handle:

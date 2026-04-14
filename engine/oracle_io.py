@@ -189,6 +189,18 @@ class OracleConnector:
         self.connection.commit()
         return self.write_source_rows(table_key, normalized, batch_size=batch_size)
 
+    def delete_scored_snapshot(self, snapshot_date, *, segment: Optional[str] = None) -> dict[str, int]:
+        """Delete previously written scored outputs for the same snapshot before re-inserting."""
+        snapshot_value = pd.Timestamp(snapshot_date).to_pydatetime()
+        deleted = {"results": 0, "details": 0, "full_effects": 0}
+        connection = self.connect()
+        with connection.cursor() as cursor:
+            deleted["full_effects"] = self._delete_snapshot_rows(cursor, "full_effects", snapshot_value)
+            deleted["details"] = self._delete_snapshot_rows(cursor, "details", snapshot_value)
+            deleted["results"] = self._delete_snapshot_rows(cursor, "results", snapshot_value, segment=segment)
+        connection.commit()
+        return deleted
+
     def write_source_rows(self, table_key: str, frame: pd.DataFrame, batch_size: int = 1000) -> int:
         """Write training/scoring/outcome source frames according to table schema."""
         if frame.empty:
@@ -547,6 +559,25 @@ class OracleConnector:
                 inserted += len(batch)
         connection.commit()
         return inserted
+
+    def _delete_snapshot_rows(self, cursor, table_key: str, snapshot_date, *, segment: Optional[str] = None) -> int:
+        active_keys = self._active_table_keys()
+        if table_key not in active_keys:
+            return 0
+
+        available_columns = self._table_columns(table_key)
+        clauses = [f"TRUNC({self.time_column.upper()}) = TRUNC(:snapshot_date)"]
+        params: dict[str, Any] = {"snapshot_date": snapshot_date}
+
+        if segment and segment != "ALL" and self.segment_column.upper() in available_columns:
+            clauses.append(f"{self.segment_column.upper()} = :segment_value")
+            params["segment_value"] = segment
+
+        cursor.execute(
+            f"DELETE FROM {self._qualified_table_name(table_key)} WHERE {' AND '.join(clauses)}",
+            params,
+        )
+        return int(cursor.rowcount or 0)
 
     def _training_table_ddl(self) -> str:
         feature_columns = self._feature_columns_ddl()

@@ -40,6 +40,7 @@ class SourceLoader:
         start_date=None,
         end_date=None,
         snapshot_date=None,
+        current_day: bool = False,
         latest_snapshot: bool = False,
         segment_column: Optional[str] = None,
         segment_value=None,
@@ -51,6 +52,7 @@ class SourceLoader:
             start_date=start_date,
             end_date=end_date,
             snapshot_date=snapshot_date,
+            current_day=current_day,
             latest_snapshot=latest_snapshot,
             segment_column=segment_column,
             segment_value=segment_value,
@@ -63,6 +65,7 @@ class SourceLoader:
         start_date=None,
         end_date=None,
         snapshot_date=None,
+        current_day: bool = False,
         latest_snapshot: bool = False,
         segment_column: Optional[str] = None,
         segment_value=None,
@@ -71,25 +74,33 @@ class SourceLoader:
             table = self._resolve_table_name(ora, source_cfg.get("oracle", {}).get("table"))
             clauses = []
             params = {}
+            segment_clause = None
+            if segment_column and segment_value is not None:
+                segment_clause = f"{segment_column.upper()} = :segment_value"
+                params["segment_value"] = segment_value
 
-            if latest_snapshot:
+            if current_day:
+                clauses.append(f"TRUNC({self.time_column.upper()}) = TRUNC(SYSDATE)")
+            elif latest_snapshot:
+                latest_filters = [segment_clause] if segment_clause else []
+                latest_where = f" WHERE {' AND '.join(latest_filters)}" if latest_filters else ""
                 clauses.append(
-                    f"{self.time_column.upper()} = (SELECT MAX({self.time_column.upper()}) FROM {table})"
+                    f"TRUNC({self.time_column.upper()}) = "
+                    f"(SELECT MAX(TRUNC({self.time_column.upper()})) FROM {table}{latest_where})"
                 )
             elif snapshot_date is not None:
-                clauses.append(f"{self.time_column.upper()} = :snapshot_date")
+                clauses.append(f"TRUNC({self.time_column.upper()}) = TRUNC(:snapshot_date)")
                 params["snapshot_date"] = pd.Timestamp(snapshot_date).to_pydatetime()
             else:
                 if start_date is not None:
-                    clauses.append(f"{self.time_column.upper()} >= :start_date")
+                    clauses.append(f"TRUNC({self.time_column.upper()}) >= TRUNC(:start_date)")
                     params["start_date"] = pd.Timestamp(start_date).to_pydatetime()
                 if end_date is not None:
-                    clauses.append(f"{self.time_column.upper()} <= :end_date")
+                    clauses.append(f"TRUNC({self.time_column.upper()}) <= TRUNC(:end_date)")
                     params["end_date"] = pd.Timestamp(end_date).to_pydatetime()
 
-            if segment_column and segment_value is not None:
-                clauses.append(f"{segment_column.upper()} = :segment_value")
-                params["segment_value"] = segment_value
+            if segment_clause:
+                clauses.append(segment_clause)
 
             sql = f"SELECT * FROM {table}"
             if clauses:

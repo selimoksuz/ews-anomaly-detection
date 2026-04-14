@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import pickle
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -20,6 +21,7 @@ from engine.config_loader import (
     get_included_categorical_features,
     load_config,
     load_secrets,
+    save_config,
 )
 from engine.data_loader import DataLoader
 from engine.models import AnomalyModels
@@ -33,11 +35,14 @@ from engine.source_loader import SourceLoader
 from engine.weight_tuning import WeightOptimizer
 from engine.windowing import WindowResolver, summarize_window
 
+logger = logging.getLogger(__name__)
+
 
 class LifecycleManager:
     """High-level orchestration for development, tuning, evaluation, and live scoring."""
 
     def __init__(self, config_path=None, secrets_path=None):
+        self.config_path = Path(config_path) if config_path else Path(__file__).resolve().parents[1] / "config" / "pipeline_config.yaml"
         self.config = load_config(config_path)
         self.secrets = load_secrets(secrets_path)
         self.features = []
@@ -596,21 +601,11 @@ class LifecycleManager:
                 raise ValueError(f"No champion model found for segment '{segment_value}'.")
 
             model = self._load_model(Path(champion["artifact_path"]))
-            source_name = self.live_scoring_cfg.get("source_name", "live_scoring")
-            snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})
-            selector = snapshot_cfg.get("selector", "latest")
-            explicit_date = snapshot_cfg.get("explicit_date")
-
-            frame = self.source_loader.load_frame(
-                source_name,
-                latest_snapshot=selector == "latest",
-                snapshot_date=explicit_date if explicit_date else None,
-                segment_column=self.development_cfg.get("segment_column"),
-                segment_value=None if segment_value == "ALL" else segment_value,
-            )
+            model_feature_names = self._resolve_model_feature_names(model)
+            frame = self._load_live_source_frame(segment_value)
             if frame.empty:
                 raise ValueError("No rows returned for live scoring.")
-            frame = self.data_loader.validate_data(frame, feature_names=model.raw_feature_names)
+            frame = self.data_loader.validate_data(frame, feature_names=model_feature_names)
 
             scorer = self._build_scorer(model, champion, run.run_id, segment_value)
             results = scorer.score(frame)
@@ -625,7 +620,7 @@ class LifecycleManager:
             effective_snapshot = pd.to_datetime(frame[self.time_column]).max()
 
             monitoring_payload = {
-                    "input": self.monitoring.summarize_input(frame, model.raw_feature_names),
+                    "input": self.monitoring.summarize_input(frame, model_feature_names),
                 "scores": self.monitoring.summarize_scores(results),
             }
             monitoring_path = run.run_dir / "monitoring.json"
@@ -647,6 +642,7 @@ class LifecycleManager:
                 "output": output_summary,
                 "monitoring_path": str(monitoring_path),
             }
+            self._reset_live_explicit_date_after_success()
             self.registry.finish_run(run, "completed", summary)
             return summary
         except Exception as exc:
@@ -867,8 +863,9 @@ class LifecycleManager:
             stability = {}
             monitoring_payload = {"input": {}, "scores": {}}
             default_weights = get_ensemble_weights(self.config)
+            model_feature_names = self._resolve_model_feature_names(model)
             for window_name, frame in frames.items():
-                monitoring_payload["input"][window_name] = self.monitoring.summarize_input(frame, model.raw_feature_names)
+                monitoring_payload["input"][window_name] = self.monitoring.summarize_input(frame, model_feature_names)
                 if frame.empty:
                     continue
                 scorer = self._build_scorer(
@@ -1432,17 +1429,7 @@ class LifecycleManager:
         return self._load_live_frame_for_features(segment_value, feature_names=self.features or None)
 
     def _load_live_frame_for_features(self, segment_value: str, feature_names: list[str] | None) -> pd.DataFrame:
-        source_name = self.live_scoring_cfg.get("source_name", "input_features")
-        snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})
-        selector = snapshot_cfg.get("selector", "latest")
-        explicit_date = snapshot_cfg.get("explicit_date")
-        frame = self.source_loader.load_frame(
-            source_name,
-            latest_snapshot=selector == "latest",
-            snapshot_date=explicit_date if explicit_date else None,
-            segment_column=self.development_cfg.get("segment_column"),
-            segment_value=None if segment_value == "ALL" else segment_value,
-        )
+        frame = self._load_live_source_frame(segment_value)
         if frame.empty:
             raise ValueError("No rows returned for live scoring comparison.")
         validated = self.data_loader.validate_data(frame, feature_names=feature_names)
@@ -1451,6 +1438,49 @@ class LifecycleManager:
         else:
             self.features = list(self.data_loader.feature_names)
         return validated
+
+    def _load_live_source_frame(self, segment_value: str) -> pd.DataFrame:
+        source_name = self.live_scoring_cfg.get("source_name", "input_features")
+        snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})
+        selector = str(snapshot_cfg.get("selector", "today")).strip().lower()
+        explicit_date = snapshot_cfg.get("explicit_date")
+        start_date = snapshot_cfg.get("start_date")
+        end_date = snapshot_cfg.get("end_date")
+        base_kwargs = {
+            "segment_column": self.development_cfg.get("segment_column"),
+            "segment_value": None if segment_value == "ALL" else segment_value,
+        }
+
+        if explicit_date:
+            return self.source_loader.load_frame(
+                source_name,
+                snapshot_date=explicit_date,
+                **base_kwargs,
+            )
+        if start_date or end_date:
+            return self.source_loader.load_frame(
+                source_name,
+                start_date=start_date,
+                end_date=end_date,
+                **base_kwargs,
+            )
+        if selector == "today":
+            return self.source_loader.load_frame(source_name, current_day=True, **base_kwargs)
+        if selector == "latest":
+            return self.source_loader.load_frame(source_name, latest_snapshot=True, **base_kwargs)
+        raise ValueError(f"Unsupported live_scoring.snapshot.selector: {selector}")
+
+    def _reset_live_explicit_date_after_success(self) -> None:
+        snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})
+        explicit_date = snapshot_cfg.get("explicit_date")
+        if not explicit_date:
+            return
+        try:
+            snapshot_cfg["explicit_date"] = None
+            self.config.setdefault("live_scoring", {}).setdefault("snapshot", {})["explicit_date"] = None
+            save_config(self.config, self.config_path)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Failed to reset live_scoring.snapshot.explicit_date after successful run: %s", exc)
 
     def _fit_shadow_branch(self, *, train_df, calibration_frame, model_version: str, segment_value: str, run):
         if not bool(self.shadow_cfg.get("enabled", False)):
@@ -1664,6 +1694,12 @@ class LifecycleManager:
             "old": self._sample_payload(row, suffix="_old"),
             "new": self._sample_payload(row, suffix="_new"),
         }
+
+    def _resolve_model_feature_names(self, model) -> list[str]:
+        feature_names = getattr(model, "raw_feature_names", None) or getattr(model, "feature_names", None)
+        if not feature_names:
+            raise ValueError("Loaded model artifact does not contain feature names required for validation.")
+        return [str(name).strip().lower() for name in feature_names if str(name).strip()]
 
     @staticmethod
     def _sample_payload(row: pd.Series, *, suffix: str) -> dict:
