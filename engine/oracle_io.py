@@ -246,6 +246,18 @@ class OracleConnector:
                 frame[score_column] = None
 
         available_columns = self._table_columns("results")
+        optional_score_columns = [
+            column
+            for column in (
+                "raw_shadow_score",
+                "raw_shadow_alert_band",
+                "raw_shadow_ae_score",
+                "raw_shadow_if_score",
+                "raw_shadow_md_score",
+                "score_delta",
+            )
+            if column in frame.columns and column.upper() in available_columns
+        ]
         optional_metadata_columns = [
             column
             for column in ("segment", "run_id", "model_version", "calibration_version", "weight_version")
@@ -259,6 +271,7 @@ class OracleConnector:
             "ae_score",
             "if_score",
             "md_score",
+            *optional_score_columns,
             *optional_metadata_columns,
             *self._reason_column_names(),
         ]
@@ -590,6 +603,12 @@ class OracleConnector:
                 AE_SCORE NUMBER(6,2),
                 IF_SCORE NUMBER(6,2),
                 MD_SCORE NUMBER(6,2),
+                RAW_SHADOW_SCORE NUMBER(6,2),
+                RAW_SHADOW_ALERT_BAND VARCHAR2(32),
+                RAW_SHADOW_AE_SCORE NUMBER(6,2),
+                RAW_SHADOW_IF_SCORE NUMBER(6,2),
+                RAW_SHADOW_MD_SCORE NUMBER(6,2),
+                SCORE_DELTA NUMBER(6,2),
                 SEGMENT VARCHAR2(64),
                 RUN_ID VARCHAR2(128),
                 MODEL_VERSION VARCHAR2(128),

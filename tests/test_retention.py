@@ -23,13 +23,6 @@ class RetentionManagerTests(unittest.TestCase):
                 "monitoring": {
                     "directory": str(root / "meta" / "monitoring"),
                 },
-                "sources": {
-                    "outputs": {
-                        "csv": {
-                            "directory": str(root / "output" / "live_scores"),
-                        }
-                    }
-                },
             }
 
             for path in (
@@ -37,7 +30,6 @@ class RetentionManagerTests(unittest.TestCase):
                 root / "artifacts" / "ALL" / "model.pkl",
                 root / "meta" / "runs" / "run-a" / "manifest.json",
                 root / "meta" / "monitoring" / "summary.json",
-                root / "output" / "live_scores" / "old.csv",
             ):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("x", encoding="utf-8")

@@ -22,9 +22,6 @@ class RetentionManager:
         self.champion_registry_path = Path(self.registry_cfg.get("champion_registry_file", self.meta_dir / "champions.json"))
         self.registry_lock_path = Path(self.registry_cfg.get("registry_lock_file", self.meta_dir / ".registry.lock"))
         self.monitoring_dir = Path(self.config.get("monitoring", {}).get("directory", self.meta_dir / "monitoring"))
-        self.csv_output_dir = Path(
-            self.config.get("sources", {}).get("outputs", {}).get("csv", {}).get("directory", "output/live_scores")
-        )
 
     def cleanup(self) -> dict:
         deleted = {
@@ -47,7 +44,6 @@ class RetentionManager:
             "artifacts": self._clear_directory(self.artifacts_dir),
             "runs": self._clear_directory(self.meta_dir / "runs"),
             "monitoring": self._clear_directory(self.monitoring_dir),
-            "csv_outputs": self._clear_directory(self.csv_output_dir),
             "registry_files": 0,
         }
 
@@ -67,7 +63,6 @@ class RetentionManager:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.monitoring_dir.mkdir(parents=True, exist_ok=True)
-        self.csv_output_dir.mkdir(parents=True, exist_ok=True)
         return deleted
 
     def _cleanup_files(self, directory: Path, max_age_days: int) -> int:

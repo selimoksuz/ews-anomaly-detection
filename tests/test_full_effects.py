@@ -3,7 +3,7 @@ import unittest
 from engine.config_loader import get_feature_list, load_config
 from engine.models import AnomalyModels
 from engine.scorer import AnomalyScorer
-from scripts.generate_data import generate_scoring_data, generate_training_data
+from tests.helpers import make_feature_frame, make_scoring_frame
 
 
 class FullEffectsTests(unittest.TestCase):
@@ -11,9 +11,9 @@ class FullEffectsTests(unittest.TestCase):
         config = load_config()
         features = get_feature_list(config)
 
-        train_df = generate_training_data(n=300, seed=42)
+        train_df = make_feature_frame(300, seed=42, include_split=True)
         train_df = train_df[train_df["split_flag"] == "TRAIN"].reset_index(drop=True)
-        scoring_df, _ = generate_scoring_data(n=250, seed=99)
+        scoring_df = make_scoring_frame(250, seed=99)
 
         model = AnomalyModels(config)
         model.fit(train_df[features].fillna(0).values)

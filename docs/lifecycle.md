@@ -1,6 +1,6 @@
 # EWS Lifecycle Architecture
 
-Bu proje artık Oracle-first, config-driven ve batch orchestrated anomaly lifecycle olarak çalışıyor.
+Bu proje Oracle-first, config-driven ve batch orchestrated anomaly lifecycle olarak calisir.
 
 ## High-Level Flow
 
@@ -25,7 +25,7 @@ flowchart TD
 
 ## Batch Execution
 
-`cli.py run-batch` config içindeki `batch_execution` bölümüne göre şu akışı yönetir:
+`cli.py run-batch` config icindeki `batch_execution` bolumune gore su akisi yonetir:
 
 1. Champion yoksa bootstrap `develop`
 2. Gerekirse `tune-weights`
@@ -33,10 +33,10 @@ flowchart TD
 4. Gerekirse bootstrap `promote`
 5. `score-live`
 
-Champion varsa steady-state batch akışı:
+Champion varsa steady-state batch akisi:
 
 1. `score-live`
-2. `retrain` veya `develop` ile challenger üret
+2. `retrain` veya `develop` ile challenger uret
 3. `tune-weights`
 4. `evaluate-outcomes`
 5. `compare`
@@ -47,18 +47,18 @@ Champion varsa steady-state batch akışı:
 ### Inputs
 
 - `ZT_VAR2.EWS_INPUT_FEATURES`
-  Tek append-only feature tablosu. Development ve live scoring aynı kaynaktan okunur.
+  Tek append-only feature tablosu. Development ve live scoring ayni kaynaktan okunur.
 - `ZT_VAR2.EWS_OUTCOME_LABELS`
-  Outcome tablosu. Weight tuning ve validation için `30+` primary, `default` monitoring olarak kullanılır.
+  Outcome tablosu. Weight tuning ve validation icin `30+` primary, `default` monitoring olarak kullanilir.
 
 ### Outputs
 
 - `ZT_VAR2.EWS_ALERT_RESULTS`
-  Müşteri-snapshot seviyesinde özet skor, band ve metadata.
+  Musteri-snapshot seviyesinde ozet skor, band ve metadata.
 - `ZT_VAR2.EWS_ALERT_DETAILS`
-  Alert alan müşteriler için top-N hızlı explainability satırları.
+  Alert alan musteriler icin top-N hizli explainability satirlari.
 - `ZT_VAR2.EWS_ALERT_FEATURE_EFFECTS`
-  Tüm feature efektleri, human-readable uzun format explainability tablosu.
+  Tum feature efektleri, human-readable uzun format explainability tablosu.
 
 ## Local Runtime State
 
@@ -72,30 +72,9 @@ flowchart LR
     K["logs/"] --> L["CLI and runtime logs"]
 ```
 
-## Notebook Simulation
-
-`notebooks/ews_simulation.ipynb` notebook’u lifecycle’ı görsel olarak simüle etmek için üretilir.
-
-Notebook içinde:
-
-- aktif Oracle tablo isimleri
-- local runtime klasörleri
-- `reset-runtime`
-- `prepare-demo-data`
-- `run-batch`
-- manuel `develop -> tune -> evaluate -> promote -> score-live`
-- Oracle örnek çıktı okumaları
-- registry dosyalarının görünümü
-
-Notebook yeniden üretmek için:
-
-```bash
-python cli.py build-notebook
-```
-
 ## Manual Reset
 
-Local runtime state’i temizlemek için:
+Local runtime state'i temizlemek icin:
 
 ```bash
 python cli.py reset-runtime
@@ -107,10 +86,9 @@ Bu komut:
 - `artifacts/`
 - `meta/runs/`
 - `meta/monitoring/`
-- lokal CSV output klasörünü
 
-temizler ve registry dosyalarını sıfırdan oluşturur. Oracle tablolarını silmez.
+temizler ve registry dosyalarini sifirdan olusturur. Oracle tablolari silmez.
 
 ## Airflow Entry Point
 
-`orchestration/airflow/ews_batch_dag.py` tek giriş noktası olarak `cli.py run-batch` çağırır. Böylece scheduling katmanı ince kalır; iş mantığı uygulama içinde kalır.
+`orchestration/airflow/ews_batch_dag.py` tek giris noktasi olarak `cli.py run-batch` cagirir. Boylece scheduling katmani ince kalir; is mantigi uygulama icinde kalir.

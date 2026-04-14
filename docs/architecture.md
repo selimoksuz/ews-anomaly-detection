@@ -4,15 +4,14 @@
 
 ```text
 python cli.py setup                -> legacy Oracle tablo kurulumu
-python cli.py load                 -> sentetik veri uret ve yukle
 python cli.py develop              -> aday model egit
 python cli.py tune-weights         -> 30+ ile weight optimize et
 python cli.py evaluate-outcomes    -> 30+ / default outcome metrikleri uret
 python cli.py promote              -> champion belirle
 python cli.py score-live           -> latest snapshot skorla
 python cli.py run-batch            -> config-driven batch orchestration
-python cli.py build-notebook       -> simulation notebook uret
 python cli.py reset-runtime        -> local runtime state temizle
+python cli.py cleanup              -> retention kurallarina gore local runtime temizligi
 ```
 
 ## Folder Structure
@@ -25,6 +24,7 @@ ews-anomaly-detection/
 |
 |-- config/
 |   |-- pipeline_config.yaml
+|   `-- secrets.yaml
 |
 |-- docs/
 |   |-- architecture.md
@@ -39,10 +39,10 @@ ews-anomaly-detection/
 |   |-- lifecycle.py
 |   |-- models.py
 |   |-- monitoring.py
-|   |-- notebook_builder.py
 |   |-- oracle_io.py
 |   |-- output_writer.py
 |   |-- pipeline.py
+|   |-- preprocessing.py
 |   |-- registry.py
 |   |-- retention.py
 |   |-- scorer.py
@@ -52,9 +52,7 @@ ews-anomaly-detection/
 |
 |-- scripts/
 |   |-- __init__.py
-|   |-- generate_data.py
-|   |-- oracle_config.py
-|   `-- setup_oracle.py
+|   `-- oracle_config.py
 |
 |-- legacy/
 |   |-- __init__.py
@@ -62,20 +60,19 @@ ews-anomaly-detection/
 |   |-- model.py
 |   `-- run.py
 |
-|-- notebooks/
-|   `-- ews_simulation.ipynb
-|
 |-- orchestration/
 |   `-- airflow/
 |       `-- ews_batch_dag.py
 |
 `-- tests/
+    |-- helpers.py
     |-- test_calibration.py
     |-- test_full_effects.py
     |-- test_model_stability.py
-    |-- test_notebook_builder.py
+    |-- test_preprocessing.py
     |-- test_registry.py
     |-- test_retention.py
+    |-- test_scorer.py
     |-- test_weight_tuning.py
     `-- test_windowing.py
 ```
@@ -89,7 +86,7 @@ ews-anomaly-detection/
 - `logs/`
   CLI and lifecycle logs
 - `output/`
-  Optional local CSV outputs
+  Opsiyonel lokal runtime ciktilari
 
 ## Oracle Tables
 

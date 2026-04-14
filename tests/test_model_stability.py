@@ -4,7 +4,7 @@ import numpy as np
 
 from engine.config_loader import get_feature_list, load_config
 from engine.models import AnomalyModels
-from scripts.generate_data import generate_scoring_data, generate_training_data
+from tests.helpers import make_feature_frame, make_scoring_frame
 
 
 class ModelStabilityTests(unittest.TestCase):
@@ -12,9 +12,9 @@ class ModelStabilityTests(unittest.TestCase):
         config = load_config()
         features = get_feature_list(config)
 
-        train_df = generate_training_data(n=800, seed=42)
+        train_df = make_feature_frame(800, seed=42, include_split=True)
         train_df = train_df[train_df["split_flag"] == "TRAIN"].reset_index(drop=True)
-        scoring_df, _ = generate_scoring_data(n=250, seed=99)
+        scoring_df = make_scoring_frame(250, seed=99)
 
         X_train = train_df[features].fillna(0).values
         X_score = scoring_df[features].fillna(0).values

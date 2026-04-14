@@ -1,8 +1,7 @@
-"""Output writers for scored results."""
+"""Oracle-only output writer for scored results."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -11,7 +10,7 @@ from engine.oracle_io import OracleConnector
 
 
 class OutputWriter:
-    """Write scored outputs to CSV or Oracle according to config."""
+    """Write scored outputs only to Oracle."""
 
     def __init__(self, config: dict, secrets: Optional[dict] = None):
         self.config = config
@@ -22,50 +21,12 @@ class OutputWriter:
         self.scoring_cfg = config.get("scoring", {})
 
     def write(self, results: pd.DataFrame, snapshot_date, *, run_id: str, segment: str):
-        backend = self.output_cfg.get("backend", "csv")
-        if backend == "csv":
-            return self._write_csv(results, snapshot_date, run_id=run_id, segment=segment)
-        if backend == "oracle":
-            return self._write_oracle(results, snapshot_date)
-        raise ValueError(f"Unsupported output backend: {backend}")
-
-    def _write_csv(self, results: pd.DataFrame, snapshot_date, *, run_id: str, segment: str):
-        directory = Path(self.output_cfg.get("csv", {}).get("directory", "output/live_scores"))
-        directory.mkdir(parents=True, exist_ok=True)
-        snapshot_value = pd.Timestamp(snapshot_date).date().isoformat()
-
-        results_path = directory / f"results_{segment}_{snapshot_value}_{run_id}.csv"
-        details_path = directory / f"details_{segment}_{snapshot_value}_{run_id}.csv"
-        full_effects_path = directory / f"full_effects_{segment}_{snapshot_value}_{run_id}.csv"
-
-        output = results.copy()
-        output[self.time_column] = pd.Timestamp(snapshot_date)
-        output.to_csv(results_path, index=False)
-
-        detail_rows = self._build_effect_rows(
-            results,
-            snapshot_date,
-            detail_column="detay",
-            alerts_only=True,
-        )
-        pd.DataFrame(detail_rows).to_csv(details_path, index=False)
-
-        full_effect_rows = []
-        if self.scoring_cfg.get("persist_full_feature_effects", False):
-            full_effect_rows = self._build_effect_rows(
-                results,
-                snapshot_date,
-                detail_column="full_detay",
-                alerts_only=self.scoring_cfg.get("full_effect_scope", "all") == "alerts_only",
+        backend = self.output_cfg.get("backend", "oracle")
+        if backend != "oracle":
+            raise ValueError(
+                f"Output backend '{backend}' is configured, but this project now supports Oracle only."
             )
-            pd.DataFrame(full_effect_rows).to_csv(full_effects_path, index=False)
-
-        return {
-            "backend": "csv",
-            "results_path": str(results_path),
-            "details_path": str(details_path),
-            "full_effects_path": str(full_effects_path) if full_effect_rows else None,
-        }
+        return self._write_oracle(results, snapshot_date)
 
     def _write_oracle(self, results: pd.DataFrame, snapshot_date):
         results_frame = results.copy()

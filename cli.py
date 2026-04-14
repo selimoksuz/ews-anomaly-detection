@@ -3,12 +3,9 @@ EWS Anomaly Detection CLI.
 
 Usage:
     python cli.py setup
-    python cli.py load
     python cli.py train
     python cli.py score
     python cli.py run
-    python cli.py test
-    python cli.py prepare-demo-data
     python cli.py develop [segment]
     python cli.py retrain [segment]
     python cli.py tune-weights [segment] [model_version] [apply]
@@ -17,25 +14,18 @@ Usage:
     python cli.py promote [segment] [model_version]
     python cli.py score-live [segment]
     python cli.py run-batch [segment]
+    python cli.py compare-preprocessing [segment]
     python cli.py reset-runtime
-    python cli.py build-notebook [output_path]
     python cli.py cleanup
 """
 
 import logging
 import sys
 from datetime import datetime
-from pathlib import Path
 
-import pandas as pd
-
-from engine.config_loader import get_feature_list, load_config
+from engine.config_loader import load_config
 from engine.lifecycle import LifecycleManager
-from engine.models import AnomalyModels
-from engine.notebook_builder import build_simulation_notebook
-from engine.oracle_io import OracleConnector
 from engine.pipeline import EWSPipeline
-from engine.scorer import AnomalyScorer
 
 
 def setup_logging(log_dir="logs", level="INFO", enable_file=True):
@@ -55,18 +45,6 @@ def cmd_setup(*_):
     pipe = EWSPipeline()
     pipe.setup()
 
-
-def cmd_load(*_):
-    from scripts.generate_data import generate_outcome_labels, generate_scoring_data, generate_training_data
-
-    pipe = EWSPipeline()
-    print("Generating synthetic data...")
-    train_df = generate_training_data()
-    scoring_df, _ = generate_scoring_data()
-    outcomes_df = generate_outcome_labels(train_df)
-    pipe.load_data(train_df, scoring_df, outcomes_df)
-
-
 def cmd_train(*_):
     pipe = EWSPipeline()
     pipe.train()
@@ -82,113 +60,6 @@ def cmd_run(*_):
     pipe = EWSPipeline()
     results = pipe.run()
     _print_summary(results)
-
-
-def cmd_test(*_):
-    """Oracle-free full test with synthetic data."""
-    from scripts.generate_data import generate_scoring_data, generate_training_data
-
-    config = load_config()
-    features = get_feature_list(config)
-
-    print("Generating data...")
-    train_df = generate_training_data()
-    scoring_df, labels = generate_scoring_data()
-
-    train_only = train_df[train_df["split_flag"] == "TRAIN"]
-    test_only = train_df[train_df["split_flag"] == "TEST"]
-
-    print(f"Train: {len(train_only)}, Test: {len(test_only)}, Scoring: {len(scoring_df)}")
-
-    print("Training models...")
-    models = AnomalyModels(config)
-    models.fit(train_only[features].fillna(0).values)
-
-    print("Scoring...")
-    scorer = AnomalyScorer(config, models)
-    results = scorer.score(scoring_df)
-
-    _print_summary(results)
-
-    ev = results.merge(labels, on="customer_id")
-    al = ev[ev["alert_band"].isin(["KIRMIZI", "TURUNCU", "SARI"])]
-
-    print("\n=== VALIDATION ===")
-    for anomaly_type in ["A_UNIVARIATE", "B_MULTIVARIATE", "C_SUBTLE_DRIFT"]:
-        total = (ev["anomaly_type"] == anomaly_type).sum()
-        caught = (al["anomaly_type"] == anomaly_type).sum()
-        pct = caught / total * 100 if total > 0 else 0
-        print(f"  {anomaly_type}: {caught}/{total} (%{pct:.0f})")
-
-    total_anomalies = ev["is_anomaly"].sum()
-    total_caught = al["is_anomaly"].sum()
-    print(f"  TOPLAM: {total_caught}/{total_anomalies} (%{total_caught / total_anomalies * 100:.0f})")
-
-
-def cmd_prepare_demo_data(*_):
-    from scripts.generate_data import generate_outcome_labels, generate_scoring_data, generate_training_data
-
-    config = load_config()
-    sources_cfg = config.get("sources", {})
-
-    input_source_name = config.get("development", {}).get("source_name", "input_features")
-    live_source_name = config.get("live_scoring", {}).get("source_name", input_source_name)
-    train_path = Path(sources_cfg.get(input_source_name, {}).get("csv", {}).get("path", "data/lifecycle_input_features.csv"))
-    score_path = Path(sources_cfg.get(live_source_name, {}).get("csv", {}).get("path", "data/lifecycle_input_features.csv"))
-    outcomes_path = Path(sources_cfg.get("outcomes", {}).get("csv", {}).get("path", "data/lifecycle_outcomes.csv"))
-
-    train_df = generate_training_data()
-    scoring_df, _ = generate_scoring_data()
-    outcomes_df = generate_outcome_labels(train_df)
-
-    dev_backend = sources_cfg.get(input_source_name, {}).get("backend", "csv")
-    score_backend = sources_cfg.get(live_source_name, {}).get("backend", "csv")
-    outcome_backend = sources_cfg.get("outcomes", {}).get("backend", "csv")
-
-    if dev_backend == score_backend == outcome_backend == "oracle":
-        dev_table = sources_cfg.get(input_source_name, {}).get("oracle", {}).get("table", "input_features")
-        live_table = sources_cfg.get(live_source_name, {}).get("oracle", {}).get("table", dev_table)
-        combined_input = pd.concat(
-            [
-                train_df.drop(columns=["split_flag"], errors="ignore"),
-                scoring_df.drop(columns=["split_flag"], errors="ignore"),
-            ],
-            ignore_index=True,
-        )
-        with OracleConnector(config) as ora:
-            ora.setup_tables(drop_existing=True)
-            if dev_table == live_table:
-                ora.replace_rows(dev_table, combined_input)
-            else:
-                ora.replace_rows(dev_table, train_df)
-                ora.replace_rows(live_table, scoring_df)
-            ora.replace_rows("outcomes", outcomes_df)
-        print(ora._qualified_table_name(dev_table))
-        if live_table != dev_table:
-            print(ora._qualified_table_name(live_table))
-        print(ora._qualified_table_name("outcomes"))
-        return
-
-    train_path.parent.mkdir(parents=True, exist_ok=True)
-    score_path.parent.mkdir(parents=True, exist_ok=True)
-    outcomes_path.parent.mkdir(parents=True, exist_ok=True)
-    combined_input = pd.concat(
-        [
-            train_df.drop(columns=["split_flag"], errors="ignore"),
-            scoring_df.drop(columns=["split_flag"], errors="ignore"),
-        ],
-        ignore_index=True,
-    )
-    if train_path == score_path:
-        combined_input.to_csv(train_path, index=False)
-    else:
-        train_df.to_csv(train_path, index=False)
-        scoring_df.to_csv(score_path, index=False)
-    outcomes_df.to_csv(outcomes_path, index=False)
-
-    print(train_path)
-    print(score_path)
-    print(outcomes_path)
 
 
 def cmd_develop(*args):
@@ -250,15 +121,15 @@ def cmd_run_batch(*args):
     print(result)
 
 
+def cmd_compare_preprocessing(*args):
+    manager = LifecycleManager()
+    result = manager.compare_preprocessing(segment=args[0] if args else None)
+    print(result["comparison_path"])
+
+
 def cmd_reset_runtime(*_):
     manager = LifecycleManager()
     result = manager.reset_runtime()
-    print(result)
-
-
-def cmd_build_notebook(*args):
-    output_path = args[0] if args else "notebooks/ews_simulation.ipynb"
-    result = build_simulation_notebook(output_path)
     print(result)
 
 
@@ -291,12 +162,9 @@ def _print_summary(results):
 
 COMMANDS = {
     "setup": cmd_setup,
-    "load": cmd_load,
     "train": cmd_train,
     "score": cmd_score,
     "run": cmd_run,
-    "test": cmd_test,
-    "prepare-demo-data": cmd_prepare_demo_data,
     "develop": cmd_develop,
     "retrain": cmd_retrain,
     "tune-weights": cmd_tune_weights,
@@ -305,8 +173,8 @@ COMMANDS = {
     "promote": cmd_promote,
     "score-live": cmd_score_live,
     "run-batch": cmd_run_batch,
+    "compare-preprocessing": cmd_compare_preprocessing,
     "reset-runtime": cmd_reset_runtime,
-    "build-notebook": cmd_build_notebook,
     "cleanup": cmd_cleanup,
 }
 

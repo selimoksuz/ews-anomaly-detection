@@ -50,12 +50,16 @@ class AnomalyScorer:
         time_col = self.config["pipeline"]["time_column"]
         segment_col = self.config.get("development", {}).get("segment_column")
 
-        X_raw = df[self.features].fillna(0).values
-        X = self.models.transform(X_raw)
+        raw_feature_frame = df[self.features]
+        X = self.models.transform(raw_feature_frame)
         n_rows = len(X)
 
         component = self.component_scores(df)
         expected_X = self.models.ae_reconstruct(X)
+        ae_weight = float(self.weights["autoencoder"])
+        baseline_X = ae_weight * expected_X
+        actual_values = self.models.actual_values(raw_feature_frame)
+        expected_values = self.models.inverse_transform(baseline_X)
 
         ae_c = self.models.ae_contribution(X)
         if_c = self.models.if_contribution(X)
@@ -84,14 +88,8 @@ class AnomalyScorer:
                 label = get_label(self.config, feature_name)
                 contribution_pct = unified[row_index, feature_index] * 100
 
-                actual = (
-                    X[row_index, feature_index] * self.models.scaler.scale_[feature_index]
-                    + self.models.scaler.mean_[feature_index]
-                )
-                expected = (
-                    expected_X[row_index, feature_index] * self.models.scaler.scale_[feature_index]
-                    + self.models.scaler.mean_[feature_index]
-                )
+                actual = actual_values[row_index, feature_index]
+                expected = expected_values[row_index, feature_index]
                 if abs(expected) > 1e-6:
                     pct_change = ((actual - expected) / abs(expected)) * 100
                 else:
@@ -141,8 +139,18 @@ class AnomalyScorer:
         result["ae_score"] = result["ae_cal"]
         result["if_score"] = result["if_cal"]
         result["md_score"] = result["md_cal"]
+        for index in range(1, self.top_n + 1):
+            column_name = f"reason_{index}"
+            result[column_name] = result["neden"].apply(
+                lambda value, position=index - 1: self._reason_at_position(value, position)
+            )
 
         for key, value in self.metadata.items():
+            # Preserve row-level columns (for example entity/segment identifiers)
+            # that already came from the input frame. Metadata should only fill
+            # absent columns, not overwrite per-record context.
+            if key in result.columns and not result[key].isna().all():
+                continue
             result[key] = value
 
         result = result.sort_values("anomaly_score", ascending=False).reset_index(drop=True)
@@ -153,7 +161,7 @@ class AnomalyScorer:
         return result
 
     def component_scores(self, df: pd.DataFrame) -> dict[str, np.ndarray]:
-        X = self.models.transform(df[self.features].fillna(0).values)
+        X = self.models.transform(df[self.features])
         raw_scores = {
             "ae_raw": self.models.raw_ae_scores(X),
             "if_raw": self.models.raw_if_scores(X),
@@ -180,6 +188,13 @@ class AnomalyScorer:
             **calibrated_scores,
             "ensemble_score": ensemble,
         }
+
+    @staticmethod
+    def _reason_at_position(value: str, position: int):
+        if not isinstance(value, str):
+            return None
+        parts = [part.strip() for part in value.split("|") if part.strip()]
+        return parts[position] if position < len(parts) else None
 
     def _assign_band(self, scores):
         bands = []

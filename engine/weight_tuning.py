@@ -26,8 +26,11 @@ class WeightOptimizer:
         self.config = config
         cfg = config.get("weight_optimization", {})
         self.grid_step = float(cfg.get("grid_step", 0.1))
+        self.min_component_weight = float(cfg.get("min_component_weight", 0.0))
         self.objective = cfg.get("objective", "precision_at_top_percent")
         self.top_percent = float(cfg.get("top_percent", 0.1))
+        self.selection_tolerance = float(cfg.get("selection_tolerance", 0.0))
+        self.prefer_balanced_within_tolerance = bool(cfg.get("prefer_balanced_within_tolerance", False))
 
     def optimize(
         self,
@@ -59,15 +62,22 @@ class WeightOptimizer:
         if not candidates:
             raise ValueError("No weight candidates were generated for optimization.")
 
-        candidates.sort(
-            key=lambda item: (
-                item["objective_value"],
-                item["tuning_metrics"]["primary"]["recall_at_top_percent"],
-                item["tuning_metrics"]["primary"]["lift_at_top_percent"],
-            ),
-            reverse=True,
-        )
+        candidates.sort(key=self._candidate_sort_key, reverse=True)
         best = candidates[0]
+        if self.prefer_balanced_within_tolerance and self.selection_tolerance > 0:
+            threshold = best["objective_value"] - self.selection_tolerance
+            near_best = [item for item in candidates if item["objective_value"] >= threshold]
+            if near_best:
+                near_best.sort(
+                    key=lambda item: (
+                        self._weight_diversity(item["weights"]),
+                        item["tuning_metrics"]["primary"]["recall_at_top_percent"],
+                        item["tuning_metrics"]["primary"]["lift_at_top_percent"],
+                        item["objective_value"],
+                    ),
+                    reverse=True,
+                )
+                best = near_best[0]
         validation_metrics = self.evaluate(
             validation_frame,
             best["weights"],
@@ -158,12 +168,14 @@ class WeightOptimizer:
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=False)
 
-    @staticmethod
-    def _weight_grid(step: float):
+    def _weight_grid(self, step: float):
         units = max(1, int(round(1.0 / step)))
+        min_units = int(round(self.min_component_weight * units))
         for ae_units in range(units + 1):
             for if_units in range(units - ae_units + 1):
                 md_units = units - ae_units - if_units
+                if min_units > 0 and min(ae_units, if_units, md_units) < min_units:
+                    continue
                 weights = normalize_ensemble_weights(
                     {
                         "autoencoder": ae_units / units,
@@ -172,3 +184,20 @@ class WeightOptimizer:
                     }
                 )
                 yield weights
+
+    @staticmethod
+    def _weight_diversity(weights: dict) -> float:
+        values = np.asarray(list(normalize_ensemble_weights(weights).values()), dtype=float)
+        values = values[values > 0]
+        if len(values) == 0:
+            return 0.0
+        return float(-(values * np.log(values)).sum())
+
+    @staticmethod
+    def _candidate_sort_key(item: dict):
+        return (
+            item["objective_value"],
+            item["tuning_metrics"]["primary"]["recall_at_top_percent"],
+            item["tuning_metrics"]["primary"]["lift_at_top_percent"],
+            WeightOptimizer._weight_diversity(item["weights"]),
+        )

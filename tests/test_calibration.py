@@ -5,14 +5,14 @@ import numpy as np
 from engine.calibration import ScoreCalibrator
 from engine.config_loader import get_feature_list, load_config
 from engine.models import AnomalyModels
-from scripts.generate_data import generate_training_data
+from tests.helpers import make_feature_frame
 
 
 class CalibrationTests(unittest.TestCase):
     def test_empirical_calibration_maps_raw_scores_into_score_range(self):
         config = load_config()
         features = get_feature_list(config)
-        train_df = generate_training_data(n=600, seed=42)
+        train_df = make_feature_frame(600, seed=42, include_split=True)
         train_df = train_df[train_df["split_flag"] == "TRAIN"].reset_index(drop=True)
 
         model = AnomalyModels(config)

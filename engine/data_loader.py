@@ -63,7 +63,11 @@ class DataLoader:
                 f"Input DataFrame is missing required columns: {', '.join(missing_columns)}"
             )
 
-        required_nulls = frame[required_columns].isnull().sum()
+        non_feature_required_columns = [self.id_column, self.time_column]
+        if self.split_column in frame.columns:
+            non_feature_required_columns.append(self.split_column)
+
+        required_nulls = frame[non_feature_required_columns].isnull().sum()
         columns_with_nulls = required_nulls[required_nulls > 0]
         if not columns_with_nulls.empty:
             details = ", ".join(
@@ -85,9 +89,9 @@ class DataLoader:
         invalid_numeric_columns: list[str] = []
         for feature_name in self.feature_names:
             converted = pd.to_numeric(frame[feature_name], errors="coerce")
-            if converted.isnull().any():
+            invalid_mask = converted.isnull() & frame[feature_name].notnull()
+            if invalid_mask.any():
                 invalid_numeric_columns.append(feature_name)
-                continue
             frame[feature_name] = converted.astype(float)
 
         if invalid_numeric_columns:

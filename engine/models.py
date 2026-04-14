@@ -10,7 +10,9 @@ import torch.nn as nn
 from scipy.stats import rankdata
 from sklearn.covariance import LedoitWolf
 from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
+
+from engine.config_loader import get_feature_list
+from engine.preprocessing import FeaturePreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,9 @@ class AnomalyModels:
         self.config = config
         self.training_cfg = config.get("training", {})
         self.random_seed = int(self.training_cfg.get("random_seed", 42))
-        self.scaler = StandardScaler()
+        self.feature_names = get_feature_list(config)
+        self.preprocessor = FeaturePreprocessor(config, self.feature_names)
+        self.scaler = self.preprocessor.scaler
         self.ae = None
         self.iso = None
         self.lw = None
@@ -61,7 +65,8 @@ class AnomalyModels:
         """X_raw: numpy array (n_samples, n_features)."""
         self._set_random_seed()
 
-        X = self.scaler.fit_transform(X_raw).astype(np.float32, copy=False)
+        X = self.preprocessor.fit_transform(X_raw).astype(np.float32, copy=False)
+        self.scaler = self.preprocessor.scaler
         self.n_features = X.shape[1]
 
         mc = self.config.get("models", self.config.get("model", {}))
@@ -100,7 +105,18 @@ class AnomalyModels:
 
     def transform(self, X_raw):
         """Scale raw data."""
-        return self.scaler.transform(X_raw).astype(np.float32, copy=False)
+        return self.preprocessor.transform(X_raw).astype(np.float32, copy=False)
+
+    def inverse_transform(self, X_scaled):
+        """Back-project scaled features into display space."""
+        return self.preprocessor.inverse_transform(X_scaled)
+
+    def actual_values(self, X_raw):
+        """Return bounded/imputed raw values used for display."""
+        return self.preprocessor.prepare_actual_values(X_raw)
+
+    def preprocessing_summary(self):
+        return self.preprocessor.summarize()
 
     # Per-model raw scores
 

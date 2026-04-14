@@ -119,26 +119,95 @@ scoring:
 training:
   random_seed: 42
 
+preprocessing:
+  enabled: true
+  missing:
+    default_strategy: median
+    feature_strategies:
+      txn_count_weekly:
+        strategy: constant
+        value: 0
+      min_payment_only_count_4w:
+        strategy: constant
+        value: 0
+      payment_reversal_count_4w:
+        strategy: constant
+        value: 0
+      nsf_count_4w:
+        strategy: constant
+        value: 0
+      overlimit_count_4w:
+        strategy: constant
+        value: 0
+      channel_count_4w:
+        strategy: min
+  hard_bounds:
+    enabled: true
+    rules:
+      - feature: dpd_current
+        lower: 0
+      - feature: utilization_ratio
+        lower: 0
+      - feature: outstanding_balance
+        lower: 0
+      - feature: txn_count_weekly
+        lower: 0
+      - feature: txn_amount_weekly
+        lower: 0
+      - feature: avg_txn_amount_weekly
+        lower: 0
+      - feature: payment_amount_this_week
+        lower: 0
+      - feature: dpd_max_4w
+        lower: 0
+      - feature: min_payment_only_count_4w
+        lower: 0
+      - feature: payment_to_min_ratio_4w
+        lower: 0
+      - feature: avg_days_to_payment_4w
+        lower: 0
+      - feature: payment_reversal_count_4w
+        lower: 0
+      - feature: nsf_count_4w
+        lower: 0
+      - feature: overlimit_count_4w
+        lower: 0
+      - feature: cash_advance_ratio_4w
+        lower: 0
+        upper: 1
+      - feature: deposit_amount_avg_4w
+        lower: 0
+      - feature: channel_count_4w
+        lower: 0
+  winsorization:
+    enabled: true
+    lower_quantile: 0.005
+    upper_quantile: 0.995
+  log1p:
+    enabled: false
+    features:
+      - outstanding_balance
+      - txn_amount_weekly
+      - avg_txn_amount_weekly
+      - payment_amount_this_week
+      - deposit_amount_avg_4w
+  scaler:
+    type: robust
+
 stability:
   report_path: models/ews_model_stability.json
 
 sources:
   input_features:
     backend: oracle
-    csv:
-      path: data/lifecycle_input_features.csv
     oracle:
       table: input_features
   outcomes:
     backend: oracle
-    csv:
-      path: data/lifecycle_outcomes.csv
     oracle:
       table: outcomes
   outputs:
     backend: oracle
-    csv:
-      directory: output/live_scores
     oracle:
       results_table_key: results
       details_table_key: details
@@ -201,9 +270,12 @@ weight_optimization:
     - dev
     - oot
   grid_step: 0.1
+  min_component_weight: 0.1
   min_positive_rows: 10
   objective: precision_at_top_percent
   top_percent: 0.1
+  selection_tolerance: 0.02
+  prefer_balanced_within_tolerance: true
   auto_apply: true
 
 monitoring:
@@ -215,6 +287,15 @@ live_scoring:
   snapshot:
     selector: latest
     explicit_date: null
+
+shadow_scoring:
+  enabled: true
+  mode: raw_shadow
+  use_shared_missing_policy: true
+  use_shared_hard_bounds: true
+  winsorization_enabled: false
+  log1p_enabled: false
+  scaler_type: standard
 
 batch_execution:
   bootstrap_if_missing_champion: true
