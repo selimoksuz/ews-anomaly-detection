@@ -2,143 +2,159 @@
 
 Bu proje Oracle-first, config-driven ve batch orchestrated anomaly lifecycle olarak calisir.
 
-## High-Level Flow
+## Simplified Folder-Mapped Flow
+
+Bu diyagramda:
+
+- `lane` = klasor / sorumluluk alani
+- `node` = ilgili dosyanin yaptigi is
+- `store` = Oracle tablo veya artifact deposu
 
 ```mermaid
 flowchart LR
-    subgraph OI["Lane 1 - Oracle Inputs"]
+    START([Baslangic])
+    END([Bitis])
+
+    subgraph L0["config/ + root"]
         direction TB
-        OI1["Input features table<br/>customer_id + snapshot_date + raw columns"]
-        OI2["Outcome labels table<br/>30+ primary / default monitoring"]
+        CLI["cli.py<br/>Komutu baslatir"]
+        CFG["config/pipeline_config.yaml<br/>Tum davranis kurallari"]
+        SEC["config/secrets.yaml<br/>Oracle baglanti bilgisi"]
+        CLOAD["engine/config_loader.py<br/>Config'i yukler ve normalize eder"]
     end
 
-    subgraph LC["Lane 2 - Lifecycle / Orchestrator"]
+    subgraph L1["engine/ - source + orchestration"]
         direction TB
-        LC1{"id_column ve time_column var mi?"}
-        LC2["Feature inference<br/>id,time,non-feature kolonlar feature listesinden dislanir<br/>ama raw frame'de kalir"]
-        LC3["Snapshot listesini cek"]
-        LC4["Window resolver"]
-        LC5["OOT = latest N snapshot"]
-        LC6["Calibration = latest M snapshot"]
-        LC7["OOT baslangicindan once kalan history"]
-        LC8["History'yi snapshot bazinda<br/>train / test oranla bol"]
-        LC9{"Sampling aktif mi?"}
-        LC10["Full train / full test"]
-        LC11["Time + missing + tail stratified sample"]
-        LC12{"Sample validation gecti mi?"}
-        LC13["Fallback: full train / full test"]
-        LC14["Prepared windows<br/>train / test / calibration / oot"]
-        LC15{"Weight tuning yapilsin mi?"}
-        LC16{"Promote edilsin mi?"}
-        LC17{"Champion var mi?"}
-        LC18["Config'e gore live scoring snapshot'ini Oracle'dan oku<br/>today / latest / explicit_date / range"]
+        LIFE["engine/lifecycle.py<br/>Run turunu secip akisi yonetir"]
+        SRC["engine/source_loader.py<br/>Oracle'dan frame okur"]
+        DLOAD["engine/data_loader.py<br/>id/time zorunlu kontrol + frame validation"]
+        WN["engine/windowing.py<br/>train/test/calibration/oot pencerelerini cozer"]
+        SMP["engine/sampling.py<br/>Opsiyonelse sample alir ve validate eder"]
     end
 
-    subgraph PM["Lane 3 - Preprocessing / Modeling"]
+    subgraph L2["engine/ - feature pipeline"]
         direction TB
-        PM1["Shared data contract"]
-        PM2["Missing handling<br/>feature-level strategy"]
-        PM3["Hard bounds apply"]
-        PM4{"Config'te include edilmis kategorik kolon var mi?"}
-        PM5["Categorical transform uret<br/>one_hot / freq / rarity / is_unseen / changed_from_prev / ordinal"]
-        PM6["Sadece numeric/raw feature ile devam"]
-        PM7["Generated feature space"]
-        PM8["Robust preprocessing<br/>winsor + scaler"]
-        PM9["Feature selection + branch routing"]
-        PM10["AE / IF / MD fit"]
-        PM11{"Calibration enabled ve<br/>calibration rows >= min_rows mi?"}
-        PM12["Calibration fit<br/>raw component score -> percentile mapping"]
-        PM13["Calibration skip"]
-        PM14{"Shadow scoring aktif mi?"}
-        PM15["Parallel shadow branch fit"]
-        PM16["Primary candidate hazir"]
-        PM17["Latest snapshot'a scorer uygula"]
-        PM18{"Calibration artifact var mi?"}
-        PM19["Raw component score kullan"]
-        PM20["Calibrated component score kullan"]
-        PM21["Weight set ile final anomaly_score uret"]
-        PM22{"Shadow aktif mi?"}
-        PM23["raw_shadow_score + score_delta uret"]
-        PM24["Scored dataframe<br/>1 row = 1 customer + 1 snapshot"]
+        PRE["engine/preprocessing.py<br/>missing + hard bounds + categorical transform + scaler"]
+        FS["engine/feature_selection.py<br/>exact duplicate drop + zero-variance continuous drop + branch routing"]
     end
 
-    subgraph RG["Lane 4 - Registry / Metadata"]
+    subgraph L3["engine/ - modeling"]
         direction TB
-        RG1["Candidate model artifact yaz"]
-        RG2["Calibration artifact yaz"]
-        RG3["Shadow artifact yaz"]
-        RG4["Weight version update"]
-        RG5["Champion pointer update"]
-        RG6["Run metadata / windows / sampling / monitoring yaz"]
-        RG7["Champion + active artifacts yukle"]
+        MOD["engine/models.py<br/>AE + IF + MD fit/transform"]
+        CAL["engine/calibration.py<br/>component raw score -> percentile map"]
+        WT["engine/weight_tuning.py<br/>30+ varsa weight optimize eder"]
+        SCR["engine/scorer.py<br/>Final score ve explainability uretir"]
     end
 
-    subgraph OB["Lane 5 - Output Builder / Monitoring"]
+    subgraph L4["engine/ - runtime output"]
         direction TB
-        OB1["Input monitoring"]
-        OB2["Score monitoring"]
-        OB3["Top-N reason row'larini ac"]
-        OB4["Tum feature effect row'larini ac"]
+        OUT["engine/output_writer.py<br/>Delete + insert output yazar"]
+        ORA["engine/oracle_io.py<br/>Oracle read/write ve DML"]
+        REG["engine/registry.py<br/>candidate / champion / run metadata"]
+        MON["engine/monitoring.py<br/>input ve score ozeti"]
+        RET["engine/retention.py<br/>eski artifact/log temizligi"]
     end
 
-    subgraph OO["Lane 6 - Oracle Outputs"]
+    subgraph S1["Oracle stores"]
         direction TB
-        OO1["EWS_ALERT_RESULTS<br/>final score + band + metadata"]
-        OO2["EWS_ALERT_DETAILS<br/>top-N explainability rows"]
-        OO3["EWS_ALERT_FEATURE_EFFECTS<br/>all feature effect rows"]
+        INP[("EWS_INPUT_FEATURES")]
+        OCM[("EWS_OUTCOME_LABELS")]
+        RES[("EWS_ALERT_RESULTS")]
+        DET[("EWS_ALERT_DETAILS")]
+        EFF[("EWS_ALERT_FEATURE_EFFECTS")]
     end
 
-    OI1 --> LC1
-    LC1 -- "Hayir" --> X1["Fail"]
-    LC1 -- "Evet" --> LC2 --> LC3 --> LC4
-    LC4 --> LC5
-    LC4 --> LC6
-    LC4 --> LC7 --> LC8 --> LC9
+    subgraph S2["meta/ + artifacts/"]
+        direction TB
+        ART[("model pickle + calibration + shadow artifacts")]
+        META[("run_registry + model_registry + champions + monitoring")]
+    end
 
-    LC9 -- "Hayir" --> LC10 --> LC14
-    LC9 -- "Evet" --> LC11 --> LC12
-    LC12 -- "Evet" --> LC14
-    LC12 -- "Hayir ve fallback=true" --> LC13 --> LC14
-    LC12 -- "Hayir ve fallback=false" --> X2["Fail"]
+    START --> CLI --> CLOAD
+    CFG --> CLOAD
+    SEC --> CLOAD
+    CLOAD --> LIFE
 
-    LC14 --> PM1
-    PM1 --> PM2 --> PM3 --> PM4
-    PM4 -- "Evet" --> PM5 --> PM7
-    PM4 -- "Hayir" --> PM6 --> PM7
-    PM7 --> PM8 --> PM9 --> PM10 --> PM11
+    LIFE --> RTYPE{"Run type?"}
 
-    PM11 -- "Evet" --> PM12 --> RG2
-    PM11 -- "Hayir" --> PM13 --> RG1
-    RG2 --> RG1
+    RTYPE -- "develop / retrain" --> DEV1["Oracle input'u oku"]
+    INP --> SRC
+    DEV1 --> SRC --> DLOAD --> WN
+    WN --> DEV2["train/test/calibration/oot frame'leri"]
+    DEV2 --> SAMPQ{"Sampling aktif mi?"}
+    SAMPQ -- "Hayir" --> DEV3["Full train/test kullan"]
+    SAMPQ -- "Evet" --> SMP --> SVAL{"Sample validation gecti mi?"}
+    SVAL -- "Hayir + fallback=true" --> DEV3
+    SVAL -- "Hayir + fallback=false" --> FAIL1([Fail])
+    SVAL -- "Evet" --> DEV4["Sampled train/test kullan"]
 
-    RG1 --> PM14
-    PM14 -- "Evet" --> PM15 --> RG3 --> PM16
-    PM14 -- "Hayir" --> PM16
+    DEV3 --> PRE
+    DEV4 --> PRE
+    PRE --> CATQ{"Config'te include edilen kategorik var mi?"}
+    CATQ -- "Yok" --> FEAT1["Numeric/raw feature space"]
+    CATQ -- "Var" --> FEAT2["Generated feature space"]
+    FEAT1 --> FS
+    FEAT2 --> FS
+    FS --> MOD
+    MOD --> CALQ{"Calibration acik ve<br/>min_rows saglandi mi?"}
+    CALQ -- "Hayir" --> MODART["Model artifact hazir"]
+    CALQ -- "Evet" --> CAL --> MODART
+    MODART --> REG
 
-    OI2 --> LC15
-    PM16 --> LC15
-    LC15 -- "Hayir" --> LC16
-    LC15 -- "Evet" --> RG4 --> LC16
-    LC16 -- "Hayir" --> RG6
-    LC16 -- "Evet" --> RG5 --> RG6
+    REG --> WTQ{"Outcome ve tune-weights var mi?"}
+    OCM --> WTQ
+    WTQ -- "Hayir" --> PROMQ{"Promote edilsin mi?"}
+    WTQ -- "Evet" --> WT --> PROMQ
+    PROMQ -- "Hayir" --> REG
+    PROMQ -- "Evet" --> REG
+    REG --> ART
+    REG --> META
 
-    RG6 --> LC17
-    LC17 -- "Hayir" --> X3["Live scoring bekler"]
-    LC17 -- "Evet" --> RG7 --> LC18
-    OI1 --> LC18
+    RTYPE -- "score-live" --> LIVE1["Champion'i yukle"]
+    LIVE1 --> REG --> ART
+    LIVE1 --> LIVESEL{"live_scoring.snapshot ne diyor?"}
+    LIVESEL -- "today" --> LIVE2["SYSDATE gununu cek"]
+    LIVESEL -- "explicit_date" --> LIVE3["O tarihi cek"]
+    LIVESEL -- "range" --> LIVE4["start_date/end_date range cek"]
+    LIVESEL -- "latest" --> LIVE5["En guncel snapshot'i cek"]
 
-    LC18 --> OB1 --> PM17 --> PM18
-    PM18 -- "Hayir" --> PM19 --> PM21
-    PM18 -- "Evet" --> PM20 --> PM21
-    PM21 --> PM22
-    PM22 -- "Evet" --> PM23 --> PM24
-    PM22 -- "Hayir" --> PM24
+    LIVE2 --> SRC
+    LIVE3 --> SRC
+    LIVE4 --> SRC
+    LIVE5 --> SRC
+    SRC --> LIVEVAL{"Frame bos mu?"}
+    LIVEVAL -- "Evet" --> FAIL2([Fail])
+    LIVEVAL -- "Hayir" --> DLOAD
+    DLOAD --> PRE
+    PRE --> FS
+    FS --> SCR
+    ART --> SCR
+    SCR --> CALUSE{"Calibration artifact var mi?"}
+    CALUSE -- "Hayir" --> SCORE1["Raw component score ile devam"]
+    CALUSE -- "Evet" --> SCORE2["Percentile-mapped component score kullan"]
+    SCORE1 --> SCORE3["Active weights ile anomaly_score uret"]
+    SCORE2 --> SCORE3
+    SCORE3 --> SHADOWQ{"Shadow aktif mi?"}
+    SHADOWQ -- "Hayir" --> OUTFRAME["Primary scored dataframe"]
+    SHADOWQ -- "Evet" --> SHADOW["raw_shadow_score + score_delta ekle"] --> OUTFRAME
 
-    PM24 --> OB2
-    PM24 --> OO1
-    PM24 --> OB3 --> OO2
-    PM24 --> OB4 --> OO3
-    OB2 --> RG6
+    OUTFRAME --> MON
+    OUTFRAME --> OUT
+    OUT --> ORA
+    ORA --> RES
+    ORA --> DET
+    ORA --> EFF
+    MON --> META
+    OUT --> META
+
+    RTYPE -- "compare / compare-preprocessing /\ncompare-feature-selection /\ncompare-sampling / evaluate-outcomes" --> EVAL["Ayni development artifacts ile\nanalitik comparison raporu uret"]
+    EVAL --> REG
+    EVAL --> META
+
+    RET --> META
+    RES --> END
+    DET --> END
+    EFF --> END
 ```
 
 ## Flow Notes
