@@ -17,6 +17,8 @@ Usage:
     python cli.py compare-preprocessing [segment]
     python cli.py compare-feature-selection [segment]
     python cli.py compare-sampling [segment]
+    python cli.py prepare-ticari-orta-faz1-demo [segment]
+    python cli.py run-ticari-orta-faz1-demo [segment]
     python cli.py reset-runtime
     python cli.py cleanup
 """
@@ -29,6 +31,7 @@ from pathlib import Path
 from engine.config_loader import load_config
 from engine.lifecycle import LifecycleManager
 from engine.pipeline import EWSPipeline
+from engine.ticari_orta_faz1_demo import prepare_ticari_orta_faz1_demo, run_ticari_orta_faz1_demo
 
 
 def setup_logging(log_dir="logs", level="INFO", enable_file=True):
@@ -142,6 +145,16 @@ def cmd_compare_sampling(*args):
     print(result["comparison_path"])
 
 
+def cmd_prepare_ticari_orta_faz1_demo(*args):
+    result = prepare_ticari_orta_faz1_demo(segment=args[0] if args else None)
+    print(result)
+
+
+def cmd_run_ticari_orta_faz1_demo(*args):
+    result = run_ticari_orta_faz1_demo(segment=args[0] if args else None)
+    print(result)
+
+
 def cmd_reset_runtime(*_):
     manager = LifecycleManager()
     result = manager.reset_runtime()
@@ -191,6 +204,8 @@ COMMANDS = {
     "compare-preprocessing": cmd_compare_preprocessing,
     "compare-feature-selection": cmd_compare_feature_selection,
     "compare-sampling": cmd_compare_sampling,
+    "prepare-ticari-orta-faz1-demo": cmd_prepare_ticari_orta_faz1_demo,
+    "run-ticari-orta-faz1-demo": cmd_run_ticari_orta_faz1_demo,
     "reset-runtime": cmd_reset_runtime,
     "cleanup": cmd_cleanup,
 }

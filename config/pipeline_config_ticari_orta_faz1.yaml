@@ -1,0 +1,368 @@
+pipeline:
+  name: ews_ticari_orta_faz1
+  version: 1.0.0
+  id_column: customer_id
+  time_column: snapshot_date
+  split_column: split_flag
+  non_feature_columns: []
+
+features:
+  mode: explicit
+  include_columns: []
+  exclude_columns: []
+  label_overrides: {}
+  categorical:
+    default_include: false
+    low_cardinality_threshold: 8
+    per_feature: {}
+  instant:
+    - name: bank_debt_to_turnover
+      label_tr: "Banka Borclulugu / Ciro"
+    - name: pos_volume_change
+      label_tr: "Tum Bankalar POS Hacmi Degisimi"
+    - name: bank_debt_to_ebitda
+      label_tr: "Banka Borclulugu / EBITDA"
+    - name: trade_receivables_to_turnover
+      label_tr: "Ticari Alacak / Ciro"
+    - name: profitability_to_turnover
+      label_tr: "Karlilik / Ciro"
+    - name: equity_change
+      label_tr: "Ozkaynak Degisimi"
+    - name: ifrs9_behavioral_pd
+      label_tr: "TFRS Davranis Temerrut Olasiligi"
+    - name: kkb_commercial_score
+      label_tr: "KKB Ticari Kredi Notu"
+    - name: kkb_indebtedness_index
+      label_tr: "KKB Ticari Borcluluk Endeksi"
+    - name: net_sales_change
+      label_tr: "Net Satis Degisimi"
+    - name: memzuc_limit_utilization_increase
+      label_tr: "Memzuc Limit Doluluk Orani"
+  rolling_4w:
+    - name: bank_debt_to_turnover__delta_1
+      label_tr: "Banka Borclulugu / Ciro Delta-1"
+    - name: pos_volume_change__delta_1
+      label_tr: "POS Hacmi Degisimi Delta-1"
+    - name: bank_debt_to_ebitda__delta_1
+      label_tr: "Banka Borclulugu / EBITDA Delta-1"
+    - name: trade_receivables_to_turnover__delta_1
+      label_tr: "Ticari Alacak / Ciro Delta-1"
+    - name: profitability_to_turnover__delta_1
+      label_tr: "Karlilik / Ciro Delta-1"
+    - name: equity_change__delta_1
+      label_tr: "Ozkaynak Degisimi Delta-1"
+    - name: ifrs9_behavioral_pd__delta_1
+      label_tr: "TFRS PD Delta-1"
+    - name: kkb_commercial_score__delta_1
+      label_tr: "KKB Not Delta-1"
+    - name: kkb_indebtedness_index__delta_1
+      label_tr: "KKB Borcluluk Delta-1"
+    - name: net_sales_change__delta_1
+      label_tr: "Net Satis Delta-1"
+    - name: memzuc_limit_utilization_increase__delta_1
+      label_tr: "Limit Doluluk Delta-1"
+  trend:
+    - name: bank_debt_to_turnover__self_zscore_6
+      label_tr: "Banka Borclulugu / Ciro Self-Z(6)"
+    - name: pos_volume_change__self_zscore_6
+      label_tr: "POS Hacmi Self-Z(6)"
+    - name: bank_debt_to_ebitda__self_zscore_6
+      label_tr: "Banka Borclulugu / EBITDA Self-Z(6)"
+    - name: trade_receivables_to_turnover__self_zscore_6
+      label_tr: "Ticari Alacak / Ciro Self-Z(6)"
+    - name: profitability_to_turnover__self_zscore_6
+      label_tr: "Karlilik / Ciro Self-Z(6)"
+    - name: equity_change__self_zscore_6
+      label_tr: "Ozkaynak Self-Z(6)"
+    - name: ifrs9_behavioral_pd__self_zscore_6
+      label_tr: "TFRS PD Self-Z(6)"
+    - name: kkb_commercial_score__self_zscore_6
+      label_tr: "KKB Not Self-Z(6)"
+    - name: kkb_indebtedness_index__self_zscore_6
+      label_tr: "KKB Borcluluk Self-Z(6)"
+    - name: net_sales_change__self_zscore_6
+      label_tr: "Net Satis Self-Z(6)"
+    - name: memzuc_limit_utilization_increase__self_zscore_6
+      label_tr: "Limit Doluluk Self-Z(6)"
+    - name: pos_volume_change__trend_slope_6
+      label_tr: "POS Hacmi Trend Egrisi(6)"
+    - name: net_sales_change__trend_slope_6
+      label_tr: "Net Satis Trend Egrisi(6)"
+    - name: pos_volume_change__population_percentile
+      label_tr: "POS Hacmi Populasyon Persentili"
+    - name: pos_volume_change__vs_population_median_delta
+      label_tr: "POS Hacmi - Populasyon Medyani"
+    - name: net_sales_change__population_percentile
+      label_tr: "Net Satis Populasyon Persentili"
+    - name: net_sales_change__vs_population_median_delta
+      label_tr: "Net Satis - Populasyon Medyani"
+
+models:
+  autoencoder:
+    hidden_layers: [48, 24]
+    latent_dim: 8
+    epochs: 120
+    learning_rate: 0.001
+    batch_size: 256
+    validation_fraction: 0.1
+    early_stopping_patience: 18
+    min_epochs: 40
+    min_improvement: 1.0e-5
+    dropout: 0.0
+    reconstruction_loss: mse
+  isolation_forest:
+    n_estimators: 250
+    contamination: 0.08
+    max_samples: auto
+    random_state: 42
+  mahalanobis:
+    covariance_estimator: ledoit_wolf
+    shrinkage: ledoit_wolf
+    score_percentile_cap: 99.5
+
+ensemble:
+  weights:
+    ae: 0.45
+    if: 0.35
+    md: 0.20
+
+alert_bands:
+  normal:
+    min_score: 0
+    max_score: 60
+  sari:
+    min_score: 60
+    max_score: 75
+  turuncu:
+    min_score: 75
+    max_score: 90
+  kirmizi:
+    min_score: 90
+    max_score: 100
+
+scoring:
+  score_min: 0
+  score_max: 100
+  top_n_reasons: 3
+  persist_full_feature_effects: true
+  full_effect_scope: all
+
+training:
+  random_seed: 42
+
+feature_selection:
+  enabled: true
+  drop_zero_variance_continuous: true
+  drop_exact_duplicates: true
+  branch_routing:
+    enabled: true
+    autoencoder:
+      exclude_raw_types: []
+      exclude_transforms: []
+    isolation_forest:
+      exclude_raw_types: []
+      exclude_transforms: []
+    mahalanobis:
+      exclude_raw_types:
+        - binary
+      exclude_transforms: []
+
+preprocessing:
+  enabled: true
+  missing:
+    default_strategy: median
+  hard_bounds:
+    enabled: true
+    rules:
+      - feature: bank_debt_to_turnover
+        lower: 0
+      - feature: bank_debt_to_ebitda
+        lower: 0
+      - feature: trade_receivables_to_turnover
+        lower: 0
+      - feature: ifrs9_behavioral_pd
+        lower: 0
+        upper: 1
+      - feature: kkb_commercial_score
+        lower: 0
+      - feature: kkb_indebtedness_index
+        lower: 0
+      - feature: memzuc_limit_utilization_increase
+        lower: 0
+  winsorization:
+    enabled: true
+    lower_quantile: 0.01
+    upper_quantile: 0.99
+  log1p:
+    enabled: false
+    features: []
+  scaler:
+    type: robust
+
+stability:
+  report_path: models/ticari_orta_faz1_stability.json
+
+sources:
+  native_features:
+    backend: oracle
+    oracle:
+      table: native_features
+  input_features:
+    backend: oracle
+    oracle:
+      table: input_features
+  outcomes:
+    backend: oracle
+    oracle:
+      table: outcomes
+  outputs:
+    backend: oracle
+    oracle:
+      results_table_key: results
+      details_table_key: details
+      full_effects_table_key: full_effects
+
+development:
+  source_name: input_features
+  frequency: weekly
+  segment_column: segment
+  segment_value: TICARI_ORTA_FAZ1
+  sampling:
+    enabled: false
+    windows:
+      - train
+    activate_if_rows_gt: 1000000
+    max_rows: null
+    compare_max_rows: null
+    tail_z_threshold: 3.5
+    random_seed: 42
+    validation:
+      max_snapshot_share_delta: 0.02
+      max_tail_share_delta: 0.02
+      max_missing_share_delta: 0.02
+      max_feature_missing_delta: 0.01
+      max_feature_ks: 0.10
+      fallback_to_full_on_fail: true
+  windows:
+    mode: relative_periods
+    relative:
+      anchor_date: null
+      calibration_periods: 4
+      oot_periods: 4
+      test_size: 0.25
+      split_seed: 42
+    fixed:
+      train:
+        start: null
+        end: null
+      test:
+        start: null
+        end: null
+      calibration:
+        start: null
+        end: null
+      oot:
+        start: null
+        end: null
+
+retraining:
+  source_name: development
+  auto_promote: false
+  promotion_metric: weighting.validation_metrics.primary.precision_at_top_percent
+  candidate_name_prefix: challenger
+
+calibration:
+  enabled: true
+  method: empirical_cdf
+  source_window: calibration
+  min_rows: 100
+  quantiles: 101
+
+weight_optimization:
+  enabled: true
+  source_name: outcomes
+  target_column: label_30dpd_8w
+  monitoring_columns:
+    - label_default_12m
+  training_window: test
+  validation_window: oot
+  evaluation_windows:
+    - test
+    - oot
+  grid_step: 0.1
+  min_component_weight: 0.1
+  min_positive_rows: 10
+  objective: precision_at_top_percent
+  top_percent: 0.1
+  selection_tolerance: 0.02
+  prefer_balanced_within_tolerance: true
+  auto_apply: true
+
+monitoring:
+  enabled: true
+  directory: meta/ticari_orta_faz1/monitoring
+
+live_scoring:
+  source_name: input_features
+  snapshot:
+    selector: today
+    explicit_date: null
+    start_date: null
+    end_date: null
+
+shadow_scoring:
+  enabled: false
+  mode: raw_shadow
+  use_shared_missing_policy: true
+  use_shared_hard_bounds: true
+  winsorization_enabled: false
+  log1p_enabled: false
+  scaler_type: standard
+
+batch_execution:
+  bootstrap_if_missing_champion: true
+  bootstrap_promote: true
+  score_live_enabled: true
+  refresh_candidate_enabled: true
+  candidate_run_type: retrain
+  tune_weights_enabled: true
+  evaluate_outcomes_enabled: true
+  compare_enabled: false
+  promote_if_recommended: false
+  cleanup_after_run: false
+
+registry:
+  meta_dir: meta/ticari_orta_faz1
+  artifacts_dir: artifacts/ticari_orta_faz1
+  logs_dir: logs/ticari_orta_faz1
+  run_registry_file: meta/ticari_orta_faz1/run_registry.json
+  model_registry_file: meta/ticari_orta_faz1/model_registry.json
+  champion_registry_file: meta/ticari_orta_faz1/champions.json
+  registry_lock_file: meta/ticari_orta_faz1/.registry.lock
+
+retention:
+  logs_days: 14
+  run_manifests_days: 30
+  artifacts_days: 60
+  keep_last_models_per_segment: 5
+
+oracle:
+  schema: ZT_VAR2
+  tables:
+    native_features: EWS_TO_FAZ1_NATIVE
+    input_features: EWS_TO_FAZ1_INPUT
+    training: EWS_TO_FAZ1_TRAINING
+    scoring: EWS_TO_FAZ1_SCORING
+    outcomes: EWS_TO_FAZ1_OUTCOMES
+    results: EWS_TO_FAZ1_RESULTS
+    details: EWS_TO_FAZ1_DETAILS
+    full_effects: EWS_TO_FAZ1_FEATURE_EFFECTS
+
+logging:
+  logger_name: ews.ticari_orta_faz1
+  level: INFO
+  directory: logs/ticari_orta_faz1
+  file_name: pipeline.log
+  format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+  console: true
