@@ -21,7 +21,7 @@ from engine.oracle_io import OracleConnector
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config_ticari_orta_faz1.yaml"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
 DEFAULT_NUM_SNAPSHOTS = 52
 # Strict warm-up for Faz 1:
 # - equity_change / net_sales_change need 13 prior snapshots

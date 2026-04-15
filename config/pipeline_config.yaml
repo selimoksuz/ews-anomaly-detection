@@ -7,7 +7,7 @@ pipeline:
   non_feature_columns: []
 
 features:
-  mode: infer
+  mode: explicit
   include_columns: []
   exclude_columns: []
   label_overrides: {}
@@ -15,93 +15,104 @@ features:
     default_include: false
     low_cardinality_threshold: 8
     per_feature: {}
-    # Example:
-    # per_feature:
-    #   risk_band:
-    #     include: true
-    #     transforms:
-    #       - ordinal
-    #       - is_unseen
-    #     order:
-    #       - low
-    #       - medium
-    #       - high
   instant:
-    - name: dpd_current
-      label_tr: "Mevcut Gecikme Günü"
-    - name: utilization_ratio
-      label_tr: "Limit Kullanım Oranı"
-    - name: outstanding_balance
-      label_tr: "Açık Bakiye Tutarı"
-    - name: checking_balance
-      label_tr: "Vadesiz Hesap Bakiyesi"
-    - name: txn_count_weekly
-      label_tr: "Haftalık İşlem Adedi"
-    - name: txn_amount_weekly
-      label_tr: "Haftalık İşlem Tutarı"
-    - name: avg_txn_amount_weekly
-      label_tr: "Ortalama Haftalık İşlem Tutarı"
-    - name: payment_amount_this_week
-      label_tr: "Bu Hafta Yapılan Ödeme Tutarı"
+    - name: bank_debt_to_turnover
+      label_tr: "Banka Borclulugu / Ciro"
+    - name: pos_volume_change
+      label_tr: "Tum Bankalar POS Hacmi Degisimi"
+    - name: bank_debt_to_ebitda
+      label_tr: "Banka Borclulugu / EBITDA"
+    - name: trade_receivables_to_turnover
+      label_tr: "Ticari Alacak / Ciro"
+    - name: profitability_to_turnover
+      label_tr: "Karlilik / Ciro"
+    - name: equity_change
+      label_tr: "Ozkaynak Degisimi"
+    - name: ifrs9_behavioral_pd
+      label_tr: "TFRS Davranis Temerrut Olasiligi"
+    - name: kkb_commercial_score
+      label_tr: "KKB Ticari Kredi Notu"
+    - name: kkb_indebtedness_index
+      label_tr: "KKB Ticari Borcluluk Endeksi"
+    - name: net_sales_change
+      label_tr: "Net Satis Degisimi"
+    - name: memzuc_limit_utilization_increase
+      label_tr: "Memzuc Limit Doluluk Orani"
   rolling_4w:
-    - name: dpd_max_4w
-      label_tr: "Son 4 Haftadaki Maksimum Gecikme"
-    - name: min_payment_only_count_4w
-      label_tr: "Son 4 Haftada Sadece Minimum Ödeme Sayısı"
-    - name: payment_to_min_ratio_4w
-      label_tr: "Son 4 Haftada Ödeme / Minimum Ödeme Oranı"
-    - name: avg_days_to_payment_4w
-      label_tr: "Son 4 Haftada Ortalama Ödeme Günü"
-    - name: payment_reversal_count_4w
-      label_tr: "Son 4 Haftada Ödeme İptal / İade Sayısı"
-    - name: nsf_count_4w
-      label_tr: "Son 4 Haftada Karşılıksız İşlem Sayısı"
-    - name: overlimit_count_4w
-      label_tr: "Son 4 Haftada Limit Aşım Sayısı"
-    - name: cash_advance_ratio_4w
-      label_tr: "Son 4 Haftada Nakit Avans Oranı"
-    - name: checking_balance_min_4w
-      label_tr: "Son 4 Haftadaki Minimum Vadesiz Bakiye"
-    - name: deposit_amount_avg_4w
-      label_tr: "Son 4 Haftadaki Ortalama Mevduat Girişi"
-    - name: channel_count_4w
-      label_tr: "Son 4 Haftada Kullanılan Kanal Sayısı"
+    - name: bank_debt_to_turnover__delta_1
+      label_tr: "Banka Borclulugu / Ciro Delta-1"
+    - name: pos_volume_change__delta_1
+      label_tr: "POS Hacmi Degisimi Delta-1"
+    - name: bank_debt_to_ebitda__delta_1
+      label_tr: "Banka Borclulugu / EBITDA Delta-1"
+    - name: trade_receivables_to_turnover__delta_1
+      label_tr: "Ticari Alacak / Ciro Delta-1"
+    - name: profitability_to_turnover__delta_1
+      label_tr: "Karlilik / Ciro Delta-1"
+    - name: equity_change__delta_1
+      label_tr: "Ozkaynak Degisimi Delta-1"
+    - name: ifrs9_behavioral_pd__delta_1
+      label_tr: "TFRS PD Delta-1"
+    - name: kkb_commercial_score__delta_1
+      label_tr: "KKB Not Delta-1"
+    - name: kkb_indebtedness_index__delta_1
+      label_tr: "KKB Borcluluk Delta-1"
+    - name: net_sales_change__delta_1
+      label_tr: "Net Satis Delta-1"
+    - name: memzuc_limit_utilization_increase__delta_1
+      label_tr: "Limit Doluluk Delta-1"
   trend:
-    - name: util_slope_4w
-      label_tr: "Kullanım Oranı Eğimi (4 Hafta)"
-    - name: balance_slope_4w
-      label_tr: "Bakiye Eğimi (4 Hafta)"
-    - name: checking_slope_4w
-      label_tr: "Vadesiz Bakiye Eğimi (4 Hafta)"
-    - name: payment_ratio_slope_4w
-      label_tr: "Ödeme Oranı Eğimi (4 Hafta)"
-    - name: txn_count_change_pct
-      label_tr: "İşlem Adedi Değişim Yüzdesi"
-    - name: txn_amount_change_pct
-      label_tr: "İşlem Tutarı Değişim Yüzdesi"
-    - name: deposit_change_pct
-      label_tr: "Mevduat Değişim Yüzdesi"
-    - name: util_acceleration
-      label_tr: "Kullanım İvmesi"
-    - name: dpd_direction_4w
-      label_tr: "Gecikme Yönü (4 Hafta)"
+    - name: bank_debt_to_turnover__self_zscore_6
+      label_tr: "Banka Borclulugu / Ciro Self-Z(6)"
+    - name: pos_volume_change__self_zscore_6
+      label_tr: "POS Hacmi Self-Z(6)"
+    - name: bank_debt_to_ebitda__self_zscore_6
+      label_tr: "Banka Borclulugu / EBITDA Self-Z(6)"
+    - name: trade_receivables_to_turnover__self_zscore_6
+      label_tr: "Ticari Alacak / Ciro Self-Z(6)"
+    - name: profitability_to_turnover__self_zscore_6
+      label_tr: "Karlilik / Ciro Self-Z(6)"
+    - name: equity_change__self_zscore_6
+      label_tr: "Ozkaynak Self-Z(6)"
+    - name: ifrs9_behavioral_pd__self_zscore_6
+      label_tr: "TFRS PD Self-Z(6)"
+    - name: kkb_commercial_score__self_zscore_6
+      label_tr: "KKB Not Self-Z(6)"
+    - name: kkb_indebtedness_index__self_zscore_6
+      label_tr: "KKB Borcluluk Self-Z(6)"
+    - name: net_sales_change__self_zscore_6
+      label_tr: "Net Satis Self-Z(6)"
+    - name: memzuc_limit_utilization_increase__self_zscore_6
+      label_tr: "Limit Doluluk Self-Z(6)"
+    - name: pos_volume_change__trend_slope_6
+      label_tr: "POS Hacmi Trend Egrisi(6)"
+    - name: net_sales_change__trend_slope_6
+      label_tr: "Net Satis Trend Egrisi(6)"
+    - name: pos_volume_change__population_percentile
+      label_tr: "POS Hacmi Populasyon Persentili"
+    - name: pos_volume_change__vs_population_median_delta
+      label_tr: "POS Hacmi - Populasyon Medyani"
+    - name: net_sales_change__population_percentile
+      label_tr: "Net Satis Populasyon Persentili"
+    - name: net_sales_change__vs_population_median_delta
+      label_tr: "Net Satis - Populasyon Medyani"
 
 models:
   autoencoder:
-    hidden_layers: [24, 12]
-    latent_dim: 6
-    epochs: 150
+    hidden_layers: [48, 24]
+    latent_dim: 8
+    epochs: 120
     learning_rate: 0.001
     batch_size: 256
     validation_fraction: 0.1
-    early_stopping_patience: 20
-    min_epochs: 50
+    early_stopping_patience: 18
+    min_epochs: 40
     min_improvement: 1.0e-5
     dropout: 0.0
     reconstruction_loss: mse
   isolation_forest:
-    n_estimators: 200
-    contamination: 0.05
+    n_estimators: 250
+    contamination: 0.08
     max_samples: auto
     random_state: 42
   mahalanobis:
@@ -111,9 +122,9 @@ models:
 
 ensemble:
   weights:
-    ae: 0.5
-    if: 0.3
-    md: 0.2
+    ae: 0.45
+    if: 0.35
+    md: 0.20
 
 alert_bands:
   normal:
@@ -154,81 +165,37 @@ feature_selection:
     mahalanobis:
       exclude_raw_types:
         - binary
-      exclude_transforms:
-        - one_hot
+      exclude_transforms: []
 
 preprocessing:
   enabled: true
   missing:
     default_strategy: median
-    feature_strategies:
-      txn_count_weekly:
-        strategy: constant
-        value: 0
-      min_payment_only_count_4w:
-        strategy: constant
-        value: 0
-      payment_reversal_count_4w:
-        strategy: constant
-        value: 0
-      nsf_count_4w:
-        strategy: constant
-        value: 0
-      overlimit_count_4w:
-        strategy: constant
-        value: 0
-      channel_count_4w:
-        strategy: min
   hard_bounds:
     enabled: true
     rules:
-      - feature: dpd_current
+      - feature: bank_debt_to_turnover
         lower: 0
-      - feature: utilization_ratio
+      - feature: bank_debt_to_ebitda
         lower: 0
-      - feature: outstanding_balance
+      - feature: trade_receivables_to_turnover
         lower: 0
-      - feature: txn_count_weekly
-        lower: 0
-      - feature: txn_amount_weekly
-        lower: 0
-      - feature: avg_txn_amount_weekly
-        lower: 0
-      - feature: payment_amount_this_week
-        lower: 0
-      - feature: dpd_max_4w
-        lower: 0
-      - feature: min_payment_only_count_4w
-        lower: 0
-      - feature: payment_to_min_ratio_4w
-        lower: 0
-      - feature: avg_days_to_payment_4w
-        lower: 0
-      - feature: payment_reversal_count_4w
-        lower: 0
-      - feature: nsf_count_4w
-        lower: 0
-      - feature: overlimit_count_4w
-        lower: 0
-      - feature: cash_advance_ratio_4w
+      - feature: ifrs9_behavioral_pd
         lower: 0
         upper: 1
-      - feature: deposit_amount_avg_4w
+      - feature: kkb_commercial_score
         lower: 0
-      - feature: channel_count_4w
+      - feature: kkb_indebtedness_index
+        lower: 0
+      - feature: memzuc_limit_utilization_increase
         lower: 0
   winsorization:
     enabled: true
-    lower_quantile: 0.005
-    upper_quantile: 0.995
+    lower_quantile: 0.01
+    upper_quantile: 0.99
   log1p:
     enabled: false
-    features:
-      - outstanding_balance
-      - txn_amount_weekly
-      - avg_txn_amount_weekly
-      - payment_amount_this_week
-      - deposit_amount_avg_4w
+    features: []
   scaler:
     type: robust
 
@@ -236,6 +203,10 @@ stability:
   report_path: models/ews_model_stability.json
 
 sources:
+  native_features:
+    backend: oracle
+    oracle:
+      table: native_features
   input_features:
     backend: oracle
     oracle:
@@ -255,7 +226,7 @@ development:
   source_name: input_features
   frequency: weekly
   segment_column: segment
-  segment_value: null
+  segment_value: TICARI_ORTA_FAZ1
   sampling:
     enabled: false
     windows:
@@ -340,7 +311,7 @@ live_scoring:
     end_date: null
 
 shadow_scoring:
-  enabled: true
+  enabled: false
   mode: raw_shadow
   use_shared_missing_policy: true
   use_shared_hard_bounds: true
@@ -356,7 +327,7 @@ batch_execution:
   candidate_run_type: retrain
   tune_weights_enabled: true
   evaluate_outcomes_enabled: true
-  compare_enabled: true
+  compare_enabled: false
   promote_if_recommended: false
   cleanup_after_run: false
 
@@ -384,13 +355,14 @@ orchestration:
 oracle:
   schema: ZT_VAR2
   tables:
-    input_features: EWS_INPUT_FEATURES
-    training: EWS_TRAINING_DATA
-    scoring: EWS_SCORING_DATA
-    outcomes: EWS_OUTCOME_LABELS
-    results: EWS_ALERT_RESULTS
-    details: EWS_ALERT_DETAILS
-    full_effects: EWS_ALERT_FEATURE_EFFECTS
+    native_features: EWS_TO_FAZ1_NATIVE
+    input_features: EWS_TO_FAZ1_INPUT
+    training: EWS_TO_FAZ1_TRAINING
+    scoring: EWS_TO_FAZ1_SCORING
+    outcomes: EWS_TO_FAZ1_OUTCOMES
+    results: EWS_TO_FAZ1_RESULTS
+    details: EWS_TO_FAZ1_DETAILS
+    full_effects: EWS_TO_FAZ1_FEATURE_EFFECTS
 
 logging:
   logger_name: ews.pipeline
