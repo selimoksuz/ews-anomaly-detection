@@ -1,0 +1,129 @@
+mode: explicit
+include_columns: []
+exclude_columns: []
+label_overrides: {}
+categorical:
+  default_include: false
+  low_cardinality_threshold: 8
+  per_feature: {}
+instant:
+  - name: bank_debt_to_turnover
+    label_tr: Banka Borclulugu / Ciro
+  - name: pos_volume_change
+    label_tr: Tum Bankalar POS Hacmi Degisimi
+  - name: bank_debt_to_ebitda
+    label_tr: Banka Borclulugu / EBITDA
+  - name: trade_receivables_to_turnover
+    label_tr: Ticari Alacak / Ciro
+  - name: profitability_to_turnover
+    label_tr: Karlilik / Ciro
+  - name: equity_change
+    label_tr: Ozkaynak Degisimi
+  - name: ifrs9_behavioral_pd
+    label_tr: TFRS Davranis Temerrut Olasiligi
+  - name: kkb_commercial_score
+    label_tr: KKB Ticari Kredi Notu
+  - name: kkb_indebtedness_index
+    label_tr: KKB Ticari Borcluluk Endeksi
+  - name: net_sales_change
+    label_tr: Net Satis Degisimi
+  - name: memzuc_limit_utilization_increase
+    label_tr: Memzuc Limit Doluluk Orani
+rolling_4w:
+  - name: bank_debt_to_turnover__delta_1
+    label_tr: Banka Borclulugu / Ciro Delta-1
+  - name: pos_volume_change__delta_1
+    label_tr: POS Hacmi Degisimi Delta-1
+  - name: bank_debt_to_ebitda__delta_1
+    label_tr: Banka Borclulugu / EBITDA Delta-1
+  - name: trade_receivables_to_turnover__delta_1
+    label_tr: Ticari Alacak / Ciro Delta-1
+  - name: profitability_to_turnover__delta_1
+    label_tr: Karlilik / Ciro Delta-1
+  - name: equity_change__delta_1
+    label_tr: Ozkaynak Degisimi Delta-1
+  - name: ifrs9_behavioral_pd__delta_1
+    label_tr: TFRS PD Delta-1
+  - name: kkb_commercial_score__delta_1
+    label_tr: KKB Not Delta-1
+  - name: kkb_indebtedness_index__delta_1
+    label_tr: KKB Borcluluk Delta-1
+  - name: net_sales_change__delta_1
+    label_tr: Net Satis Delta-1
+  - name: memzuc_limit_utilization_increase__delta_1
+    label_tr: Limit Doluluk Delta-1
+trend:
+  - name: bank_debt_to_turnover__self_zscore_6
+    label_tr: Banka Borclulugu / Ciro Self-Z(6)
+  - name: pos_volume_change__self_zscore_6
+    label_tr: POS Hacmi Self-Z(6)
+  - name: bank_debt_to_ebitda__self_zscore_6
+    label_tr: Banka Borclulugu / EBITDA Self-Z(6)
+  - name: trade_receivables_to_turnover__self_zscore_6
+    label_tr: Ticari Alacak / Ciro Self-Z(6)
+  - name: profitability_to_turnover__self_zscore_6
+    label_tr: Karlilik / Ciro Self-Z(6)
+  - name: equity_change__self_zscore_6
+    label_tr: Ozkaynak Self-Z(6)
+  - name: ifrs9_behavioral_pd__self_zscore_6
+    label_tr: TFRS PD Self-Z(6)
+  - name: kkb_commercial_score__self_zscore_6
+    label_tr: KKB Not Self-Z(6)
+  - name: kkb_indebtedness_index__self_zscore_6
+    label_tr: KKB Borcluluk Self-Z(6)
+  - name: net_sales_change__self_zscore_6
+    label_tr: Net Satis Self-Z(6)
+  - name: memzuc_limit_utilization_increase__self_zscore_6
+    label_tr: Limit Doluluk Self-Z(6)
+  - name: pos_volume_change__trend_slope_6
+    label_tr: POS Hacmi Trend Egrisi(6)
+  - name: net_sales_change__trend_slope_6
+    label_tr: Net Satis Trend Egrisi(6)
+  - name: pos_volume_change__population_percentile
+    label_tr: POS Hacmi Populasyon Persentili
+  - name: pos_volume_change__vs_population_median_delta
+    label_tr: POS Hacmi - Populasyon Medyani
+  - name: net_sales_change__population_percentile
+    label_tr: Net Satis Populasyon Persentili
+  - name: net_sales_change__vs_population_median_delta
+    label_tr: Net Satis - Populasyon Medyani
+raw_type_overrides:
+  bank_debt_to_turnover: continuous
+  pos_volume_change: continuous
+  bank_debt_to_ebitda: continuous
+  trade_receivables_to_turnover: continuous
+  profitability_to_turnover: continuous
+  equity_change: continuous
+  ifrs9_behavioral_pd: continuous
+  kkb_commercial_score: continuous
+  kkb_indebtedness_index: continuous
+  net_sales_change: continuous
+  memzuc_limit_utilization_increase: continuous
+  bank_debt_to_turnover__delta_1: continuous
+  pos_volume_change__delta_1: continuous
+  bank_debt_to_ebitda__delta_1: continuous
+  trade_receivables_to_turnover__delta_1: continuous
+  profitability_to_turnover__delta_1: continuous
+  equity_change__delta_1: continuous
+  ifrs9_behavioral_pd__delta_1: continuous
+  kkb_commercial_score__delta_1: continuous
+  kkb_indebtedness_index__delta_1: continuous
+  net_sales_change__delta_1: continuous
+  memzuc_limit_utilization_increase__delta_1: continuous
+  bank_debt_to_turnover__self_zscore_6: continuous
+  pos_volume_change__self_zscore_6: continuous
+  bank_debt_to_ebitda__self_zscore_6: continuous
+  trade_receivables_to_turnover__self_zscore_6: continuous
+  profitability_to_turnover__self_zscore_6: continuous
+  equity_change__self_zscore_6: continuous
+  ifrs9_behavioral_pd__self_zscore_6: continuous
+  kkb_commercial_score__self_zscore_6: continuous
+  kkb_indebtedness_index__self_zscore_6: continuous
+  net_sales_change__self_zscore_6: continuous
+  memzuc_limit_utilization_increase__self_zscore_6: continuous
+  pos_volume_change__trend_slope_6: continuous
+  net_sales_change__trend_slope_6: continuous
+  pos_volume_change__population_percentile: continuous
+  pos_volume_change__vs_population_median_delta: continuous
+  net_sales_change__population_percentile: continuous
+  net_sales_change__vs_population_median_delta: continuous

@@ -15,6 +15,7 @@ from engine.config_loader import (
     get_feature_list,
     load_config,
     load_secrets,
+    resolve_project_path,
     resolve_feature_list,
 )
 from engine.models import AnomalyModels
@@ -23,7 +24,7 @@ from engine.scorer import AnomalyScorer
 
 logger = logging.getLogger(__name__)
 
-MODEL_DIR = Path("models")
+MODEL_DIR = resolve_project_path("runtime/legacy_models")
 
 
 class EWSPipeline:
@@ -113,11 +114,17 @@ class EWSPipeline:
         for _, row in res.iterrows():
             parts = []
             if isinstance(row.get("detay"), dict):
-                for feat, d in row["detay"].items():
-                    ico = "UP" if d["degisim_pct"] > 0 else "DN"
+                for _, d in row["detay"].items():
                     parts.append(
-                        f"{d['label']}: {d['beklenen']}->{d['gerceklesen']} "
-                        f"({ico}%{abs(d['degisim_pct']):.0f})"
+                        f"{d['label']}\n"
+                        f"gerceklesen: {self._display_value(d.get('gerceklesen'))}\n"
+                        f"musteri_gecmis_referansi: {self._display_value(d.get('musteri_gecmis_referansi'))}\n"
+                        f"populasyon_referansi: {self._display_value(d.get('populasyon_referansi'))}\n"
+                        f"ae_referansi: {self._display_value(d.get('ae_referansi', d.get('beklenen')))}\n"
+                        f"ensemble_katki: %{self._display_pct(d.get('ensemble_katki_pct', d.get('katki_pct')))} "
+                        f"(AE %{self._display_pct(d.get('ae_katki_pct'))}, "
+                        f"IF %{self._display_pct(d.get('if_katki_pct'))}, "
+                        f"MD %{self._display_pct(d.get('md_katki_pct'))})"
                     )
             reasons.append(parts)
         res["reasons"] = reasons
@@ -137,10 +144,16 @@ class EWSPipeline:
                         self.time_col: pd.Timestamp(scoring_date),
                         "feature_name": feat,
                         "feature_label": d["label"],
-                        "expected_value": d["beklenen"],
-                        "actual_value": d["gerceklesen"],
-                        "delta_pct": d["degisim_pct"],
-                        "contribution_pct": d["katki_pct"],
+                        "expected_value": d.get("expected_value", d.get("ae_referansi", d.get("beklenen"))),
+                        "actual_value": d.get("actual_value", d.get("gerceklesen")),
+                        "delta_pct": d.get("delta_pct", d.get("degisim_pct")),
+                        "contribution_pct": d.get("contribution_pct", d.get("ensemble_katki_pct", d.get("katki_pct"))),
+                        "customer_history_reference": d.get("musteri_gecmis_referansi"),
+                        "population_reference": d.get("populasyon_referansi"),
+                        "ae_reference": d.get("ae_referansi", d.get("beklenen")),
+                        "ae_contribution_pct": d.get("ae_katki_pct"),
+                        "if_contribution_pct": d.get("if_katki_pct"),
+                        "md_contribution_pct": d.get("md_katki_pct"),
                         "rank": rank,
                     }
                 )
@@ -185,6 +198,18 @@ class EWSPipeline:
         return result
 
     @staticmethod
+    def _display_value(value):
+        if value is None or pd.isna(value):
+            return "NA"
+        return f"{float(value):.2f}"
+
+    @staticmethod
+    def _display_pct(value):
+        if value is None or pd.isna(value):
+            return "0"
+        return f"{float(value):.1f}".rstrip("0").rstrip(".")
+
+    @staticmethod
     def _summarize_distribution(values):
         values = np.asarray(values, dtype=float)
         return {
@@ -204,7 +229,9 @@ class EWSPipeline:
 
     def _save_stability_report(self, report):
         report_path = Path(
-            self.stability_cfg.get("report_path", MODEL_DIR / "ews_model_stability.json")
+            resolve_project_path(
+                self.stability_cfg.get("report_path", MODEL_DIR / "ews_model_stability.json")
+            )
         )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         with open(report_path, "w", encoding="utf-8") as handle:

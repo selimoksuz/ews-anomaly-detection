@@ -1,131 +1,60 @@
 # Business Traceability Matrix
 
-Bu dokumanin amaci, is biriminin 11 sayfalik ekran goruntusu talebindeki maddeleri mevcut dictionary yapisiyla birebir eslestirmek ve hangi maddelerin:
+Bu dokuman, is biriminin 11 sayfalik talep dokumanindaki business basliklarini dictionary kontratiyla birebir eslestirir.
 
-- `full`
-- `partial`
-- `missing`
+## 1. Business Heading -> Dictionary Mapping
 
-seviyesinde karsilandigini gostermektir.
+| ID | Sayfa | Business Basligi | Canonical Name | Dictionary Heading | Table Coverage |
+|---|---|---|---|---|---|
+| 1 | 1 | Banka Borclulugu ve Ciro Iliskisi | `bank_debt_to_turnover` | `Sayfa 1 > Banka Borclulugu ve Ciro Iliskisi` | `full` |
+| 2 | 1 | Musterinin Tum Bankalardaki Aylik POS Hacmi | `pos_volume_change` | `Sayfa 1 > Musterinin Tum Bankalardaki Aylik POS Hacmi` | `full` |
+| 3 | 2 | Haciz Tutari ve Ciro Iliskisi | `seizure_amount_to_turnover` | `Sayfa 2 > Haciz Tutari ve Ciro Iliskisi` | `full` |
+| 4 | 3 | Cek Odemesi Zamani | `check_payment_time_shift` | `Sayfa 3 > Cek Odemesi Zamani` | `full` |
+| 5 | 3 | Faktoring | `factoring_risk_presence` | `Sayfa 3 > Faktoring` | `full` |
+| 6 | 3 | Banka Borclulugu ve EBITDA Iliskisi | `bank_debt_to_ebitda` | `Sayfa 3 > Banka Borclulugu ve EBITDA Iliskisi` | `full` |
+| 7 | 4 | Bilanco Ticari Alacak ve Ciro | `trade_receivables_to_turnover` | `Sayfa 4 > Bilanco Ticari Alacak ve Ciro` | `full` |
+| 8 | 5 | Bilanco Karlilik ve Ciro | `profitability_to_turnover` | `Sayfa 5 > Bilanco Karlilik ve Ciro` | `full` |
+| 9 | 5 | Musterinin Aylik Elektrik Fatura Tutarlari (NACE imalat) | `electricity_bill_amount_change` | `Sayfa 5 > Musterinin Aylik Elektrik Fatura Tutarlari (NACE imalat)` | `full` |
+| 10 | 5 | Musterinin Bankalardaki Isletme Borclari ve Enflasyon Iliskisi | `business_loan_vs_inflation` | `Sayfa 5 > Musterinin Bankalardaki Isletme Borclari ve Enflasyon Iliskisi` | `full` |
+| 11 | 5 | Bilanco Ozkaynak Bilgisi | `equity_change` | `Sayfa 5 > Bilanco Ozkaynak Bilgisi` | `full` |
+| 12 | 6 | Musterinin Bankamizda veya Diger Bankalarda Gecikmeye Girme Degiskeni | `delinquency_entry_or_frequency` | `Sayfa 6 > Musterinin Bankamizda veya Diger Bankalarda Gecikmeye Girme Degiskeni` | `full` |
+| 13 | 6 | Musterinin Bankamizdaki Kredi Karti Borcunun Tamamini Odememesi | `credit_card_full_payment_break` | `Sayfa 6 > Musterinin Bankamizdaki Kredi Karti Borcunun Tamamini Odememesi` | `full` |
+| 14 | 6 | TFRS Davranis Temerrut Olasiligi | `ifrs9_behavioral_pd` | `Sayfa 6 > TFRS Davranis Temerrut Olasiligi` | `full` |
+| 15 | 6 | KKB Ticari Kredi Notu | `kkb_commercial_score` | `Sayfa 6 > KKB Ticari Kredi Notu` | `full` |
+| 16 | 6 | KKB Ticari Borcluluk Endeksi | `kkb_indebtedness_index` | `Sayfa 6 > KKB Ticari Borcluluk Endeksi` | `full` |
+| 17 | 6-7 | Net Satis (Ciro) | `net_sales_change` | `Sayfa 6-7 > Net Satis (Ciro)` | `full` |
+| 18 | 7 | Memzuc Limit Azalisi | `memzuc_limit_change` | `Sayfa 7 > Memzuc Limit Azalisi` | `full` |
+| 19 | 7 | Memzuc Banka Sayisi Azalisi | `memzuc_bank_count_change` | `Sayfa 7 > Memzuc Banka Sayisi Azalisi` | `full` |
+| 20 | 7 | Elektrik Borcunu Odeyemeyenler | `electricity_payment_failure` | `Sayfa 7 > Elektrik Borcunu Odeyemeyenler` | `full` |
+| 21 | 7 | KKB Cek Portfoy Kalitesinde Bozulma | `kkb_check_portfolio_quality_deterioration` | `Sayfa 7 > KKB Cek Portfoy Kalitesinde Bozulma` | `full` |
+| 22 | 8 | Memzuc Limit Doluluk Artisi | `memzuc_limit_utilization_increase` | `Sayfa 8 > Memzuc Limit Doluluk Artisi` | `full` |
+| 23 | 8 | Hayvan Sayisi | `livestock_count_change` | `Sayfa 8 > Hayvan Sayisi` | `full` |
+| 24 | 8-9 | Kesideci Olumsuzlugu ve Bilanco Ticari Alacak Iliskisi | `issuer_adverse_to_receivables` | `Sayfa 8-9 > Kesideci Olumsuzlugu ve Bilanco Ticari Alacak Iliskisi` | `full` |
+| 25 | 9 | Supheli Ticari Alacaklar ve Ticari Alacak Iliskisi | `suspicious_receivables_to_receivables` | `Sayfa 9 > Supheli Ticari Alacaklar ve Ticari Alacak Iliskisi` | `full` |
+| 26 | 9 | KKB Ileri Vadeli Cek ve Bilanco Senetli Borc / Verilen Cek Iliskisi | `forward_check_to_notes_payable_ratio` | `Sayfa 9 > KKB Ileri Vadeli Cek ve Bilanco Senetli Borc / Verilen Cek Iliskisi` | `full` |
+| 27 | 10 | Bankamizdaki Cek/Senet Iade Orani | `returned_check_note_ratio` | `Sayfa 10 > Bankamizdaki Cek/Senet Iade Orani` | `full` |
+| 28 | 10 | Bankamizda Bulunan Mevduat / Varlik Ortalamalari | `bank_asset_average_change` | `Sayfa 10 > Bankamizda Bulunan Mevduat / Varlik Ortalamalari` | `full` |
+| 29 | 10-11 | Alacak Sigortasi Tazmin Verisi ve Bilanco Ticari Alacak Iliskisi | `insurance_claim_to_receivables` | `Sayfa 10-11 > Alacak Sigortasi Tazmin Verisi ve Bilanco Ticari Alacak Iliskisi` | `full` |
 
-Guncel durumda hedef, business isterlerini implementation-grade dictionary kontratina tam map etmektir.
+## 2. Companion Rule / Filter Mapping
 
-## 1. Raw / Model Feature Coverage
-
-| ID | Sayfa | Business Maddesi | Beklenen Canonical | Dictionary Karsiligi | Coverage | Not |
-|---|---|---|---|---|---|---|
-| 1 | 1 | Banka Borclulugu ve Ciro Iliskisi | `bank_debt_to_turnover` | Var | `full` | exact source, annualization ve freshness kuralina baglandi |
-| 2 | 1 | Tum Bankalardaki Aylik POS Hacmi | `pos_volume_change` | Var | `full` | faaliyet grubu / seasonality ve peer kullanimi ayrica tanimli |
-| 3 | 2 | Haciz Tutari ve Ciro Iliskisi | `seizure_amount_to_turnover` | Var | `full` | raw feature + companion rule tanimli |
-| 4 | 3 | Cek Odemesi Zamani | `check_payment_time_shift` | Var | `full` | raw feature + exact companion rules tanimli |
-| 5 | 3 | Faktoring | `factoring_risk_presence` | Var | `full` | raw feature + 3 companion rule tanimli |
-| 6 | 3-4 | Banka Borclulugu ve EBITDA Iliskisi | `bank_debt_to_ebitda` | Var | `full` | TLREF, annualization, freshness encode edildi |
-| 7 | 4 | Bilanco Ticari Alacak ve Ciro | `trade_receivables_to_turnover` | Var | `full` | account codes ve `>1` threshold flag tanimli |
-| 8 | 5 | Bilanco Karlilik ve Ciro | `profitability_to_turnover` | Var | `full` | annualization ve stale kuralina baglandi |
-| 9 | 5 | Aylik Elektrik Fatura Tutarlari | `electricity_bill_amount_change` | Var | `full` | exact `nace_section = C` applicability yazildi |
-| 10 | 5 | Bankalardaki Isletme Borclari ve Enflasyon | `business_loan_vs_inflation` | Var | `full` | source ve hesap mantigi yazildi |
-| 11 | 5 | Bilanco Ozkaynak | `equity_change` | Var | `full` | `equity_negative_flag` eklendi |
-| 12 | 6 | Bankamizda veya Diger Bankalarda Gecikmeye Girme | `delinquency_entry_or_frequency` | Var | `full` | raw feature + 3 companion rule var |
-| 13 | 6 | Bankamizdaki Kredi Karti Borcunun Tamamini Odememesi | `credit_card_full_payment_break` | Var | `full` | raw feature + 2 companion rule var |
-| 14 | 6 | TFRS Davranis Temerrut Olasiligi | `ifrs9_behavioral_pd` | Var | `full` | `%2 alti dislama` rule'u var |
-| 15 | 6 | KKB Ticari Kredi Notu | `kkb_commercial_score` | Var | `full` | source ve treatment net |
-| 16 | 6 | KKB Ticari Borcluluk Endeksi | `kkb_indebtedness_index` | Var | `full` | source ve treatment net |
-| 17 | 6-7 | Net Satis (Ciro) | `net_sales_change` | Var | `full` | annualization + Yap-Sat/Taahhut normalization yazildi |
-| 18 | 7 | Memzuc Limit Azalisi | `memzuc_limit_change` | Var | `full` | business trace icin label'da azalisi korundu, canonical change olarak aciklandi |
-| 19 | 7 | Memzuc Banka Sayisi Azalisi | `memzuc_bank_count_change` | Var | `full` | business trace icin label'da azalisi korundu, canonical change olarak aciklandi |
-| 20 | 7 | Elektrik Borcunu Odeyemeyenler | `electricity_payment_failure` | Var | `full` | raw feature + companion rules + applicability yazildi |
-| 21 | 7 | KKB Cek Portfoy Kalitesinde Bozulma | `kkb_check_portfolio_quality_deterioration` | Var | `full` | source ve sorgu mantigi tanimli |
-| 22 | 8 | Memzuc Limit Doluluk Artisi | `memzuc_limit_utilization_increase` | Var | `full` | `Ticari Orta/Buyuk`, `tarim disi` applicability yazildi |
-| 23 | 8 | Hayvan Sayisi | `livestock_count_change` | Var | `full` | Turkvet baseline mantigi yazildi |
-| 24 | 8-9 | Kesideci Olumsuzlugu ve Bilanco Ticari Alacak | `issuer_adverse_to_receivables` | Var | `full` | `Ticari Orta ve alti`, `tarim disi`, `12 ay FS` kuralina baglandi |
-| 25 | 9 | Supheli Ticari Alacaklar ve Ticari Alacak | `suspicious_receivables_to_receivables` | Var | `full` | account codes ve formula yazildi |
-| 26 | 9-10 | KKB Ileri Vadeli Cek ve Bilanco Senetli Borc / Verilen Cek | `forward_check_to_notes_payable_ratio` | Var | `full` | nearest FS, 3 aylik KKB ve `>1` flag tanimli |
-| 27 | 10 | Bankamizdaki Cek/Senet Iade Orani | `returned_check_note_ratio` | Var | `full` | business label ve canonical eslesmesi net |
-| 28 | 10 | Bankamizda Bulunan Mevduat/Varlik Ortalamalari | `bank_asset_average_change` | Var | `full` | urun sahipligi, refresh ve treatment net |
-| 29 | 10-11 | Alacak Sigortasi Tazmin ve Bilanco Ticari Alacak | `insurance_claim_to_receivables` | Var | `full` | `%15` filter, 12 ay FS, applicability yazildi |
-
-## 2. Companion Rule Coverage
-
-| Parent Feature | Business Rule | Canonical | Coverage | Not |
-|---|---|---|---|---|
-| `factoring_risk_presence` | Son 24 ayda ilk kez factoring riski | `factoring_risk_first_time_24m` | `full` | mevcut |
-| `factoring_risk_presence` | Iki ay pes pese factoring riski | `factoring_risk_consecutive_2m` | `full` | mevcut |
-| `factoring_risk_presence` | Son 12 ayda 3 farkli ay factoring riski | `factoring_risk_frequency_3_of_12m` | `full` | eklendi |
-| `delinquency_entry_or_frequency` | Son 24 ayda ilk kez gecikme | `delinquency_first_time_24m` | `full` | mevcut |
-| `delinquency_entry_or_frequency` | Iki donem pes pese gecikme | `delinquency_consecutive_2m` | `full` | mevcut |
-| `delinquency_entry_or_frequency` | Son 12 ayda 3 ayrik donem gecikme | `delinquency_frequency_3_of_12m` | `full` | mevcut |
-| `credit_card_full_payment_break` | Son 24 ayda ilk kez tam odememe | `card_full_payment_break_first_time_24m` | `full` | mevcut |
-| `credit_card_full_payment_break` | Iki donem pes pese tam odememe | `card_full_payment_break_consecutive_2m` | `full` | mevcut |
-| `check_payment_time_shift` | Son 6 ayda ilk kez gec saate kayma | `check_payment_time_shift_first_time_6m` | `full` | mevcut |
-| `check_payment_time_shift` | Son 3 ayda farkli gunlerde pes pese gec saate kayma | `check_payment_time_shift_consecutive_3m_distinct_days` | `full` | canonical business wording'e yaklastirildi |
-| `electricity_payment_failure` | Son 24 ayda ilk kez odememe | `electricity_payment_failure_first_time_24m` | `full` | mevcut |
-| `electricity_payment_failure` | Iki donem pes pese odememe | `electricity_payment_failure_consecutive_2m` | `full` | mevcut |
-| `seizure_amount_to_turnover` | Son 24 ayda ilk kez devam eden haciz | `seizure_first_time_24m` | `full` | eklendi |
-
-## 3. Value Filter / Applicability / Formula Coverage
-
-| Rule Family | Coverage | Not |
-|---|---|---|
-| Annualization `Q1*4`, `Q2*2`, `Q3*4/3`, `YE*1` | `full` | global rule ve variable-level period alanlarina islendi |
-| FS stale rule (12 ay) | `full` | variable bazli freshness rule'lara islendi |
-| Sector normalization | `full` | POS, net sales, imalat, tarim/hayvancilik kurallari yazildi |
-| PD threshold `%2` | `full` | `pd_below_2pct_exclusion_rule` var |
-| Insurance claim `%15` | `full` | `insurance_claim_below_15pct_filter` var |
-| Forward-check `>1` | `full` | `forward_check_above_1_flag` var |
-| Trade receivables `>1` | `full` | `trade_receivables_over_1_flag` var |
-| Equity negative sign-flip | `full` | `equity_negative_flag` var |
-| POS peer comparison | `full` | sadece `pos_volume_change` icin population-reference acildi |
-| Net sales sector normalization | `full` | `net_sales_change` icin yazildi |
-| Memzuc limit utilization applicability | `full` | `Ticari Orta/Buyuk`, `tarim disi` yazildi |
-| Livestock applicability | `full` | `Tarim + Hayvancilik + Turkvet baseline` yazildi |
-| Issuer adverse applicability | `full` | `Ticari Orta ve alti`, `tarim disi`, `12 ay FS` yazildi |
-| Electricity bill applicability | `full` | `nace_section = C` yazildi |
-| Insurance claim FS freshness/applicability | `full` | `12 ay FS`, bilancolu, tarim disi, alacak sigortali musteri yazildi |
-
-## 4. Overall Assessment
-
-Guncel durumda:
-
-- 29 business feature basliginin tamami dictionary'de exact canonical, formula, source, freshness ve applicability bilgisiyle karsilanmistir.
-- Companion rule seti business notundaki maddelerle hizalanmistir.
-- Generic threshold/filter mantigi kaldirilmis, feature-spesifik kurallara donusturulmustur.
-- Population-reference politikasi tek karara indirilmistir:
-  - `yes`: `pos_volume_change`, `net_sales_change`
-  - digerleri: `no`
-
-Bu nedenle guncel dictionary icin net karar:
-
-- `screening / classification` icin yeterlidir
-- `implementation-grade technical contract` olarak kullanilabilir
-
-## 5. Remaining Caveats
-
-### 5.1 Implementation Backlog (Runtime Koda Tasinma)
-
-- Bu sozlukte tanimlanan exact source-period-rule mantigi henuz runtime koda tasinmamis olabilir.
-- Yani dictionary tamamlansa da uygulama ayri backlog ister.
-- Gerekli yeni moduller: `engine/annualization.py`, `engine/applicability.py`, `engine/history_features.py`, `engine/peer_features.py`, `engine/rules.py`
-- Gerekli config: `config/pipeline_config_ticari_orta.yaml`, `business/feature_family_map.yaml`
-
-### 5.2 Business Tarafi Onay Bekleyen Noktalar
-
-Dictionary'nin `Open Questions` bolumunde listelenen maddeler:
-
-- `tlref_factor` kaynak ve guncelleme sikligi
-- `peer_group_key` tanimi (`nace_section + segment` vs `nace_main + segment`)
-- `min_peer_size` esik degeri
-- `kkb_check_portfolio_quality_deterioration` icin alt bucket secimi
-- `memzuc_bank_count_change` yon semantigi
-- `bank_asset_average_change` periyot tanimi
-- Taahhut "duzeltilmis FS" kaynak tablosu
-- `returned_check_note_ratio` otoriter kaynak (TACRCSIE vs bank internal)
-- Annualization carpanlarinin sektor bazinda override durumu
-
-### 5.3 Coverage Tutarliligi
-
-- Business analysis 11 sayfa envanter: 29 canonical.
-- Business analysis Faz 1=11, Faz 2=14 (13 + `factoring_risk_presence`), Faz 3=4; toplam 29.
-- Dictionary Section A=6, B=20, C=4; toplam 30.
-- Aradaki 1 fark: `bank_limit_utilization` (banka-ici limit doluluk), business ekranlarinda bagimsiz madde olarak yok. Business sayfa 8 madde 22 `memzuc_limit_utilization_increase` (tum bankalar / Memzuc) olarak listeliyor. Dictionary bu iki kavrami ayri tutuyor ve bank-internal versiyonu genisletme olarak ekliyor.
-- Oneri: `bank_limit_utilization` business'a "business dahili isterimiz disinda teknik ek" olarak bildirilsin; onaylanirsa Section A'da kalir, onaylanmazsa Section B'ye dusurulur veya cikarilir.
-- Canonical name alignment tamamlandi (`memzuc_limit_change` her iki dokumanda ayni).
+| Parent Feature | Business Rule / Filter | Canonical Artifact | Coverage |
+|---|---|---|---|
+| `factoring_risk_presence` | son 24 ayda ilk kez factoring riski | `factoring_risk_first_time_24m` | `full` |
+| `factoring_risk_presence` | iki ay pes pese factoring riski | `factoring_risk_consecutive_2m` | `full` |
+| `factoring_risk_presence` | son 12 ayda uc farkli ay factoring riski | `factoring_risk_frequency_3_of_12m` | `full` |
+| `delinquency_entry_or_frequency` | son 24 ayda ilk kez gecikme | `delinquency_first_time_24m` | `full` |
+| `delinquency_entry_or_frequency` | iki donem pes pese gecikme | `delinquency_consecutive_2m` | `full` |
+| `delinquency_entry_or_frequency` | son 12 ayda uc ayrik donemde gecikme | `delinquency_frequency_3_of_12m` | `full` |
+| `credit_card_full_payment_break` | son 24 ayda ilk kez tam odememe | `card_full_payment_break_first_time_24m` | `full` |
+| `credit_card_full_payment_break` | iki donem pes pese tam odememe | `card_full_payment_break_consecutive_2m` | `full` |
+| `check_payment_time_shift` | son 6 ayda ilk kez gec saate kayma | `check_payment_time_shift_first_time_6m` | `full` |
+| `check_payment_time_shift` | son 3 ayda farkli gunlerde pes pese gec saate kayma | `check_payment_time_shift_consecutive_3m_distinct_days` | `full` |
+| `electricity_payment_failure` | son 24 ayda ilk kez elektrik odememe | `electricity_payment_failure_first_time_24m` | `full` |
+| `electricity_payment_failure` | iki donem pes pese elektrik odememe | `electricity_payment_failure_consecutive_2m` | `full` |
+| `seizure_amount_to_turnover` | son 24 ayda ilk kez devam eden haciz kaydi | `seizure_first_time_24m` | `full` |
+| `ifrs9_behavioral_pd` | PD %2 alti dislama | `pd_below_2pct_exclusion_rule` | `full` |
+| `insurance_claim_to_receivables` | %15 alti dikkate alma | `insurance_claim_below_15pct_filter` | `full` |
+| `forward_check_to_notes_payable_ratio` | oran 1 uzeri flag | `forward_check_above_1_flag` | `full` |
+| `trade_receivables_to_turnover` | oran 1 uzeri flag | `trade_receivables_over_1_flag` | `full` |
+| `equity_change` | negatif ozkaynak flag | `equity_negative_flag` | `full` |

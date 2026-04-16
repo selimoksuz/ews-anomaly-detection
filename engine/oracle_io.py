@@ -29,7 +29,12 @@ DEFAULT_SECRETS_CONFIG = PROJECT_ROOT / "config" / "secrets.yaml"
 def load_yaml_config(source: ConfigSource, default_path: Optional[Path] = None) -> dict[str, Any]:
     """Load YAML configuration from a mapping or file path."""
     if isinstance(source, Mapping):
-        return dict(source)
+        data = dict(source)
+        refs = data.get("config_refs", {}) or {}
+        if not refs:
+            return data
+        base_path = default_path or DEFAULT_PIPELINE_CONFIG
+        return _resolve_config_refs(data, Path(base_path))
 
     path = Path(source) if source is not None else default_path
     if path is None:
@@ -43,7 +48,22 @@ def load_yaml_config(source: ConfigSource, default_path: Optional[Path] = None) 
     if not isinstance(data, Mapping):
         raise ValueError(f"Configuration file must contain a mapping at the root: {path}")
 
-    return dict(data)
+    return _resolve_config_refs(dict(data), path)
+
+
+def _resolve_config_refs(config: dict[str, Any], config_path: Path) -> dict[str, Any]:
+    merged = dict(config)
+    refs = config.get("config_refs", {}) or {}
+    if not isinstance(refs, Mapping):
+        raise ValueError("config_refs must be a mapping of section names to yaml file paths.")
+    for section_name, relative_path in refs.items():
+        resolved_path = (config_path.parent / str(relative_path)).resolve()
+        with resolved_path.open("r", encoding="utf-8") as handle:
+            section_payload = yaml.safe_load(handle) or {}
+        if not isinstance(section_payload, Mapping):
+            raise ValueError(f"Referenced config file must contain a mapping at the root: {resolved_path}")
+        merged[str(section_name).strip()] = dict(section_payload)
+    return merged
 
 
 class OracleConnector:
@@ -189,16 +209,116 @@ class OracleConnector:
         self.connection.commit()
         return self.write_source_rows(table_key, normalized, batch_size=batch_size)
 
-    def delete_scored_snapshot(self, snapshot_date, *, segment: Optional[str] = None) -> dict[str, int]:
-        """Delete previously written scored outputs for the same snapshot before re-inserting."""
-        snapshot_value = pd.Timestamp(snapshot_date).to_pydatetime()
-        deleted = {"results": 0, "details": 0, "full_effects": 0}
+    def replace_source_scope(
+        self,
+        table_key: str,
+        frame: pd.DataFrame,
+        *,
+        snapshot_date=None,
+        start_date=None,
+        end_date=None,
+        segment: Optional[str] = None,
+        all_rows: bool = False,
+        batch_size: int = 1000,
+    ) -> int:
+        """Delete a scoped slice of a source table and insert the replacement rows."""
+        normalized = self._normalize_columns(frame)
+        self.delete_source_rows(
+            table_key,
+            snapshot_date=snapshot_date,
+            start_date=start_date,
+            end_date=end_date,
+            segment=segment,
+            all_rows=all_rows,
+        )
+        if normalized.empty:
+            return 0
+        return self.write_source_rows(table_key, normalized, batch_size=batch_size)
+
+    def delete_source_rows(
+        self,
+        table_key: str,
+        *,
+        snapshot_date=None,
+        start_date=None,
+        end_date=None,
+        segment: Optional[str] = None,
+        all_rows: bool = False,
+    ) -> int:
+        """Delete rows from a source table by scope."""
+        active_keys = self._active_table_keys()
+        if table_key not in active_keys:
+            return 0
+
+        available_columns = self._table_columns(table_key)
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+
+        if all_rows:
+            clauses.append("1 = 1")
+        elif snapshot_date is not None:
+            clauses.append(f"TRUNC({self.time_column.upper()}) = TRUNC(:snapshot_date)")
+            params["snapshot_date"] = pd.Timestamp(snapshot_date).to_pydatetime()
+        else:
+            if start_date is not None:
+                clauses.append(f"TRUNC({self.time_column.upper()}) >= TRUNC(:start_date)")
+                params["start_date"] = pd.Timestamp(start_date).to_pydatetime()
+            if end_date is not None:
+                clauses.append(f"TRUNC({self.time_column.upper()}) <= TRUNC(:end_date)")
+                params["end_date"] = pd.Timestamp(end_date).to_pydatetime()
+
+        if segment and segment != "ALL" and self.segment_column.upper() in available_columns:
+            clauses.append(f"{self.segment_column.upper()} = :segment_value")
+            params["segment_value"] = segment
+
+        if not clauses:
+            raise ValueError(
+                f"delete_source_rows for {table_key} requires snapshot_date, date range, or all_rows=True."
+            )
+
         connection = self.connect()
         with connection.cursor() as cursor:
-            deleted["full_effects"] = self._delete_snapshot_rows(cursor, "full_effects", snapshot_value)
-            deleted["details"] = self._delete_snapshot_rows(cursor, "details", snapshot_value)
-            deleted["results"] = self._delete_snapshot_rows(cursor, "results", snapshot_value, segment=segment)
+            cursor.execute(
+                f"DELETE FROM {self._qualified_table_name(table_key)} WHERE {' AND '.join(clauses)}",
+                params,
+            )
+            deleted = int(cursor.rowcount or 0)
         connection.commit()
+        return deleted
+
+    def delete_scored_snapshot(self, snapshot_date, *, segment: Optional[str] = None) -> dict[str, int]:
+        """Delete previously written scored outputs for the same snapshot before re-inserting."""
+        return self.delete_scored_scope(snapshot_date=snapshot_date, segment=segment)
+
+    def delete_scored_scope(
+        self,
+        *,
+        snapshot_date=None,
+        start_date=None,
+        end_date=None,
+        segment: Optional[str] = None,
+    ) -> dict[str, int]:
+        """Delete previously written scored outputs for the same scoped period before re-inserting."""
+        deleted = {"results": 0, "details": 0, "full_effects": 0}
+        deleted["full_effects"] = self.delete_source_rows(
+            "full_effects",
+            snapshot_date=snapshot_date,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        deleted["details"] = self.delete_source_rows(
+            "details",
+            snapshot_date=snapshot_date,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        deleted["results"] = self.delete_source_rows(
+            "results",
+            snapshot_date=snapshot_date,
+            start_date=start_date,
+            end_date=end_date,
+            segment=segment,
+        )
         return deleted
 
     def write_source_rows(self, table_key: str, frame: pd.DataFrame, batch_size: int = 1000) -> int:
@@ -340,6 +460,7 @@ class OracleConnector:
         if "delta_pct" not in frame.columns:
             frame["delta_pct"] = frame.apply(self._compute_delta_pct, axis=1)
 
+        available_columns = self._table_columns("details")
         ordered_columns = [
             self.id_column,
             self.time_column,
@@ -351,18 +472,26 @@ class OracleConnector:
             "contribution_pct",
             "rank",
         ]
+        for optional in (
+            "customer_history_reference",
+            "population_reference",
+            "ae_reference",
+            "ae_contribution_pct",
+            "if_contribution_pct",
+            "md_contribution_pct",
+        ):
+            if optional in frame.columns and optional.upper() in available_columns:
+                ordered_columns.append(optional)
 
+        insert_columns = []
+        for column in ordered_columns:
+            if column == "rank":
+                insert_columns.append("FEATURE_RANK")
+            else:
+                insert_columns.append(column.upper())
         insert_sql = f"""
             INSERT INTO {self._qualified_table_name("details")} (
-                {self.id_column.upper()},
-                {self.time_column.upper()},
-                FEATURE_NAME,
-                FEATURE_LABEL,
-                EXPECTED_VALUE,
-                ACTUAL_VALUE,
-                DELTA_PCT,
-                CONTRIBUTION_PCT,
-                FEATURE_RANK
+                {", ".join(insert_columns)}
             ) VALUES (
                 {", ".join(f":{index}" for index in range(1, len(ordered_columns) + 1))}
             )
@@ -420,6 +549,16 @@ class OracleConnector:
             "is_top_reason",
         ]
         for optional in (
+            "customer_history_reference",
+            "population_reference",
+            "ae_reference",
+            "ae_contribution_pct",
+            "if_contribution_pct",
+            "md_contribution_pct",
+        ):
+            if optional in frame.columns and optional.upper() in available_columns:
+                ordered_columns.append(optional)
+        for optional in (
             "alert_band",
             "run_id",
             "model_version",
@@ -476,6 +615,7 @@ class OracleConnector:
                 if table_key not in active_keys or table_ddls.get(table_key) is None:
                     continue
                 if self._table_exists(table_key):
+                    self._ensure_managed_columns(cursor, table_key)
                     self.logger.info(
                         "Table %s already exists; skipping creation.",
                         self._qualified_table_name(table_key),
@@ -560,25 +700,6 @@ class OracleConnector:
         connection.commit()
         return inserted
 
-    def _delete_snapshot_rows(self, cursor, table_key: str, snapshot_date, *, segment: Optional[str] = None) -> int:
-        active_keys = self._active_table_keys()
-        if table_key not in active_keys:
-            return 0
-
-        available_columns = self._table_columns(table_key)
-        clauses = [f"TRUNC({self.time_column.upper()}) = TRUNC(:snapshot_date)"]
-        params: dict[str, Any] = {"snapshot_date": snapshot_date}
-
-        if segment and segment != "ALL" and self.segment_column.upper() in available_columns:
-            clauses.append(f"{self.segment_column.upper()} = :segment_value")
-            params["segment_value"] = segment
-
-        cursor.execute(
-            f"DELETE FROM {self._qualified_table_name(table_key)} WHERE {' AND '.join(clauses)}",
-            params,
-        )
-        return int(cursor.rowcount or 0)
-
     def _training_table_ddl(self) -> str:
         feature_columns = self._feature_columns_ddl()
         primary_key = f"PK_{self._table_name('training')}"
@@ -603,6 +724,7 @@ class OracleConnector:
                 {self.time_column.upper()} DATE NOT NULL,
                 {self.segment_column.upper()} VARCHAR2(64),
                 {feature_columns},
+                DATA_TIME TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
                 CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
                 CONSTRAINT {primary_key} PRIMARY KEY ({self.id_column.upper()}, {self.time_column.upper()})
             )
@@ -678,6 +800,12 @@ class OracleConnector:
                 ACTUAL_VALUE NUMBER(18,6),
                 DELTA_PCT NUMBER(18,6),
                 CONTRIBUTION_PCT NUMBER(18,6),
+                CUSTOMER_HISTORY_REFERENCE NUMBER(18,6),
+                POPULATION_REFERENCE NUMBER(18,6),
+                AE_REFERENCE NUMBER(18,6),
+                AE_CONTRIBUTION_PCT NUMBER(18,6),
+                IF_CONTRIBUTION_PCT NUMBER(18,6),
+                MD_CONTRIBUTION_PCT NUMBER(18,6),
                 FEATURE_RANK NUMBER(4) NOT NULL,
                 CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
                 CONSTRAINT {primary_key} PRIMARY KEY ({self.id_column.upper()}, {self.time_column.upper()}, FEATURE_NAME)
@@ -696,6 +824,12 @@ class OracleConnector:
                 ACTUAL_VALUE NUMBER(18,6),
                 DELTA_PCT NUMBER(18,6),
                 CONTRIBUTION_PCT NUMBER(18,6),
+                CUSTOMER_HISTORY_REFERENCE NUMBER(18,6),
+                POPULATION_REFERENCE NUMBER(18,6),
+                AE_REFERENCE NUMBER(18,6),
+                AE_CONTRIBUTION_PCT NUMBER(18,6),
+                IF_CONTRIBUTION_PCT NUMBER(18,6),
+                MD_CONTRIBUTION_PCT NUMBER(18,6),
                 FEATURE_RANK NUMBER(4) NOT NULL,
                 IS_TOP_REASON NUMBER(1) DEFAULT 0 NOT NULL,
                 ALERT_BAND VARCHAR2(32),
@@ -712,6 +846,18 @@ class OracleConnector:
         return ",\n                ".join(
             f"{feature_name.upper()} NUMBER(18,6)" for feature_name in self.feature_names
         )
+
+    def _ensure_managed_columns(self, cursor, table_key: str) -> None:
+        available_columns = self._table_columns(table_key)
+        if table_key == "input_features" and "DATA_TIME" not in available_columns:
+            cursor.execute(
+                f"ALTER TABLE {self._qualified_table_name(table_key)} "
+                "ADD (DATA_TIME TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL)"
+            )
+            self.logger.info(
+                "Added DATA_TIME column to existing table %s",
+                self._qualified_table_name(table_key),
+            )
 
     def _table_name(self, table_key: str) -> str:
         tables = self.oracle_settings["tables"]

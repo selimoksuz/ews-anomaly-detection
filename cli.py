@@ -12,11 +12,14 @@ Usage:
     python cli.py evaluate-outcomes [segment] [model_version]
     python cli.py compare [segment] [challenger_version]
     python cli.py promote [segment] [model_version]
-    python cli.py score-live [segment]
+    python cli.py score-live [segment] [snapshot_date]
+    python cli.py score-live [segment] [start_date] [end_date]
     python cli.py run-batch [segment]
     python cli.py compare-preprocessing [segment]
     python cli.py compare-feature-selection [segment]
     python cli.py compare-sampling [segment]
+    python cli.py prepare-ticari-orta-faz1-demo [segment]
+    python cli.py run-ticari-orta-faz1-demo [segment]
     python cli.py reset-runtime
     python cli.py cleanup
 """
@@ -26,17 +29,19 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from engine.config_loader import load_config
+from engine.config_loader import load_config, resolve_project_path
 from engine.lifecycle import LifecycleManager
 from engine.pipeline import EWSPipeline
+from engine.ticari_orta_faz1_demo import prepare_ticari_orta_faz1_demo, run_ticari_orta_faz1_demo
 
 
 def setup_logging(log_dir="logs", level="INFO", enable_file=True):
-    Path(log_dir).mkdir(exist_ok=True)
+    resolved_log_dir = resolve_project_path(log_dir)
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     handlers = [logging.StreamHandler(sys.stdout)]
     if enable_file:
-        handlers.append(logging.FileHandler(f"{log_dir}/ews_{ts}.log", encoding="utf-8"))
+        handlers.append(logging.FileHandler(resolved_log_dir / f"ews_{ts}.log", encoding="utf-8"))
     logging.basicConfig(
         level=getattr(logging, level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -114,7 +119,30 @@ def cmd_promote(*args):
 
 def cmd_score_live(*args):
     manager = LifecycleManager()
-    result = manager.score_live(segment=args[0] if args else None)
+    segment = None
+    snapshot_date = None
+    start_date = None
+    end_date = None
+
+    if len(args) == 1:
+        if _looks_like_date(args[0]):
+            snapshot_date = args[0]
+        else:
+            segment = args[0]
+    elif len(args) == 2:
+        if _looks_like_date(args[0]) and _looks_like_date(args[1]):
+            start_date, end_date = args[0], args[1]
+        else:
+            segment, snapshot_date = args[0], args[1]
+    elif len(args) >= 3:
+        segment, start_date, end_date = args[0], args[1], args[2]
+
+    result = manager.score_live(
+        segment=segment,
+        snapshot_date=snapshot_date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     print(result["snapshot_date"])
 
 
@@ -140,6 +168,16 @@ def cmd_compare_sampling(*args):
     manager = LifecycleManager()
     result = manager.compare_sampling(segment=args[0] if args else None)
     print(result["comparison_path"])
+
+
+def cmd_prepare_ticari_orta_faz1_demo(*args):
+    result = prepare_ticari_orta_faz1_demo(segment=args[0] if args else None)
+    print(result)
+
+
+def cmd_run_ticari_orta_faz1_demo(*args):
+    result = run_ticari_orta_faz1_demo(segment=args[0] if args else None)
+    print(result)
 
 
 def cmd_reset_runtime(*_):
@@ -175,6 +213,17 @@ def _print_summary(results):
             )
 
 
+def _looks_like_date(value: str) -> bool:
+    text = str(value).strip()
+    if len(text) != 10:
+        return False
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
 COMMANDS = {
     "setup": cmd_setup,
     "train": cmd_train,
@@ -191,6 +240,8 @@ COMMANDS = {
     "compare-preprocessing": cmd_compare_preprocessing,
     "compare-feature-selection": cmd_compare_feature_selection,
     "compare-sampling": cmd_compare_sampling,
+    "prepare-ticari-orta-faz1-demo": cmd_prepare_ticari_orta_faz1_demo,
+    "run-ticari-orta-faz1-demo": cmd_run_ticari_orta_faz1_demo,
     "reset-runtime": cmd_reset_runtime,
     "cleanup": cmd_cleanup,
 }
