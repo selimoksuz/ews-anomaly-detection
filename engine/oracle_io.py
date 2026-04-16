@@ -340,6 +340,7 @@ class OracleConnector:
         if "delta_pct" not in frame.columns:
             frame["delta_pct"] = frame.apply(self._compute_delta_pct, axis=1)
 
+        available_columns = self._table_columns("details")
         ordered_columns = [
             self.id_column,
             self.time_column,
@@ -351,18 +352,26 @@ class OracleConnector:
             "contribution_pct",
             "rank",
         ]
+        for optional in (
+            "customer_history_reference",
+            "population_reference",
+            "ae_reference",
+            "ae_contribution_pct",
+            "if_contribution_pct",
+            "md_contribution_pct",
+        ):
+            if optional in frame.columns and optional.upper() in available_columns:
+                ordered_columns.append(optional)
 
+        insert_columns = []
+        for column in ordered_columns:
+            if column == "rank":
+                insert_columns.append("FEATURE_RANK")
+            else:
+                insert_columns.append(column.upper())
         insert_sql = f"""
             INSERT INTO {self._qualified_table_name("details")} (
-                {self.id_column.upper()},
-                {self.time_column.upper()},
-                FEATURE_NAME,
-                FEATURE_LABEL,
-                EXPECTED_VALUE,
-                ACTUAL_VALUE,
-                DELTA_PCT,
-                CONTRIBUTION_PCT,
-                FEATURE_RANK
+                {", ".join(insert_columns)}
             ) VALUES (
                 {", ".join(f":{index}" for index in range(1, len(ordered_columns) + 1))}
             )
@@ -419,6 +428,16 @@ class OracleConnector:
             "rank",
             "is_top_reason",
         ]
+        for optional in (
+            "customer_history_reference",
+            "population_reference",
+            "ae_reference",
+            "ae_contribution_pct",
+            "if_contribution_pct",
+            "md_contribution_pct",
+        ):
+            if optional in frame.columns and optional.upper() in available_columns:
+                ordered_columns.append(optional)
         for optional in (
             "alert_band",
             "run_id",
@@ -678,6 +697,12 @@ class OracleConnector:
                 ACTUAL_VALUE NUMBER(18,6),
                 DELTA_PCT NUMBER(18,6),
                 CONTRIBUTION_PCT NUMBER(18,6),
+                CUSTOMER_HISTORY_REFERENCE NUMBER(18,6),
+                POPULATION_REFERENCE NUMBER(18,6),
+                AE_REFERENCE NUMBER(18,6),
+                AE_CONTRIBUTION_PCT NUMBER(18,6),
+                IF_CONTRIBUTION_PCT NUMBER(18,6),
+                MD_CONTRIBUTION_PCT NUMBER(18,6),
                 FEATURE_RANK NUMBER(4) NOT NULL,
                 CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
                 CONSTRAINT {primary_key} PRIMARY KEY ({self.id_column.upper()}, {self.time_column.upper()}, FEATURE_NAME)
@@ -696,6 +721,12 @@ class OracleConnector:
                 ACTUAL_VALUE NUMBER(18,6),
                 DELTA_PCT NUMBER(18,6),
                 CONTRIBUTION_PCT NUMBER(18,6),
+                CUSTOMER_HISTORY_REFERENCE NUMBER(18,6),
+                POPULATION_REFERENCE NUMBER(18,6),
+                AE_REFERENCE NUMBER(18,6),
+                AE_CONTRIBUTION_PCT NUMBER(18,6),
+                IF_CONTRIBUTION_PCT NUMBER(18,6),
+                MD_CONTRIBUTION_PCT NUMBER(18,6),
                 FEATURE_RANK NUMBER(4) NOT NULL,
                 IS_TOP_REASON NUMBER(1) DEFAULT 0 NOT NULL,
                 ALERT_BAND VARCHAR2(32),

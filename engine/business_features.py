@@ -20,6 +20,8 @@ FAZ1_BASE_FEATURES = [
     "memzuc_limit_utilization_increase",
 ]
 
+YEARLY_SEASONAL_LAG = 12
+
 
 ANNUALIZATION_FACTORS = {
     "Q1": 4.0,
@@ -73,9 +75,9 @@ def build_ticari_orta_faz1_business_features(
         frame["fs_trade_receivables"].astype(float) + frame["fs_notes_receivable"].astype(float)
     )
 
-    prior_pos = frame.groupby(id_column)["pos_monthly_volume"].shift(4)
-    prior_sales = pd.Series(annualized_sales).groupby(frame[id_column]).shift(13)
-    prior_equity = frame.groupby(id_column)["fs_equity"].shift(13)
+    prior_pos = frame.groupby(id_column)["pos_monthly_volume"].shift(YEARLY_SEASONAL_LAG)
+    prior_sales = pd.Series(annualized_sales).groupby(frame[id_column]).shift(YEARLY_SEASONAL_LAG)
+    prior_equity = frame.groupby(id_column)["fs_equity"].shift(YEARLY_SEASONAL_LAG)
 
     derived = frame[[id_column, time_column, segment_column]].copy()
     derived["bank_debt_to_turnover"] = safe_divide(frame["memzuc_total_cash_risk_0_24m"], annualized_sales)

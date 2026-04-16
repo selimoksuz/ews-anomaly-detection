@@ -72,11 +72,7 @@ class OutputWriter:
             parts = []
             if isinstance(row.get("detay"), dict):
                 for _, detail in row["detay"].items():
-                    direction = "UP" if detail["degisim_pct"] > 0 else "DN"
-                    parts.append(
-                        f"{detail['label']}: {detail['beklenen']}->{detail['gerceklesen']}"
-                        f" ({direction}%{abs(detail['degisim_pct']):.0f})"
-                    )
+                    parts.append(self._format_reason_block(detail))
             reasons.append(parts)
         return reasons
 
@@ -96,10 +92,16 @@ class OutputWriter:
                         self.time_column: pd.Timestamp(snapshot_date),
                         "feature_name": feature_name,
                         "feature_label": detail["label"],
-                        "expected_value": detail["beklenen"],
-                        "actual_value": detail["gerceklesen"],
-                        "delta_pct": detail["degisim_pct"],
-                        "contribution_pct": detail["katki_pct"],
+                        "expected_value": detail.get("expected_value", detail.get("ae_referansi", detail.get("beklenen"))),
+                        "actual_value": detail.get("actual_value", detail.get("gerceklesen")),
+                        "delta_pct": detail.get("delta_pct", detail.get("degisim_pct")),
+                        "contribution_pct": detail.get("contribution_pct", detail.get("ensemble_katki_pct", detail.get("katki_pct"))),
+                        "customer_history_reference": detail.get("musteri_gecmis_referansi"),
+                        "population_reference": detail.get("populasyon_referansi"),
+                        "ae_reference": detail.get("ae_referansi", detail.get("beklenen")),
+                        "ae_contribution_pct": detail.get("ae_katki_pct"),
+                        "if_contribution_pct": detail.get("if_katki_pct"),
+                        "md_contribution_pct": detail.get("md_katki_pct"),
                         "rank": int(detail.get("rank", rank)),
                         "is_top_reason": 1 if detail.get("is_top_reason", rank <= self.scoring_cfg.get("top_n_reasons", 3)) else 0,
                         "alert_band": row.get("alert_band"),
@@ -110,3 +112,29 @@ class OutputWriter:
                     }
                 )
         return effect_rows
+
+    @staticmethod
+    def _format_reason_block(detail: dict) -> str:
+        return (
+            f"{detail['label']}\n"
+            f"gerceklesen: {OutputWriter._display_value(detail.get('gerceklesen'))}\n"
+            f"musteri_gecmis_referansi: {OutputWriter._display_value(detail.get('musteri_gecmis_referansi'))}\n"
+            f"populasyon_referansi: {OutputWriter._display_value(detail.get('populasyon_referansi'))}\n"
+            f"ae_referansi: {OutputWriter._display_value(detail.get('ae_referansi', detail.get('beklenen')))}\n"
+            f"ensemble_katki: %{OutputWriter._display_pct(detail.get('ensemble_katki_pct', detail.get('katki_pct')))} "
+            f"(AE %{OutputWriter._display_pct(detail.get('ae_katki_pct'))}, "
+            f"IF %{OutputWriter._display_pct(detail.get('if_katki_pct'))}, "
+            f"MD %{OutputWriter._display_pct(detail.get('md_katki_pct'))})"
+        )
+
+    @staticmethod
+    def _display_value(value) -> str:
+        if value is None or pd.isna(value):
+            return "NA"
+        return f"{float(value):.2f}"
+
+    @staticmethod
+    def _display_pct(value) -> str:
+        if value is None or pd.isna(value):
+            return "0"
+        return f"{float(value):.1f}".rstrip("0").rstrip(".")

@@ -1,12 +1,12 @@
 # Faz 1 Variable Dictionary
 
-Bu sozluk, `bilancolu + POS'u olan` Ticari Orta Faz 1 cohort'u icin hem Oracle native tabloya basilan atomik alanlari hem de bu native tablodan turetilip Oracle `input_features` tablosuna yazilan generated/model input alanlarini birlikte tanimlar.
+Bu sozluk, `bilancolu + POS'u olan` Ticari Orta Faz 1 cohort'u icin hem Oracle native tabloya basilan atomik alanlari hem de bu native tablodan turetilip Oracle `input_features` tablosuna yazilan generated/model input alanlarini birlikte tanimlar. Faz 1 arti̧k haftalik degil, ay sonu snapshot'lariyla aylik cadence uzerinden calisir.
 
 ## Faz 1 Warm-Up Kurali
 
-- Native tablo tum haftalik snapshot'lari tutar.
+- Native tablo tum ay sonu snapshot'larini tutar.
 - Derived/input tablo ise history feature'lar anlamli olustugu noktadan baslar.
-- Faz 1'de `equity_change` ve `net_sales_change` icin `lag_13`, bunlarin `self_zscore_6` turevleri icin de 6 ek gecmis gerektigi icin her musteri icin ilk `19` snapshot warm-up olarak disarida birakilir.
+- Faz 1'de yillik karsilastirma yapan degiskenler icin `lag_12`, bunlarin `self_zscore_6` turevleri icin de 6 ek gecmis gerektigi icin her musteri icin ilk `18` snapshot warm-up olarak disarida birakilir.
 - Bu nedenle `derived row count`, `native row count` ile ayni olmak zorunda degildir; genellikle daha dusuktur.
 
 ## 1. Native Katman
@@ -22,7 +22,7 @@ Bu sozluk, `bilancolu + POS'u olan` Ticari Orta Faz 1 cohort'u icin hem Oracle n
 | Native Column | Tip | Aciklama | Missing / Outlier Notu |
 |---|---|---|---|
 | `customer_id` | identifier | Musteri anahtari | zorunlu |
-| `snapshot_date` | date | Haftalik snapshot tarihi | zorunlu |
+| `snapshot_date` | date | Ay sonu snapshot tarihi | zorunlu |
 | `segment` | text | Faz 1 cohort segment etiketi (`TICARI_ORTA_FAZ1`) | zorunlu |
 | `is_balance_sheet_customer` | flag | Cohort filtreleme icin bilancolu musteri isareti | bu fazda `1` |
 | `has_pos` | flag | Cohort filtreleme icin POS sahipligi | bu fazda `1` |
@@ -64,15 +64,15 @@ Bu sozluk, `bilancolu + POS'u olan` Ticari Orta Faz 1 cohort'u icin hem Oracle n
 | Derived Column | Kategori | Hesap Mantigi |
 |---|---|---|
 | `bank_debt_to_turnover` | ratio | `memzuc_total_cash_risk_0_24m / annualized_net_sales` |
-| `pos_volume_change` | change | `((current_pos_monthly_volume - lag_4_pos_monthly_volume) / abs(lag_4_pos_monthly_volume))` |
+| `pos_volume_change` | change | `((current_pos_monthly_volume - lag_12_pos_monthly_volume) / abs(lag_12_pos_monthly_volume))` |
 | `bank_debt_to_ebitda` | ratio | `(memzuc_total_cash_risk_0_24m * tlref_factor) / annualized_ebitda` |
 | `trade_receivables_to_turnover` | ratio | `(fs_trade_receivables + fs_notes_receivable) / annualized_net_sales` |
 | `profitability_to_turnover` | ratio | `annualized_net_profit / annualized_net_sales` |
-| `equity_change` | change | `((current_equity - lag_13_equity) / abs(lag_13_equity))` |
+| `equity_change` | change | `((current_equity - lag_12_equity) / abs(lag_12_equity))` |
 | `ifrs9_behavioral_pd` | score | native authoritative score |
 | `kkb_commercial_score` | score | native authoritative score |
 | `kkb_indebtedness_index` | score | native authoritative score |
-| `net_sales_change` | change | `((annualized_net_sales - lag_13_annualized_net_sales) / abs(lag_13_annualized_net_sales))` |
+| `net_sales_change` | change | `((annualized_net_sales - lag_12_annualized_net_sales) / abs(lag_12_annualized_net_sales))` |
 | `memzuc_limit_utilization_increase` | ratio | `memzuc_total_risk / memzuc_total_limit` |
 
 ### 2.2 Self-History Features

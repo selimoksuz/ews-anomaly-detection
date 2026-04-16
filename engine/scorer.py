@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -64,19 +66,36 @@ class AnomalyScorer:
 
         component = self.component_scores(df)
         expected_X = self.models.ae_reconstruct(X)
-        ae_weight = float(self.weights["autoencoder"])
-        baseline_X = ae_weight * expected_X
         actual_values = self.models.actual_values(df)
-        expected_values = self.models.inverse_transform(baseline_X)
+        expected_values = self.models.inverse_transform(expected_X)
 
         ae_c = self.models.ae_contribution(X)
         if_c = self.models.if_contribution(X)
         md_c = self.models.md_contribution(X)
+        ae_weighted = self.weights["autoencoder"] * ae_c * 100.0
+        if_weighted = self.weights["isolation_forest"] * if_c * 100.0
+        md_weighted = self.weights["mahalanobis"] * md_c * 100.0
 
         unified = (
-            self.weights["autoencoder"] * ae_c
-            + self.weights["isolation_forest"] * if_c
-            + self.weights["mahalanobis"] * md_c
+            ae_weighted / 100.0
+            + if_weighted / 100.0
+            + md_weighted / 100.0
+        )
+        unified_pct = ae_weighted + if_weighted + md_weighted
+        feature_index_map = {feature: index for index, feature in enumerate(self.features)}
+        family_indices = defaultdict(list)
+        base_feature_indices = {}
+        for feature_index, feature_name in enumerate(self.features):
+            family_name = self._base_feature_name(feature_name)
+            family_indices[family_name].append(feature_index)
+            if feature_name == family_name and family_name not in base_feature_indices:
+                base_feature_indices[family_name] = feature_index
+
+        population_reference_map = self._build_population_reference_map(
+            df,
+            actual_values,
+            time_column=time_col,
+            base_feature_indices=base_feature_indices,
         )
 
         z_abs = np.abs(X)
@@ -87,42 +106,60 @@ class AnomalyScorer:
         full_details = []
         for row_index in range(n_rows):
             ordered_idx = np.argsort(unified[row_index])[::-1]
-            top_idx = np.argsort(unified[row_index])[::-1][: self.top_n]
             parts = []
             detail_payload = {}
             full_detail_payload = {}
             for rank, feature_index in enumerate(ordered_idx, 1):
                 feature_name = self.features[feature_index]
                 label = get_label(self.config, feature_name)
-                contribution_pct = unified[row_index, feature_index] * 100
+                contribution_pct = unified_pct[row_index, feature_index]
 
                 actual = actual_values[row_index, feature_index]
                 expected = expected_values[row_index, feature_index]
-                if abs(expected) > 1e-6:
-                    pct_change = ((actual - expected) / abs(expected)) * 100
-                else:
-                    pct_change = 0.0 if abs(actual) < 1e-6 else 999.0
+                pct_change = self._compute_pct_change(actual, expected)
 
                 detail_record = {
                     "label": label,
-                    "beklenen": round(float(expected), 2),
-                    "gerceklesen": round(float(actual), 2),
-                    "degisim_pct": round(float(pct_change), 1),
-                    "katki_pct": round(float(contribution_pct), 1),
+                    "gerceklesen": self._round_optional(actual, 2),
+                    "ae_referansi": self._round_optional(expected, 2),
+                    "expected_value": self._round_optional(expected, 6),
+                    "actual_value": self._round_optional(actual, 6),
+                    "delta_pct": self._round_optional(pct_change, 1),
+                    "contribution_pct": self._round_optional(contribution_pct, 1),
+                    "ensemble_katki_pct": self._round_optional(contribution_pct, 1),
+                    "ae_katki_pct": self._round_optional(ae_weighted[row_index, feature_index], 1),
+                    "if_katki_pct": self._round_optional(if_weighted[row_index, feature_index], 1),
+                    "md_katki_pct": self._round_optional(md_weighted[row_index, feature_index], 1),
                     "rank": rank,
                     "is_top_reason": rank <= self.top_n,
                 }
                 full_detail_payload[feature_name] = detail_record
 
-                if feature_index in top_idx:
-                    role = "ana etken" if rank == 1 else f"katki %{contribution_pct:.0f}"
-                    direction = "UP" if pct_change > 0 else "DN"
-                    parts.append(
-                        f"{label}: {expected:.2f}->{actual:.2f} ({direction}%{abs(pct_change):.0f}, {role})"
-                    )
-                    detail_payload[feature_name] = detail_record
+            family_order = sorted(
+                family_indices.keys(),
+                key=lambda family_name: float(np.sum(unified_pct[row_index, family_indices[family_name]])),
+                reverse=True,
+            )[: self.top_n]
+            for rank, family_name in enumerate(family_order, 1):
+                family_detail = self._build_family_detail(
+                    row_index=row_index,
+                    family_name=family_name,
+                    family_indices=family_indices,
+                    base_feature_indices=base_feature_indices,
+                    feature_index_map=feature_index_map,
+                    actual_values=actual_values,
+                    expected_values=expected_values,
+                    population_reference_map=population_reference_map,
+                    ae_weighted=ae_weighted,
+                    if_weighted=if_weighted,
+                    md_weighted=md_weighted,
+                    unified_pct=unified_pct,
+                    rank=rank,
+                )
+                detail_payload[family_name] = family_detail
+                parts.append(self._format_reason_block(family_detail))
 
-            reasons.append(" | ".join(parts))
+            reasons.append(parts)
             details.append(detail_payload)
             full_details.append(full_detail_payload)
 
@@ -208,6 +245,10 @@ class AnomalyScorer:
 
     @staticmethod
     def _reason_at_position(value: str, position: int):
+        if value is None:
+            return None
+        if isinstance(value, Sequence) and not isinstance(value, str):
+            return value[position] if position < len(value) else None
         if not isinstance(value, str):
             return None
         parts = [part.strip() for part in value.split("|") if part.strip()]
@@ -222,3 +263,119 @@ class AnomalyScorer:
                     assigned = band_name
             bands.append(assigned)
         return bands
+
+    @staticmethod
+    def _base_feature_name(feature_name: str) -> str:
+        return str(feature_name).split("__", 1)[0].strip().lower()
+
+    @staticmethod
+    def _round_optional(value, digits: int):
+        if pd.isna(value):
+            return None
+        return round(float(value), digits)
+
+    @staticmethod
+    def _compute_pct_change(actual, reference) -> float:
+        if pd.isna(actual) or pd.isna(reference):
+            return 0.0
+        if abs(reference) > 1e-6:
+            return float(((actual - reference) / abs(reference)) * 100.0)
+        return 0.0 if abs(actual) < 1e-6 else 999.0
+
+    def _build_population_reference_map(
+        self,
+        df: pd.DataFrame,
+        actual_values: np.ndarray,
+        *,
+        time_column: str,
+        base_feature_indices: dict[str, int],
+    ) -> dict[str, np.ndarray]:
+        reference_map: dict[str, np.ndarray] = {}
+        time_values = None
+        if time_column in df.columns:
+            time_values = pd.to_datetime(df[time_column], errors="coerce")
+
+        for family_name, feature_index in base_feature_indices.items():
+            series = pd.Series(actual_values[:, feature_index])
+            if time_values is not None and not time_values.isna().all():
+                reference_map[family_name] = series.groupby(time_values, sort=False).transform("median").to_numpy()
+            else:
+                fallback = np.nanmedian(actual_values[:, feature_index])
+                reference_map[family_name] = np.full(len(actual_values), fallback, dtype=float)
+        return reference_map
+
+    def _build_family_detail(
+        self,
+        *,
+        row_index: int,
+        family_name: str,
+        family_indices: dict[str, list[int]],
+        base_feature_indices: dict[str, int],
+        feature_index_map: dict[str, int],
+        actual_values: np.ndarray,
+        expected_values: np.ndarray,
+        population_reference_map: dict[str, np.ndarray],
+        ae_weighted: np.ndarray,
+        if_weighted: np.ndarray,
+        md_weighted: np.ndarray,
+        unified_pct: np.ndarray,
+        rank: int,
+    ) -> dict:
+        base_index = base_feature_indices[family_name]
+        family_feature_indices = family_indices[family_name]
+        actual = actual_values[row_index, base_index]
+        ae_reference = expected_values[row_index, base_index]
+
+        customer_history_reference = np.nan
+        delta_feature_name = f"{family_name}__delta_1"
+        delta_index = feature_index_map.get(delta_feature_name)
+        if delta_index is not None:
+            delta_value = actual_values[row_index, delta_index]
+            if not pd.isna(delta_value) and not pd.isna(actual):
+                customer_history_reference = actual - delta_value
+
+        population_reference = population_reference_map.get(family_name, np.full(len(actual_values), np.nan))[row_index]
+        total_contribution = float(np.sum(unified_pct[row_index, family_feature_indices]))
+        ae_contribution = float(np.sum(ae_weighted[row_index, family_feature_indices]))
+        if_contribution = float(np.sum(if_weighted[row_index, family_feature_indices]))
+        md_contribution = float(np.sum(md_weighted[row_index, family_feature_indices]))
+
+        return {
+            "label": get_label(self.config, family_name),
+            "gerceklesen": self._round_optional(actual, 2),
+            "musteri_gecmis_referansi": self._round_optional(customer_history_reference, 2),
+            "populasyon_referansi": self._round_optional(population_reference, 2),
+            "ae_referansi": self._round_optional(ae_reference, 2),
+            "expected_value": self._round_optional(ae_reference, 6),
+            "actual_value": self._round_optional(actual, 6),
+            "delta_pct": self._round_optional(self._compute_pct_change(actual, ae_reference), 1),
+            "contribution_pct": self._round_optional(total_contribution, 1),
+            "ensemble_katki_pct": self._round_optional(total_contribution, 1),
+            "ae_katki_pct": self._round_optional(ae_contribution, 1),
+            "if_katki_pct": self._round_optional(if_contribution, 1),
+            "md_katki_pct": self._round_optional(md_contribution, 1),
+            "rank": rank,
+            "is_top_reason": True,
+        }
+
+    @staticmethod
+    def _format_reason_block(detail: dict) -> str:
+        return (
+            f"{detail['label']}\n"
+            f"gerceklesen: {AnomalyScorer._display_value(detail.get('gerceklesen'))}\n"
+            f"musteri_gecmis_referansi: {AnomalyScorer._display_value(detail.get('musteri_gecmis_referansi'))}\n"
+            f"populasyon_referansi: {AnomalyScorer._display_value(detail.get('populasyon_referansi'))}\n"
+            f"ae_referansi: {AnomalyScorer._display_value(detail.get('ae_referansi'))}\n"
+            f"ensemble_katki: %{AnomalyScorer._display_pct(detail.get('ensemble_katki_pct'))} "
+            f"(AE %{AnomalyScorer._display_pct(detail.get('ae_katki_pct'))}, "
+            f"IF %{AnomalyScorer._display_pct(detail.get('if_katki_pct'))}, "
+            f"MD %{AnomalyScorer._display_pct(detail.get('md_katki_pct'))})"
+        )
+
+    @staticmethod
+    def _display_value(value) -> str:
+        return "NA" if value is None or pd.isna(value) else f"{float(value):.2f}"
+
+    @staticmethod
+    def _display_pct(value) -> str:
+        return "0" if value is None or pd.isna(value) else f"{float(value):.1f}".rstrip("0").rstrip(".")

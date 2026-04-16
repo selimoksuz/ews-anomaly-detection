@@ -5,7 +5,6 @@ pipeline:
   time_column: snapshot_date
   split_column: split_flag
   non_feature_columns: []
-
 features:
   mode: explicit
   include_columns: []
@@ -16,90 +15,131 @@ features:
     low_cardinality_threshold: 8
     per_feature: {}
   instant:
-    - name: bank_debt_to_turnover
-      label_tr: "Banka Borclulugu / Ciro"
-    - name: pos_volume_change
-      label_tr: "Tum Bankalar POS Hacmi Degisimi"
-    - name: bank_debt_to_ebitda
-      label_tr: "Banka Borclulugu / EBITDA"
-    - name: trade_receivables_to_turnover
-      label_tr: "Ticari Alacak / Ciro"
-    - name: profitability_to_turnover
-      label_tr: "Karlilik / Ciro"
-    - name: equity_change
-      label_tr: "Ozkaynak Degisimi"
-    - name: ifrs9_behavioral_pd
-      label_tr: "TFRS Davranis Temerrut Olasiligi"
-    - name: kkb_commercial_score
-      label_tr: "KKB Ticari Kredi Notu"
-    - name: kkb_indebtedness_index
-      label_tr: "KKB Ticari Borcluluk Endeksi"
-    - name: net_sales_change
-      label_tr: "Net Satis Degisimi"
-    - name: memzuc_limit_utilization_increase
-      label_tr: "Memzuc Limit Doluluk Orani"
+  - name: bank_debt_to_turnover
+    label_tr: Banka Borclulugu / Ciro
+  - name: pos_volume_change
+    label_tr: Tum Bankalar POS Hacmi Degisimi
+  - name: bank_debt_to_ebitda
+    label_tr: Banka Borclulugu / EBITDA
+  - name: trade_receivables_to_turnover
+    label_tr: Ticari Alacak / Ciro
+  - name: profitability_to_turnover
+    label_tr: Karlilik / Ciro
+  - name: equity_change
+    label_tr: Ozkaynak Degisimi
+  - name: ifrs9_behavioral_pd
+    label_tr: TFRS Davranis Temerrut Olasiligi
+  - name: kkb_commercial_score
+    label_tr: KKB Ticari Kredi Notu
+  - name: kkb_indebtedness_index
+    label_tr: KKB Ticari Borcluluk Endeksi
+  - name: net_sales_change
+    label_tr: Net Satis Degisimi
+  - name: memzuc_limit_utilization_increase
+    label_tr: Memzuc Limit Doluluk Orani
   rolling_4w:
-    - name: bank_debt_to_turnover__delta_1
-      label_tr: "Banka Borclulugu / Ciro Delta-1"
-    - name: pos_volume_change__delta_1
-      label_tr: "POS Hacmi Degisimi Delta-1"
-    - name: bank_debt_to_ebitda__delta_1
-      label_tr: "Banka Borclulugu / EBITDA Delta-1"
-    - name: trade_receivables_to_turnover__delta_1
-      label_tr: "Ticari Alacak / Ciro Delta-1"
-    - name: profitability_to_turnover__delta_1
-      label_tr: "Karlilik / Ciro Delta-1"
-    - name: equity_change__delta_1
-      label_tr: "Ozkaynak Degisimi Delta-1"
-    - name: ifrs9_behavioral_pd__delta_1
-      label_tr: "TFRS PD Delta-1"
-    - name: kkb_commercial_score__delta_1
-      label_tr: "KKB Not Delta-1"
-    - name: kkb_indebtedness_index__delta_1
-      label_tr: "KKB Borcluluk Delta-1"
-    - name: net_sales_change__delta_1
-      label_tr: "Net Satis Delta-1"
-    - name: memzuc_limit_utilization_increase__delta_1
-      label_tr: "Limit Doluluk Delta-1"
+  - name: bank_debt_to_turnover__delta_1
+    label_tr: Banka Borclulugu / Ciro Delta-1
+  - name: pos_volume_change__delta_1
+    label_tr: POS Hacmi Degisimi Delta-1
+  - name: bank_debt_to_ebitda__delta_1
+    label_tr: Banka Borclulugu / EBITDA Delta-1
+  - name: trade_receivables_to_turnover__delta_1
+    label_tr: Ticari Alacak / Ciro Delta-1
+  - name: profitability_to_turnover__delta_1
+    label_tr: Karlilik / Ciro Delta-1
+  - name: equity_change__delta_1
+    label_tr: Ozkaynak Degisimi Delta-1
+  - name: ifrs9_behavioral_pd__delta_1
+    label_tr: TFRS PD Delta-1
+  - name: kkb_commercial_score__delta_1
+    label_tr: KKB Not Delta-1
+  - name: kkb_indebtedness_index__delta_1
+    label_tr: KKB Borcluluk Delta-1
+  - name: net_sales_change__delta_1
+    label_tr: Net Satis Delta-1
+  - name: memzuc_limit_utilization_increase__delta_1
+    label_tr: Limit Doluluk Delta-1
   trend:
-    - name: bank_debt_to_turnover__self_zscore_6
-      label_tr: "Banka Borclulugu / Ciro Self-Z(6)"
-    - name: pos_volume_change__self_zscore_6
-      label_tr: "POS Hacmi Self-Z(6)"
-    - name: bank_debt_to_ebitda__self_zscore_6
-      label_tr: "Banka Borclulugu / EBITDA Self-Z(6)"
-    - name: trade_receivables_to_turnover__self_zscore_6
-      label_tr: "Ticari Alacak / Ciro Self-Z(6)"
-    - name: profitability_to_turnover__self_zscore_6
-      label_tr: "Karlilik / Ciro Self-Z(6)"
-    - name: equity_change__self_zscore_6
-      label_tr: "Ozkaynak Self-Z(6)"
-    - name: ifrs9_behavioral_pd__self_zscore_6
-      label_tr: "TFRS PD Self-Z(6)"
-    - name: kkb_commercial_score__self_zscore_6
-      label_tr: "KKB Not Self-Z(6)"
-    - name: kkb_indebtedness_index__self_zscore_6
-      label_tr: "KKB Borcluluk Self-Z(6)"
-    - name: net_sales_change__self_zscore_6
-      label_tr: "Net Satis Self-Z(6)"
-    - name: memzuc_limit_utilization_increase__self_zscore_6
-      label_tr: "Limit Doluluk Self-Z(6)"
-    - name: pos_volume_change__trend_slope_6
-      label_tr: "POS Hacmi Trend Egrisi(6)"
-    - name: net_sales_change__trend_slope_6
-      label_tr: "Net Satis Trend Egrisi(6)"
-    - name: pos_volume_change__population_percentile
-      label_tr: "POS Hacmi Populasyon Persentili"
-    - name: pos_volume_change__vs_population_median_delta
-      label_tr: "POS Hacmi - Populasyon Medyani"
-    - name: net_sales_change__population_percentile
-      label_tr: "Net Satis Populasyon Persentili"
-    - name: net_sales_change__vs_population_median_delta
-      label_tr: "Net Satis - Populasyon Medyani"
-
+  - name: bank_debt_to_turnover__self_zscore_6
+    label_tr: Banka Borclulugu / Ciro Self-Z(6)
+  - name: pos_volume_change__self_zscore_6
+    label_tr: POS Hacmi Self-Z(6)
+  - name: bank_debt_to_ebitda__self_zscore_6
+    label_tr: Banka Borclulugu / EBITDA Self-Z(6)
+  - name: trade_receivables_to_turnover__self_zscore_6
+    label_tr: Ticari Alacak / Ciro Self-Z(6)
+  - name: profitability_to_turnover__self_zscore_6
+    label_tr: Karlilik / Ciro Self-Z(6)
+  - name: equity_change__self_zscore_6
+    label_tr: Ozkaynak Self-Z(6)
+  - name: ifrs9_behavioral_pd__self_zscore_6
+    label_tr: TFRS PD Self-Z(6)
+  - name: kkb_commercial_score__self_zscore_6
+    label_tr: KKB Not Self-Z(6)
+  - name: kkb_indebtedness_index__self_zscore_6
+    label_tr: KKB Borcluluk Self-Z(6)
+  - name: net_sales_change__self_zscore_6
+    label_tr: Net Satis Self-Z(6)
+  - name: memzuc_limit_utilization_increase__self_zscore_6
+    label_tr: Limit Doluluk Self-Z(6)
+  - name: pos_volume_change__trend_slope_6
+    label_tr: POS Hacmi Trend Egrisi(6)
+  - name: net_sales_change__trend_slope_6
+    label_tr: Net Satis Trend Egrisi(6)
+  - name: pos_volume_change__population_percentile
+    label_tr: POS Hacmi Populasyon Persentili
+  - name: pos_volume_change__vs_population_median_delta
+    label_tr: POS Hacmi - Populasyon Medyani
+  - name: net_sales_change__population_percentile
+    label_tr: Net Satis Populasyon Persentili
+  - name: net_sales_change__vs_population_median_delta
+    label_tr: Net Satis - Populasyon Medyani
+  raw_type_overrides:
+    bank_debt_to_turnover: continuous
+    pos_volume_change: continuous
+    bank_debt_to_ebitda: continuous
+    trade_receivables_to_turnover: continuous
+    profitability_to_turnover: continuous
+    equity_change: continuous
+    ifrs9_behavioral_pd: continuous
+    kkb_commercial_score: continuous
+    kkb_indebtedness_index: continuous
+    net_sales_change: continuous
+    memzuc_limit_utilization_increase: continuous
+    bank_debt_to_turnover__delta_1: continuous
+    pos_volume_change__delta_1: continuous
+    bank_debt_to_ebitda__delta_1: continuous
+    trade_receivables_to_turnover__delta_1: continuous
+    profitability_to_turnover__delta_1: continuous
+    equity_change__delta_1: continuous
+    ifrs9_behavioral_pd__delta_1: continuous
+    kkb_commercial_score__delta_1: continuous
+    kkb_indebtedness_index__delta_1: continuous
+    net_sales_change__delta_1: continuous
+    memzuc_limit_utilization_increase__delta_1: continuous
+    bank_debt_to_turnover__self_zscore_6: continuous
+    pos_volume_change__self_zscore_6: continuous
+    bank_debt_to_ebitda__self_zscore_6: continuous
+    trade_receivables_to_turnover__self_zscore_6: continuous
+    profitability_to_turnover__self_zscore_6: continuous
+    equity_change__self_zscore_6: continuous
+    ifrs9_behavioral_pd__self_zscore_6: continuous
+    kkb_commercial_score__self_zscore_6: continuous
+    kkb_indebtedness_index__self_zscore_6: continuous
+    net_sales_change__self_zscore_6: continuous
+    memzuc_limit_utilization_increase__self_zscore_6: continuous
+    pos_volume_change__trend_slope_6: continuous
+    net_sales_change__trend_slope_6: continuous
+    pos_volume_change__population_percentile: continuous
+    pos_volume_change__vs_population_median_delta: continuous
+    net_sales_change__population_percentile: continuous
+    net_sales_change__vs_population_median_delta: continuous
 models:
   autoencoder:
-    hidden_layers: [48, 24]
+    hidden_layers:
+    - 48
+    - 24
     latent_dim: 8
     epochs: 120
     learning_rate: 0.001
@@ -107,7 +147,7 @@ models:
     validation_fraction: 0.1
     early_stopping_patience: 18
     min_epochs: 40
-    min_improvement: 1.0e-5
+    min_improvement: 1.0e-05
     dropout: 0.0
     reconstruction_loss: mse
   isolation_forest:
@@ -119,13 +159,11 @@ models:
     covariance_estimator: ledoit_wolf
     shrinkage: ledoit_wolf
     score_percentile_cap: 99.5
-
 ensemble:
   weights:
     ae: 0.45
     if: 0.35
-    md: 0.20
-
+    md: 0.2
 alert_bands:
   normal:
     min_score: 0
@@ -139,17 +177,14 @@ alert_bands:
   kirmizi:
     min_score: 90
     max_score: 100
-
 scoring:
   score_min: 0
   score_max: 100
   top_n_reasons: 3
   persist_full_feature_effects: true
   full_effect_scope: all
-
 training:
   random_seed: 42
-
 feature_selection:
   enabled: true
   drop_zero_variance_continuous: true
@@ -164,9 +199,8 @@ feature_selection:
       exclude_transforms: []
     mahalanobis:
       exclude_raw_types:
-        - binary
+      - binary
       exclude_transforms: []
-
 preprocessing:
   enabled: true
   missing:
@@ -174,21 +208,21 @@ preprocessing:
   hard_bounds:
     enabled: true
     rules:
-      - feature: bank_debt_to_turnover
-        lower: 0
-      - feature: bank_debt_to_ebitda
-        lower: 0
-      - feature: trade_receivables_to_turnover
-        lower: 0
-      - feature: ifrs9_behavioral_pd
-        lower: 0
-        upper: 1
-      - feature: kkb_commercial_score
-        lower: 0
-      - feature: kkb_indebtedness_index
-        lower: 0
-      - feature: memzuc_limit_utilization_increase
-        lower: 0
+    - feature: bank_debt_to_turnover
+      lower: 0
+    - feature: bank_debt_to_ebitda
+      lower: 0
+    - feature: trade_receivables_to_turnover
+      lower: 0
+    - feature: ifrs9_behavioral_pd
+      lower: 0
+      upper: 1
+    - feature: kkb_commercial_score
+      lower: 0
+    - feature: kkb_indebtedness_index
+      lower: 0
+    - feature: memzuc_limit_utilization_increase
+      lower: 0
   winsorization:
     enabled: true
     lower_quantile: 0.01
@@ -198,10 +232,8 @@ preprocessing:
     features: []
   scaler:
     type: robust
-
 stability:
   report_path: models/ews_model_stability.json
-
 sources:
   native_features:
     backend: oracle
@@ -221,16 +253,15 @@ sources:
       results_table_key: results
       details_table_key: details
       full_effects_table_key: full_effects
-
 development:
   source_name: input_features
-  frequency: weekly
+  frequency: monthly
   segment_column: segment
   segment_value: TICARI_ORTA_FAZ1
   sampling:
     enabled: false
     windows:
-      - train
+    - train
     activate_if_rows_gt: 1000000
     max_rows: null
     compare_max_rows: null
@@ -241,7 +272,7 @@ development:
       max_tail_share_delta: 0.02
       max_missing_share_delta: 0.02
       max_feature_missing_delta: 0.01
-      max_feature_ks: 0.10
+      max_feature_ks: 0.1
       fallback_to_full_on_fail: true
   windows:
     mode: relative_periods
@@ -264,31 +295,28 @@ development:
       oot:
         start: null
         end: null
-
 retraining:
   source_name: development
   auto_promote: false
   promotion_metric: weighting.validation_metrics.primary.precision_at_top_percent
   candidate_name_prefix: challenger
-
 calibration:
   enabled: true
   method: empirical_cdf
   source_window: calibration
   min_rows: 100
   quantiles: 101
-
 weight_optimization:
   enabled: true
   source_name: outcomes
   target_column: label_30dpd_8w
   monitoring_columns:
-    - label_default_12m
+  - label_default_12m
   training_window: test
   validation_window: oot
   evaluation_windows:
-    - test
-    - oot
+  - test
+  - oot
   grid_step: 0.1
   min_component_weight: 0.1
   min_positive_rows: 10
@@ -297,11 +325,9 @@ weight_optimization:
   selection_tolerance: 0.02
   prefer_balanced_within_tolerance: true
   auto_apply: true
-
 monitoring:
   enabled: true
   directory: meta/monitoring
-
 live_scoring:
   source_name: input_features
   snapshot:
@@ -309,7 +335,6 @@ live_scoring:
     explicit_date: null
     start_date: null
     end_date: null
-
 shadow_scoring:
   enabled: false
   mode: raw_shadow
@@ -318,7 +343,6 @@ shadow_scoring:
   winsorization_enabled: false
   log1p_enabled: false
   scaler_type: standard
-
 batch_execution:
   bootstrap_if_missing_champion: true
   bootstrap_promote: true
@@ -330,7 +354,6 @@ batch_execution:
   compare_enabled: false
   promote_if_recommended: false
   cleanup_after_run: false
-
 registry:
   meta_dir: meta
   artifacts_dir: artifacts
@@ -339,19 +362,16 @@ registry:
   model_registry_file: meta/model_registry.json
   champion_registry_file: meta/champions.json
   registry_lock_file: meta/.registry.lock
-
 retention:
   logs_days: 14
   run_manifests_days: 30
   artifacts_days: 60
   keep_last_models_per_segment: 5
-
 orchestration:
   airflow:
     dag_id: ews_anomaly_detection
-    schedule: "0 6 * * 1"
+    schedule: 0 6 * * 1
     max_active_runs: 1
-
 oracle:
   schema: ZT_VAR2
   tables:
@@ -363,12 +383,11 @@ oracle:
     results: EWS_TO_FAZ1_RESULTS
     details: EWS_TO_FAZ1_DETAILS
     full_effects: EWS_TO_FAZ1_FEATURE_EFFECTS
-
 logging:
   logger_name: ews.pipeline
   level: INFO
   directory: logs
   file_name: pipeline.log
-  format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-  date_format: "%Y-%m-%d %H:%M:%S"
+  format: '%(asctime)s | %(levelname)s | %(name)s | %(message)s'
+  date_format: '%Y-%m-%d %H:%M:%S'
   console: true

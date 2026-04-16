@@ -22,12 +22,12 @@ from engine.oracle_io import OracleConnector
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
-DEFAULT_NUM_SNAPSHOTS = 52
+DEFAULT_NUM_SNAPSHOTS = 36
 # Strict warm-up for Faz 1:
-# - equity_change / net_sales_change need 13 prior snapshots
+# - monthly year-over-year change features need 12 prior snapshots
 # - self_zscore_6 needs 6 prior base observations
-# Earliest fully mature row is therefore the 20th snapshot per customer.
-STRICT_HISTORY_WARMUP_SNAPSHOTS = 19
+# Earliest fully mature row is therefore the 19th snapshot per customer.
+STRICT_HISTORY_WARMUP_SNAPSHOTS = 18
 
 NATIVE_COLUMNS = [
     "customer_id",
@@ -160,6 +160,8 @@ class TicariOrtaFaz1DemoBuilder:
         manager = LifecycleManager(config_path=self.config_path)
         develop_summary = manager.develop(segment=segment_value)
         promote_summary = manager.promote(segment=segment_value, model_version=develop_summary["model_version"])
+        manager.live_scoring_cfg.setdefault("snapshot", {})["explicit_date"] = preparation["native_snapshot_end"]
+        manager.config.setdefault("live_scoring", {}).setdefault("snapshot", {})["explicit_date"] = preparation["native_snapshot_end"]
         live_summary = manager.score_live(segment=segment_value)
         return {
             "prepare": preparation,
@@ -180,14 +182,15 @@ class TicariOrtaFaz1DemoBuilder:
         rng = np.random.default_rng(seed)
         segment_value = segment or self.default_segment
         snapshot_end = pd.Timestamp(end_date) if end_date is not None else pd.Timestamp.today().normalize()
-        snapshots = pd.date_range(end=snapshot_end, periods=num_snapshots, freq="7D")
+        snapshot_end = snapshot_end + pd.offsets.MonthEnd(0)
+        snapshots = pd.date_range(end=snapshot_end, periods=num_snapshots, freq="ME")
 
         profiles = self._build_customer_profiles(num_customers, rng, segment_value, num_snapshots)
         records: list[dict[str, Any]] = []
         for snapshot_index, snapshot_date in enumerate(snapshots):
             quarter_code = _quarter_code(snapshot_date)
             fs_last_update = _quarter_reference_date(snapshot_date)
-            seasonal_phase = 2.0 * np.pi * snapshot_index / 13.0
+            seasonal_phase = 2.0 * np.pi * snapshot_index / 12.0
             for profile in profiles.itertuples(index=False):
                 stress_multiplier = self._stress_multiplier(profile, snapshot_index, num_snapshots)
                 seasonal = 1.0 + profile.season_amp * np.sin(seasonal_phase + profile.phase_shift)

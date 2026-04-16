@@ -19,7 +19,7 @@ class TicariOrtaFaz1DemoBuilderTests(unittest.TestCase):
             end_date="2026-04-15",
             seed=123,
         )
-        self.assertEqual(pd.Timestamp("2026-04-15"), pd.to_datetime(frame["snapshot_date"]).max())
+        self.assertEqual(pd.Timestamp("2026-04-30"), pd.to_datetime(frame["snapshot_date"]).max())
         self.assertTrue(frame[["pos_monthly_volume", "fs_ebitda_cumulative", "ifrs9_behavioral_pd"]].isna().any().any())
 
     def test_derived_frame_contains_base_and_history_columns(self):
