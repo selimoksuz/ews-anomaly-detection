@@ -46,7 +46,7 @@ training:
   random_seed: 42
 
 stability:
-  report_path: models/ews_model_stability.json
+  report_path: runtime/legacy_models/ews_model_stability.json
 
 sources:
   native_features:
@@ -146,7 +146,7 @@ weight_optimization:
 
 monitoring:
   enabled: true
-  directory: meta/monitoring
+  directory: runtime/monitoring
 
 live_scoring:
   source_name: input_features
@@ -178,18 +178,18 @@ batch_execution:
   cleanup_after_run: false
 
 registry:
-  meta_dir: meta
-  artifacts_dir: artifacts
-  logs_dir: logs
-  run_registry_file: meta/run_registry.json
-  model_registry_file: meta/model_registry.json
-  champion_registry_file: meta/champions.json
-  registry_lock_file: meta/.registry.lock
+  registry_dir: runtime/registry
+  models_dir: runtime/models
+  logs_dir: runtime/logs
+  run_registry_file: runtime/registry/run_registry.json
+  model_registry_file: runtime/registry/model_registry.json
+  champion_registry_file: runtime/registry/champions.json
+  registry_lock_file: runtime/registry/.registry.lock
 
 retention:
   logs_days: 14
   run_manifests_days: 30
-  artifacts_days: 60
+  models_days: 60
   keep_last_models_per_segment: 5
 
 orchestration:
@@ -213,7 +213,7 @@ oracle:
 logging:
   logger_name: ews.pipeline
   level: INFO
-  directory: logs
+  directory: runtime/logs
   file_name: pipeline.log
   format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
   date_format: "%Y-%m-%d %H:%M:%S"

@@ -75,6 +75,14 @@ def load_secrets(secrets_path=None):
     return _load_yaml_mapping(path)
 
 
+def resolve_project_path(path_like) -> Path:
+    """Resolve a filesystem path against the repository root when relative."""
+    path = Path(path_like)
+    if path.is_absolute():
+        return path
+    return (PROJECT_ROOT / path).resolve()
+
+
 def _normalize_columns(columns: Iterable[str]) -> list[str]:
     return [str(column).strip().lower() for column in columns if str(column).strip()]
 

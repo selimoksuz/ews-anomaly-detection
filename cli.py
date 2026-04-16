@@ -29,18 +29,19 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from engine.config_loader import load_config
+from engine.config_loader import load_config, resolve_project_path
 from engine.lifecycle import LifecycleManager
 from engine.pipeline import EWSPipeline
 from engine.ticari_orta_faz1_demo import prepare_ticari_orta_faz1_demo, run_ticari_orta_faz1_demo
 
 
 def setup_logging(log_dir="logs", level="INFO", enable_file=True):
-    Path(log_dir).mkdir(exist_ok=True)
+    resolved_log_dir = resolve_project_path(log_dir)
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     handlers = [logging.StreamHandler(sys.stdout)]
     if enable_file:
-        handlers.append(logging.FileHandler(f"{log_dir}/ews_{ts}.log", encoding="utf-8"))
+        handlers.append(logging.FileHandler(resolved_log_dir / f"ews_{ts}.log", encoding="utf-8"))
     logging.basicConfig(
         level=getattr(logging, level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

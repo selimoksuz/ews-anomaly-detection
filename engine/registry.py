@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional
 import time
 
+from engine.config_loader import resolve_project_path
+
 
 def _utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -72,23 +74,35 @@ class RegistryManager:
 
     def __init__(self, config: dict):
         registry_cfg = config.get("registry", {})
-        self.meta_dir = Path(registry_cfg.get("meta_dir", "meta"))
-        self.artifacts_dir = Path(registry_cfg.get("artifacts_dir", "artifacts"))
-        self.run_registry_path = Path(registry_cfg.get("run_registry_file", self.meta_dir / "run_registry.json"))
+        self.registry_dir = resolve_project_path(
+            registry_cfg.get("registry_dir", registry_cfg.get("meta_dir", "runtime/registry"))
+        )
+        self.models_dir = resolve_project_path(
+            registry_cfg.get("models_dir", registry_cfg.get("artifacts_dir", "runtime/models"))
+        )
+        self.run_registry_path = resolve_project_path(
+            registry_cfg.get("run_registry_file", self.registry_dir / "run_registry.json")
+        )
         self.model_registry_path = Path(
-            registry_cfg.get("model_registry_file", self.meta_dir / "model_registry.json")
+            resolve_project_path(
+                registry_cfg.get("model_registry_file", self.registry_dir / "model_registry.json")
+            )
         )
         self.champion_registry_path = Path(
-            registry_cfg.get("champion_registry_file", self.meta_dir / "champions.json")
+            resolve_project_path(
+                registry_cfg.get("champion_registry_file", self.registry_dir / "champions.json")
+            )
         )
-        self.registry_lock_path = Path(registry_cfg.get("registry_lock_file", self.meta_dir / ".registry.lock"))
+        self.registry_lock_path = resolve_project_path(
+            registry_cfg.get("registry_lock_file", self.registry_dir / ".registry.lock")
+        )
         self._ensure_layout()
 
     def start_run(self, run_type: str, segment: str, config: dict, extra: Optional[dict] = None) -> RunContext:
         created_at = _utc_now()
         run_id = f"{run_type}-{segment}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
-        run_dir = self.meta_dir / "runs" / run_id
-        artifact_dir = self.artifacts_dir / segment / run_id
+        run_dir = self.registry_dir / "runs" / run_id
+        artifact_dir = self.models_dir / segment / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
@@ -197,7 +211,7 @@ class RegistryManager:
     def rebuild_run_registry(self) -> list[dict]:
         """Rebuild the run registry from per-run manifest files."""
         manifests = []
-        for manifest_path in sorted((self.meta_dir / "runs").glob("*/manifest.json")):
+        for manifest_path in sorted((self.registry_dir / "runs").glob("*/manifest.json")):
             try:
                 manifest = self._read_json(manifest_path, {}, allow_rebuild=False)
             except json.JSONDecodeError:
@@ -215,9 +229,9 @@ class RegistryManager:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _ensure_layout(self):
-        self.meta_dir.mkdir(parents=True, exist_ok=True)
-        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
-        (self.meta_dir / "runs").mkdir(parents=True, exist_ok=True)
+        self.registry_dir.mkdir(parents=True, exist_ok=True)
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        (self.registry_dir / "runs").mkdir(parents=True, exist_ok=True)
         self._ensure_file(self.run_registry_path, [])
         self._ensure_file(self.model_registry_path, [])
         self._ensure_file(self.champion_registry_path, {})
@@ -236,7 +250,7 @@ class RegistryManager:
         except json.JSONDecodeError:
             if allow_rebuild and path == self.run_registry_path:
                 rebuilt = []
-                for manifest_path in sorted((self.meta_dir / "runs").glob("*/manifest.json")):
+                for manifest_path in sorted((self.registry_dir / "runs").glob("*/manifest.json")):
                     try:
                         manifest = self._read_json(manifest_path, {}, allow_rebuild=False)
                     except json.JSONDecodeError:

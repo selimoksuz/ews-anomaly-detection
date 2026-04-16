@@ -15,6 +15,7 @@ from engine.config_loader import (
     get_feature_list,
     load_config,
     load_secrets,
+    resolve_project_path,
     resolve_feature_list,
 )
 from engine.models import AnomalyModels
@@ -23,7 +24,7 @@ from engine.scorer import AnomalyScorer
 
 logger = logging.getLogger(__name__)
 
-MODEL_DIR = Path("models")
+MODEL_DIR = resolve_project_path("runtime/legacy_models")
 
 
 class EWSPipeline:
@@ -228,7 +229,9 @@ class EWSPipeline:
 
     def _save_stability_report(self, report):
         report_path = Path(
-            self.stability_cfg.get("report_path", MODEL_DIR / "ews_model_stability.json")
+            resolve_project_path(
+                self.stability_cfg.get("report_path", MODEL_DIR / "ews_model_stability.json")
+            )
         )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         with open(report_path, "w", encoding="utf-8") as handle:
