@@ -12,22 +12,67 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _load_yaml_mapping(path: Path) -> dict:
+    with open(path, "r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Configuration file must contain a mapping at the root: {path}")
+    return data
+
+
+def _resolve_config_refs(config: dict, *, config_path: Path) -> dict:
+    merged = dict(config)
+    refs = config.get("config_refs", {}) or {}
+    if not isinstance(refs, dict):
+        raise ValueError("config_refs must be a mapping of section names to yaml file paths.")
+    for section_name, relative_path in refs.items():
+        resolved_path = (config_path.parent / str(relative_path)).resolve()
+        section_payload = _load_yaml_mapping(resolved_path)
+        merged[str(section_name).strip()] = section_payload
+    return merged
+
+
 def load_config(config_path=None):
     path = Path(config_path) if config_path else PROJECT_ROOT / "config" / "pipeline_config.yaml"
-    with open(path, "r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    raw = _load_yaml_mapping(path)
+    return _resolve_config_refs(raw, config_path=path)
 
 
 def save_config(config: dict, config_path=None):
     path = Path(config_path) if config_path else PROJECT_ROOT / "config" / "pipeline_config.yaml"
+    raw_root = _load_yaml_mapping(path)
+    refs = raw_root.get("config_refs", {}) or {}
+    external_sections = {str(name).strip() for name in refs.keys()}
+
+    for section_name, relative_path in refs.items():
+        section_key = str(section_name).strip()
+        if section_key not in config:
+            continue
+        resolved_path = (path.parent / str(relative_path)).resolve()
+        with open(resolved_path, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(config[section_key], handle, sort_keys=False, allow_unicode=True)
+
+    saved_root: dict = {}
+    for key, value in raw_root.items():
+        if key == "config_refs":
+            saved_root[key] = config.get(key, value)
+            continue
+        if key in external_sections:
+            continue
+        saved_root[key] = config.get(key, value)
+
+    for key, value in config.items():
+        if key in saved_root or key in external_sections:
+            continue
+        saved_root[key] = value
+
     with open(path, "w", encoding="utf-8") as handle:
-        yaml.safe_dump(config, handle, sort_keys=False, allow_unicode=True)
+        yaml.safe_dump(saved_root, handle, sort_keys=False, allow_unicode=True)
 
 
 def load_secrets(secrets_path=None):
     path = Path(secrets_path) if secrets_path else PROJECT_ROOT / "config" / "secrets.yaml"
-    with open(path, "r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
+    return _load_yaml_mapping(path)
 
 
 def _normalize_columns(columns: Iterable[str]) -> list[str]:

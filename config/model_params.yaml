@@ -1,0 +1,25 @@
+autoencoder:
+  hidden_layers:
+    - 48
+    - 24
+  latent_dim: 8
+  epochs: 120
+  learning_rate: 0.001
+  batch_size: 256
+  validation_fraction: 0.1
+  early_stopping_patience: 18
+  min_epochs: 40
+  min_improvement: 1.0e-05
+  dropout: 0.0
+  reconstruction_loss: mse
+
+isolation_forest:
+  n_estimators: 250
+  contamination: 0.08
+  max_samples: auto
+  random_state: 42
+
+mahalanobis:
+  covariance_estimator: ledoit_wolf
+  shrinkage: ledoit_wolf
+  score_percentile_cap: 99.5

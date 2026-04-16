@@ -25,6 +25,7 @@ from engine.config_loader import (
 )
 from engine.data_loader import DataLoader
 from engine.models import AnomalyModels
+from engine.materialization import NativeMaterializer
 from engine.monitoring import MonitoringManager
 from engine.output_writer import OutputWriter
 from engine.registry import RegistryManager
@@ -56,6 +57,7 @@ class LifecycleManager:
         self.batch_cfg = self.config.get("batch_execution", {})
         self.shadow_cfg = self.config.get("shadow_scoring", {})
         self.source_loader = SourceLoader(self.config, self.secrets)
+        self.materializer = NativeMaterializer(self.config, self.secrets)
         self.registry = RegistryManager(self.config)
         self.retention = RetentionManager(self.config)
         self.output_writer = OutputWriter(self.config, self.secrets)
@@ -592,7 +594,14 @@ class LifecycleManager:
             self.registry.finish_run(run, "failed", {"reason": str(exc)})
             raise
 
-    def score_live(self, segment: Optional[str] = None):
+    def score_live(
+        self,
+        segment: Optional[str] = None,
+        *,
+        snapshot_date=None,
+        start_date=None,
+        end_date=None,
+    ):
         segment_value = self._resolve_segment(segment)
         run = self.registry.start_run("score-live", segment_value, self.config)
         try:
@@ -602,7 +611,12 @@ class LifecycleManager:
 
             model = self._load_model(Path(champion["artifact_path"]))
             model_feature_names = self._resolve_model_feature_names(model)
-            frame = self._load_live_source_frame(segment_value)
+            frame = self._load_live_source_frame(
+                segment_value,
+                snapshot_date=snapshot_date,
+                start_date=start_date,
+                end_date=end_date,
+            )
             if frame.empty:
                 raise ValueError("No rows returned for live scoring.")
             frame = self.data_loader.validate_data(frame, feature_names=model_feature_names)
@@ -642,7 +656,8 @@ class LifecycleManager:
                 "output": output_summary,
                 "monitoring_path": str(monitoring_path),
             }
-            self._reset_live_explicit_date_after_success()
+            if snapshot_date is None and start_date is None and end_date is None:
+                self._reset_live_explicit_date_after_success()
             self.registry.finish_run(run, "completed", summary)
             return summary
         except Exception as exc:
@@ -978,6 +993,7 @@ class LifecycleManager:
 
     def _load_development_frames_for_config(self, config_variant: dict, segment_value: str):
         development_cfg = config_variant.get("development", {})
+        self._materialize_development_inputs(config_variant, segment_value)
         source_loader = SourceLoader(config_variant, self.secrets)
         data_loader = DataLoader(config_variant)
         windows_mode = ((development_cfg.get("windows", {}) or {}).get("mode", "relative_periods") or "relative_periods").strip().lower()
@@ -1439,17 +1455,32 @@ class LifecycleManager:
             self.features = list(self.data_loader.feature_names)
         return validated
 
-    def _load_live_source_frame(self, segment_value: str) -> pd.DataFrame:
+    def _load_live_source_frame(
+        self,
+        segment_value: str,
+        *,
+        snapshot_date=None,
+        start_date=None,
+        end_date=None,
+    ) -> pd.DataFrame:
         source_name = self.live_scoring_cfg.get("source_name", "input_features")
         snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})
         selector = str(snapshot_cfg.get("selector", "today")).strip().lower()
-        explicit_date = snapshot_cfg.get("explicit_date")
-        start_date = snapshot_cfg.get("start_date")
-        end_date = snapshot_cfg.get("end_date")
+        explicit_date = snapshot_date if snapshot_date is not None else snapshot_cfg.get("explicit_date")
+        requested_start = start_date if start_date is not None else snapshot_cfg.get("start_date")
+        requested_end = end_date if end_date is not None else snapshot_cfg.get("end_date")
         base_kwargs = {
             "segment_column": self.development_cfg.get("segment_column"),
             "segment_value": None if segment_value == "ALL" else segment_value,
         }
+
+        self._materialize_live_inputs(
+            segment_value,
+            snapshot_date=explicit_date,
+            start_date=requested_start,
+            end_date=requested_end,
+            selector=selector,
+        )
 
         if explicit_date:
             return self.source_loader.load_frame(
@@ -1457,11 +1488,11 @@ class LifecycleManager:
                 snapshot_date=explicit_date,
                 **base_kwargs,
             )
-        if start_date or end_date:
+        if requested_start or requested_end:
             return self.source_loader.load_frame(
                 source_name,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=requested_start,
+                end_date=requested_end,
                 **base_kwargs,
             )
         if selector == "today":
@@ -1469,6 +1500,33 @@ class LifecycleManager:
         if selector == "latest":
             return self.source_loader.load_frame(source_name, latest_snapshot=True, **base_kwargs)
         raise ValueError(f"Unsupported live_scoring.snapshot.selector: {selector}")
+
+    def _materialize_development_inputs(self, config_variant: dict, segment_value: str) -> None:
+        materializer = NativeMaterializer(config_variant, self.secrets)
+        if not materializer.enabled:
+            return
+        materializer.materialize_development(segment_value)
+
+    def _materialize_live_inputs(
+        self,
+        segment_value: str,
+        *,
+        snapshot_date=None,
+        start_date=None,
+        end_date=None,
+        selector: str,
+    ) -> None:
+        materializer = getattr(self, "materializer", None)
+        if materializer is None or not materializer.enabled:
+            return
+        materializer.materialize_live(
+            segment_value,
+            snapshot_date=snapshot_date,
+            start_date=start_date,
+            end_date=end_date,
+            current_day=(snapshot_date is None and start_date is None and end_date is None and selector == "today"),
+            latest_snapshot=(snapshot_date is None and start_date is None and end_date is None and selector == "latest"),
+        )
 
     def _reset_live_explicit_date_after_success(self) -> None:
         snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})

@@ -1,0 +1,183 @@
+enabled: true
+source_name: native_features
+target_name: input_features
+persist_target: true
+trim_warmup_snapshots: 18
+
+annualization:
+  period_column: fs_period_code
+  factors:
+    Q1: 4.0
+    Q2: 2.0
+    Q3: 1.3333333333
+    Q4: 1.0
+    YE: 1.0
+
+base_features:
+  - name: bank_debt_to_turnover
+    label_tr: Banka Borclulugu / Ciro
+    business_heading: Banka Borclulugu ve Ciro Iliskisi Degiskeni
+    method: ratio
+    numerator:
+      method: column
+      column: memzuc_total_cash_risk_0_24m
+    denominator:
+      method: annualized
+      column: fs_net_sales_cumulative
+  - name: pos_volume_change
+    label_tr: Tum Bankalar POS Hacmi Degisimi
+    business_heading: Musterinin Tum Bankalardaki Aylik POS Hacmi Degiskeni
+    method: pct_change_abs
+    current:
+      method: column
+      column: pos_monthly_volume
+    reference:
+      method: lag
+      periods: 12
+      value:
+        method: column
+        column: pos_monthly_volume
+  - name: bank_debt_to_ebitda
+    label_tr: Banka Borclulugu / EBITDA
+    business_heading: Banka Borclulugu ve EBITDA Iliskisi Degiskeni
+    method: ratio
+    numerator:
+      method: multiply
+      values:
+        - method: column
+          column: memzuc_total_cash_risk_0_24m
+        - method: column
+          column: tlref_factor
+    denominator:
+      method: annualized
+      column: fs_ebitda_cumulative
+  - name: trade_receivables_to_turnover
+    label_tr: Ticari Alacak / Ciro
+    business_heading: Bilanco Ticari Alacak Bilgisi ve Ciro Bilgisi Degiskeni
+    method: ratio
+    numerator:
+      method: add
+      values:
+        - method: column
+          column: fs_trade_receivables
+        - method: column
+          column: fs_notes_receivable
+    denominator:
+      method: annualized
+      column: fs_net_sales_cumulative
+  - name: profitability_to_turnover
+    label_tr: Karlilik / Ciro
+    business_heading: Bilanco Karlilik Bilgisi ve Ciro Bilgisi Degiskeni
+    method: ratio
+    numerator:
+      method: annualized
+      column: fs_net_profit_cumulative
+    denominator:
+      method: annualized
+      column: fs_net_sales_cumulative
+  - name: equity_change
+    label_tr: Ozkaynak Degisimi
+    business_heading: Bilanco Ozkaynak Bilgisi Degiskeni
+    method: pct_change_abs
+    current:
+      method: column
+      column: fs_equity
+    reference:
+      method: lag
+      periods: 12
+      value:
+        method: column
+        column: fs_equity
+  - name: ifrs9_behavioral_pd
+    label_tr: TFRS Davranis Temerrut Olasiligi
+    business_heading: TFRS Davranis Temerrut Olasiligi Degiskeni
+    method: passthrough
+    source:
+      method: column
+      column: ifrs9_behavioral_pd
+  - name: kkb_commercial_score
+    label_tr: KKB Ticari Kredi Notu
+    business_heading: KKB Ticari Kredi Notu Degiskeni
+    method: passthrough
+    source:
+      method: column
+      column: kkb_commercial_score
+  - name: kkb_indebtedness_index
+    label_tr: KKB Ticari Borcluluk Endeksi
+    business_heading: KKB Ticari Borcluluk Endeksi Degiskeni
+    method: passthrough
+    source:
+      method: column
+      column: kkb_indebtedness_index
+  - name: net_sales_change
+    label_tr: Net Satis Degisimi
+    business_heading: Net Satis (Ciro) Degiskeni
+    method: pct_change_abs
+    current:
+      method: annualized
+      column: fs_net_sales_cumulative
+    reference:
+      method: lag
+      periods: 12
+      value:
+        method: annualized
+        column: fs_net_sales_cumulative
+  - name: memzuc_limit_utilization_increase
+    label_tr: Memzuc Limit Doluluk Orani
+    business_heading: Memzuc Limit Doluluk Artisi Degiskeni
+    method: ratio
+    numerator:
+      method: column
+      column: memzuc_total_risk
+    denominator:
+      method: column
+      column: memzuc_total_limit
+
+history:
+  delta:
+    enabled: true
+    lag: 1
+    features:
+      - bank_debt_to_turnover
+      - pos_volume_change
+      - bank_debt_to_ebitda
+      - trade_receivables_to_turnover
+      - profitability_to_turnover
+      - equity_change
+      - ifrs9_behavioral_pd
+      - kkb_commercial_score
+      - kkb_indebtedness_index
+      - net_sales_change
+      - memzuc_limit_utilization_increase
+  self_zscore:
+    enabled: true
+    window: 6
+    min_periods: 6
+    features:
+      - bank_debt_to_turnover
+      - pos_volume_change
+      - bank_debt_to_ebitda
+      - trade_receivables_to_turnover
+      - profitability_to_turnover
+      - equity_change
+      - ifrs9_behavioral_pd
+      - kkb_commercial_score
+      - kkb_indebtedness_index
+      - net_sales_change
+      - memzuc_limit_utilization_increase
+
+trend:
+  enabled: true
+  window: 6
+  min_periods: 6
+  features:
+    - pos_volume_change
+    - net_sales_change
+
+population_reference:
+  enabled: true
+  features:
+    - pos_volume_change
+    - net_sales_change
+  include_percentile: true
+  include_median_delta: true

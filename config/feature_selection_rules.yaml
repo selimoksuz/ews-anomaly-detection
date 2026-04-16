@@ -1,0 +1,15 @@
+enabled: true
+drop_zero_variance_continuous: true
+drop_exact_duplicates: true
+branch_routing:
+  enabled: true
+  autoencoder:
+    exclude_raw_types: []
+    exclude_transforms: []
+  isolation_forest:
+    exclude_raw_types: []
+    exclude_transforms: []
+  mahalanobis:
+    exclude_raw_types:
+      - binary
+    exclude_transforms: []

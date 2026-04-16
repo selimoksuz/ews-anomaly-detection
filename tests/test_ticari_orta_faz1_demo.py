@@ -4,7 +4,6 @@ import unittest
 
 import pandas as pd
 
-from engine.business_features import FAZ1_BASE_FEATURES
 from engine.ticari_orta_faz1_demo import TicariOrtaFaz1DemoBuilder
 
 
@@ -32,7 +31,7 @@ class TicariOrtaFaz1DemoBuilderTests(unittest.TestCase):
         derived = self.builder.build_derived_frame(native)
         self.assertLess(len(derived), len(native))
         self.assertGreater(pd.to_datetime(derived["snapshot_date"]).min(), pd.to_datetime(native["snapshot_date"]).min())
-        for feature in FAZ1_BASE_FEATURES:
+        for feature in self.builder.materializer.base_feature_names:
             self.assertIn(feature, derived.columns)
             self.assertIn(f"{feature}__delta_1", derived.columns)
             self.assertIn(f"{feature}__self_zscore_6", derived.columns)

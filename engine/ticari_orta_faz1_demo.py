@@ -9,25 +9,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from engine.business_features import FAZ1_BASE_FEATURES, build_ticari_orta_faz1_business_features
 from engine.config_loader import load_config, load_secrets
-from engine.history_features import (
-    add_population_reference_features,
-    add_self_history_features,
-    add_trend_slope_features,
-)
 from engine.lifecycle import LifecycleManager
+from engine.materialization import NativeMaterializer
 from engine.oracle_io import OracleConnector
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
 DEFAULT_NUM_SNAPSHOTS = 36
-# Strict warm-up for Faz 1:
-# - monthly year-over-year change features need 12 prior snapshots
-# - self_zscore_6 needs 6 prior base observations
-# Earliest fully mature row is therefore the 19th snapshot per customer.
-STRICT_HISTORY_WARMUP_SNAPSHOTS = 18
 
 NATIVE_COLUMNS = [
     "customer_id",
@@ -54,10 +44,6 @@ NATIVE_COLUMNS = [
     "memzuc_total_limit",
     "memzuc_total_risk",
 ]
-
-TREND_FEATURES = ["pos_volume_change", "net_sales_change"]
-POPULATION_FEATURES = ["pos_volume_change", "net_sales_change"]
-
 
 @dataclass
 class DemoPreparationSummary:
@@ -96,6 +82,7 @@ class TicariOrtaFaz1DemoBuilder:
         self.time_column = self.config["pipeline"]["time_column"]
         self.segment_column = self.config["development"]["segment_column"]
         self.default_segment = self.config["development"].get("segment_value", "TICARI_ORTA_FAZ1")
+        self.materializer = NativeMaterializer(self.config, self.secrets)
 
     def prepare(
         self,
@@ -122,7 +109,8 @@ class TicariOrtaFaz1DemoBuilder:
             ora.setup_tables(drop_existing=drop_existing)
             self._create_native_table(ora, drop_existing=drop_existing)
             native_rows = self._write_native_rows(ora, native_df)
-            derived_rows = ora.replace_rows("input_features", derived_df)
+            materialization = self.materializer.materialize_development(segment_value)
+            derived_rows = int(materialization["persisted_rows"])
             outcome_rows = ora.replace_rows("outcomes", outcomes_df)
 
             summary = DemoPreparationSummary(
@@ -160,9 +148,7 @@ class TicariOrtaFaz1DemoBuilder:
         manager = LifecycleManager(config_path=self.config_path)
         develop_summary = manager.develop(segment=segment_value)
         promote_summary = manager.promote(segment=segment_value, model_version=develop_summary["model_version"])
-        manager.live_scoring_cfg.setdefault("snapshot", {})["explicit_date"] = preparation["native_snapshot_end"]
-        manager.config.setdefault("live_scoring", {}).setdefault("snapshot", {})["explicit_date"] = preparation["native_snapshot_end"]
-        live_summary = manager.score_live(segment=segment_value)
+        live_summary = manager.score_live(segment=segment_value, snapshot_date=preparation["native_snapshot_end"])
         return {
             "prepare": preparation,
             "develop": develop_summary,
@@ -307,49 +293,14 @@ class TicariOrtaFaz1DemoBuilder:
         return native
 
     def build_derived_frame(self, native_df: pd.DataFrame) -> pd.DataFrame:
-        base = build_ticari_orta_faz1_business_features(
-            native_df,
-            id_column=self.id_column,
-            time_column=self.time_column,
-            segment_column=self.segment_column,
-        )
-        derived = add_self_history_features(
-            base,
-            base_features=FAZ1_BASE_FEATURES,
-            id_column=self.id_column,
-            time_column=self.time_column,
-            zscore_min_periods=6,
-        )
-        derived = add_trend_slope_features(
-            derived,
-            trend_features=TREND_FEATURES,
-            id_column=self.id_column,
-            time_column=self.time_column,
-            min_periods=6,
-        )
-        derived = add_population_reference_features(
-            derived,
-            population_features=POPULATION_FEATURES,
-            time_column=self.time_column,
-        )
-        derived = self._trim_history_warmup_rows(derived)
-        derived = derived.sort_values([self.id_column, self.time_column]).reset_index(drop=True)
-        return derived
-
-    def _trim_history_warmup_rows(self, derived_df: pd.DataFrame) -> pd.DataFrame:
-        frame = derived_df.copy()
-        frame[self.time_column] = pd.to_datetime(frame[self.time_column], errors="raise")
-        frame = frame.sort_values([self.id_column, self.time_column]).reset_index(drop=True)
-        position = frame.groupby(self.id_column, sort=False).cumcount()
-        frame = frame.loc[position >= STRICT_HISTORY_WARMUP_SNAPSHOTS].reset_index(drop=True)
-        return frame
+        return self.materializer.build_derived_frame(native_df)
 
     def build_outcomes_frame(self, derived_df: pd.DataFrame, *, seed: int = 20260432) -> pd.DataFrame:
         frame = derived_df.copy()
         frame.columns = [str(column).strip().lower() for column in frame.columns]
         rng = np.random.default_rng(seed)
 
-        score_frame = frame[FAZ1_BASE_FEATURES].copy()
+        score_frame = frame[self.materializer.base_feature_names].copy()
         score_frame = score_frame.apply(lambda series: series.fillna(series.median()), axis=0).fillna(0.0)
 
         risk_signal = (

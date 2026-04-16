@@ -32,7 +32,7 @@ class OutputWriterTests(unittest.TestCase):
         writer = OutputWriter(config)
 
         connector = MagicMock()
-        connector.delete_scored_snapshot.return_value = {
+        connector.delete_scored_scope.return_value = {
             "results": 2,
             "details": 4,
             "full_effects": 0,
@@ -57,9 +57,14 @@ class OutputWriterTests(unittest.TestCase):
 
         summary = writer.write(results, pd.Timestamp("2026-04-14"), run_id="run-1", segment="ALL")
 
-        connector.delete_scored_snapshot.assert_called_once_with(pd.Timestamp("2026-04-14"), segment="ALL")
+        connector.delete_scored_scope.assert_called_once_with(
+            snapshot_date=pd.Timestamp("2026-04-14"),
+            start_date=None,
+            end_date=None,
+            segment="ALL",
+        )
         method_names = [call[0] for call in connector.method_calls]
-        self.assertLess(method_names.index("delete_scored_snapshot"), method_names.index("write_results"))
+        self.assertLess(method_names.index("delete_scored_scope"), method_names.index("write_results"))
         self.assertEqual(summary["deleted_results"], 2)
         self.assertEqual(summary["deleted_details"], 4)
         self.assertEqual(summary["inserted_results"], 2)

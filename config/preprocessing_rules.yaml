@@ -1,0 +1,30 @@
+enabled: true
+missing:
+  default_strategy: median
+hard_bounds:
+  enabled: true
+  rules:
+    - feature: bank_debt_to_turnover
+      lower: 0
+    - feature: bank_debt_to_ebitda
+      lower: 0
+    - feature: trade_receivables_to_turnover
+      lower: 0
+    - feature: ifrs9_behavioral_pd
+      lower: 0
+      upper: 1
+    - feature: kkb_commercial_score
+      lower: 0
+    - feature: kkb_indebtedness_index
+      lower: 0
+    - feature: memzuc_limit_utilization_increase
+      lower: 0
+winsorization:
+  enabled: true
+  lower_quantile: 0.01
+  upper_quantile: 0.99
+log1p:
+  enabled: false
+  features: []
+scaler:
+  type: robust

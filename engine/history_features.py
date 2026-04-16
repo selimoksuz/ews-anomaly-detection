@@ -14,6 +14,7 @@ def add_self_history_features(
     base_features: list[str],
     id_column: str = "customer_id",
     time_column: str = "snapshot_date",
+    delta_lag: int = 1,
     zscore_window: int = 6,
     zscore_min_periods: int = 3,
 ) -> pd.DataFrame:
@@ -29,7 +30,7 @@ def add_self_history_features(
 
     for feature in base_features:
         grouped = frame.groupby(id_column, sort=False)[feature]
-        prior = grouped.shift(1)
+        prior = grouped.shift(delta_lag)
         frame[f"{feature}__delta_1"] = frame[feature] - prior
 
         mean = (
@@ -86,6 +87,8 @@ def add_population_reference_features(
     *,
     population_features: list[str],
     time_column: str = "snapshot_date",
+    include_percentile: bool = True,
+    include_median_delta: bool = True,
 ) -> pd.DataFrame:
     """Append within-snapshot percentiles and median ratios for selected features."""
     frame = feature_frame.copy()
@@ -96,9 +99,11 @@ def add_population_reference_features(
     frame[time_column] = pd.to_datetime(frame[time_column], errors="raise")
     for feature in population_features:
         grouped = frame.groupby(time_column, sort=False)[feature]
-        frame[f"{feature}__population_percentile"] = grouped.rank(pct=True, method="average")
-        median = grouped.transform("median")
-        frame[f"{feature}__vs_population_median_delta"] = frame[feature] - median
+        if include_percentile:
+            frame[f"{feature}__population_percentile"] = grouped.rank(pct=True, method="average")
+        if include_median_delta:
+            median = grouped.transform("median")
+            frame[f"{feature}__vs_population_median_delta"] = frame[feature] - median
     return frame
 
 

@@ -12,7 +12,8 @@ Usage:
     python cli.py evaluate-outcomes [segment] [model_version]
     python cli.py compare [segment] [challenger_version]
     python cli.py promote [segment] [model_version]
-    python cli.py score-live [segment]
+    python cli.py score-live [segment] [snapshot_date]
+    python cli.py score-live [segment] [start_date] [end_date]
     python cli.py run-batch [segment]
     python cli.py compare-preprocessing [segment]
     python cli.py compare-feature-selection [segment]
@@ -117,7 +118,30 @@ def cmd_promote(*args):
 
 def cmd_score_live(*args):
     manager = LifecycleManager()
-    result = manager.score_live(segment=args[0] if args else None)
+    segment = None
+    snapshot_date = None
+    start_date = None
+    end_date = None
+
+    if len(args) == 1:
+        if _looks_like_date(args[0]):
+            snapshot_date = args[0]
+        else:
+            segment = args[0]
+    elif len(args) == 2:
+        if _looks_like_date(args[0]) and _looks_like_date(args[1]):
+            start_date, end_date = args[0], args[1]
+        else:
+            segment, snapshot_date = args[0], args[1]
+    elif len(args) >= 3:
+        segment, start_date, end_date = args[0], args[1], args[2]
+
+    result = manager.score_live(
+        segment=segment,
+        snapshot_date=snapshot_date,
+        start_date=start_date,
+        end_date=end_date,
+    )
     print(result["snapshot_date"])
 
 
@@ -186,6 +210,17 @@ def _print_summary(results):
                 f"    {detail['label']}: {detail['beklenen']}->{detail['gerceklesen']}"
                 f" ({ico}%{abs(detail['degisim_pct']):.0f})"
             )
+
+
+def _looks_like_date(value: str) -> bool:
+    text = str(value).strip()
+    if len(text) != 10:
+        return False
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
 
 
 COMMANDS = {
