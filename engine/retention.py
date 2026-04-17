@@ -17,9 +17,12 @@ class RetentionManager:
         self.registry_cfg = config.get("registry", {})
         self.retention_cfg = config.get("retention", {})
         self.logs_dir = resolve_project_path(self.registry_cfg.get("logs_dir", "runtime/logs"))
+        self.legacy_logs_dir = resolve_project_path("runtime/logs")
         self.registry_dir = resolve_project_path(
             self.registry_cfg.get("registry_dir", self.registry_cfg.get("meta_dir", "runtime/registry"))
         )
+        self.runs_dir = resolve_project_path(self.registry_cfg.get("runs_dir", "runtime/runs"))
+        self.legacy_registry_runs_dir = self.registry_dir / "runs"
         self.models_dir = resolve_project_path(
             self.registry_cfg.get("models_dir", self.registry_cfg.get("artifacts_dir", "runtime/models"))
         )
@@ -35,15 +38,13 @@ class RetentionManager:
         self.registry_lock_path = resolve_project_path(
             self.registry_cfg.get("registry_lock_file", self.registry_dir / ".registry.lock")
         )
-        self.monitoring_dir = resolve_project_path(
-            self.config.get("monitoring", {}).get("directory", "runtime/monitoring")
-        )
+        self.legacy_monitoring_dir = resolve_project_path("runtime/monitoring")
 
     def cleanup(self) -> dict:
         deleted = {
             "logs": self._cleanup_files(self.logs_dir, int(self.retention_cfg.get("logs_days", 14))),
             "run_manifests": self._cleanup_directories(
-                self.registry_dir / "runs",
+                self.runs_dir,
                 int(self.retention_cfg.get("run_manifests_days", 30)),
             ),
             "models": self._cleanup_directories(
@@ -57,9 +58,11 @@ class RetentionManager:
         """Remove all local runtime outputs and recreate empty registry files."""
         deleted = {
             "logs": self._clear_directory(self.logs_dir),
+            "legacy_logs": self._clear_directory(self.legacy_logs_dir) if self.legacy_logs_dir != self.logs_dir else 0,
             "models": self._clear_directory(self.models_dir),
-            "runs": self._clear_directory(self.registry_dir / "runs"),
-            "monitoring": self._clear_directory(self.monitoring_dir),
+            "runs": self._clear_directory(self.runs_dir),
+            "legacy_registry_runs": self._clear_directory(self.legacy_registry_runs_dir),
+            "legacy_monitoring": self._clear_directory(self.legacy_monitoring_dir),
             "registry_files": 0,
         }
 
@@ -75,10 +78,11 @@ class RetentionManager:
         if self.registry_lock_path.exists():
             self.registry_lock_path.unlink(missing_ok=True)
 
-        (self.registry_dir / "runs").mkdir(parents=True, exist_ok=True)
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        self.monitoring_dir.mkdir(parents=True, exist_ok=True)
+        self._remove_directory_if_empty(self.legacy_registry_runs_dir)
+        self._remove_directory_if_empty(self.legacy_monitoring_dir)
         return deleted
 
     def _cleanup_files(self, directory: Path, max_age_days: int) -> int:
@@ -142,3 +146,11 @@ class RetentionManager:
             except PermissionError:
                 continue
         return deleted
+
+    @staticmethod
+    def _remove_directory_if_empty(directory: Path):
+        try:
+            if directory.exists() and not any(directory.iterdir()):
+                directory.rmdir()
+        except OSError:
+            pass

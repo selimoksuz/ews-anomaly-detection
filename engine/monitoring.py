@@ -9,8 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from engine.config_loader import resolve_project_path
-from engine.run_logging import get_run_log_path
+from engine.run_logging import get_run_directory, get_run_log_path
 
 
 class MonitoringManager:
@@ -20,9 +19,6 @@ class MonitoringManager:
         self.config = config
         self.id_column = config["pipeline"]["id_column"]
         self.time_column = config["pipeline"]["time_column"]
-        self.monitoring_dir = resolve_project_path(
-            config.get("monitoring", {}).get("directory", "runtime/monitoring")
-        )
 
     def summarize_input(self, frame: pd.DataFrame, feature_names: list[str]) -> dict:
         if frame.empty:
@@ -88,7 +84,7 @@ class MonitoringManager:
         }
 
     def write_bundle(self, *, segment: str, run_id: str, payload: dict) -> dict:
-        bundle_dir = self.monitoring_dir / str(segment).strip() / str(run_id).strip()
+        bundle_dir = get_run_directory(self.config, run_id) / "monitoring"
         bundle_dir.mkdir(parents=True, exist_ok=True)
 
         summary_path = bundle_dir / "monitoring.json"

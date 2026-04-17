@@ -22,20 +22,20 @@ def _build_formatter(config: dict) -> logging.Formatter:
     )
 
 
-def get_log_directory(config: dict, category: str) -> Path:
-    base_dir = resolve_project_path(
-        config.get("logging", {}).get(
-            "directory",
-            config.get("registry", {}).get("logs_dir", "runtime/logs"),
-        )
-    )
-    path = base_dir / str(category).strip().lower()
+def get_runs_directory(config: dict) -> Path:
+    return resolve_project_path(config.get("registry", {}).get("runs_dir", "runtime/runs"))
+
+
+def get_run_directory(config: dict, run_id: str) -> Path:
+    path = get_runs_directory(config) / str(run_id).strip()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def get_run_log_path(config: dict, *, category: str, run_id: str) -> Path:
-    return get_log_directory(config, category) / f"{run_id}.log"
+    path = get_run_directory(config, run_id) / "logs" / f"{str(category).strip().lower()}.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 @contextmanager

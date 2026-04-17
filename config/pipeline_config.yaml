@@ -146,7 +146,6 @@ weight_optimization:
 
 monitoring:
   enabled: true
-  directory: runtime/monitoring
 
 live_scoring:
   source_name: input_features
@@ -179,8 +178,9 @@ batch_execution:
 
 registry:
   registry_dir: runtime/registry
+  runs_dir: runtime/runs
   models_dir: runtime/models
-  logs_dir: runtime/logs
+  logs_dir: runtime/logs/cli
   run_registry_file: runtime/registry/run_registry.json
   model_registry_file: runtime/registry/model_registry.json
   champion_registry_file: runtime/registry/champions.json
@@ -213,7 +213,7 @@ oracle:
 logging:
   logger_name: ews.pipeline
   level: INFO
-  directory: runtime/logs
+  directory: runtime/logs/cli
   file_name: pipeline.log
   format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
   date_format: "%Y-%m-%d %H:%M:%S"
