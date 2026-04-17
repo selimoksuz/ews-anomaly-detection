@@ -91,8 +91,11 @@ class RetentionManager:
                 continue
             modified = datetime.fromtimestamp(item.stat().st_mtime, tz=timezone.utc)
             if modified < cutoff:
-                item.unlink(missing_ok=True)
-                deleted += 1
+                try:
+                    item.unlink(missing_ok=True)
+                    deleted += 1
+                except PermissionError:
+                    continue
         return deleted
 
     def _cleanup_directories(self, directory: Path, max_age_days: int) -> int:
@@ -115,8 +118,14 @@ class RetentionManager:
             if item.is_dir():
                 self._delete_tree(item)
             else:
-                item.unlink(missing_ok=True)
-        path.rmdir()
+                try:
+                    item.unlink(missing_ok=True)
+                except PermissionError:
+                    continue
+        try:
+            path.rmdir()
+        except OSError:
+            pass
 
     def _clear_directory(self, directory: Path) -> int:
         if not directory.exists():
@@ -125,7 +134,11 @@ class RetentionManager:
         for item in list(directory.iterdir()):
             if item.is_dir():
                 self._delete_tree(item)
-            else:
+                deleted += 1
+                continue
+            try:
                 item.unlink(missing_ok=True)
-            deleted += 1
+                deleted += 1
+            except PermissionError:
+                continue
         return deleted

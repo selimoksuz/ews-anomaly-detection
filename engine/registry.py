@@ -72,6 +72,8 @@ class RunContext:
 class RegistryManager:
     """Manage local run registry, model registry, and champion pointers."""
 
+    ARTIFACT_RUN_TYPES = {"develop", "retrain", "evaluate-outcomes", "tune-weights"}
+
     def __init__(self, config: dict):
         registry_cfg = config.get("registry", {})
         self.registry_dir = resolve_project_path(
@@ -103,8 +105,10 @@ class RegistryManager:
         run_id = f"{run_type}-{segment}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
         run_dir = self.registry_dir / "runs" / run_id
         artifact_dir = self.models_dir / segment / run_id
+        has_artifact_dir = run_type in self.ARTIFACT_RUN_TYPES
         run_dir.mkdir(parents=True, exist_ok=True)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+        if has_artifact_dir:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
 
         payload = {
             "run_id": run_id,
@@ -112,7 +116,7 @@ class RegistryManager:
             "segment": segment,
             "created_at": created_at,
             "status": "running",
-            "artifact_dir": str(artifact_dir),
+            "artifact_dir": str(artifact_dir) if has_artifact_dir else None,
             "config_hash": self.compute_config_hash(config),
             "details": extra or {},
         }
