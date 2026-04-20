@@ -6,7 +6,7 @@ import logging
 from contextlib import contextmanager
 from pathlib import Path
 
-from engine.config_loader import resolve_project_path
+from engine.config_loader import resolve_runs_dir
 
 
 def _resolve_level(config: dict) -> int:
@@ -23,7 +23,7 @@ def _build_formatter(config: dict) -> logging.Formatter:
 
 
 def get_runs_directory(config: dict) -> Path:
-    return resolve_project_path(config.get("registry", {}).get("runs_dir", "runtime/runs"))
+    return resolve_runs_dir(config)
 
 
 def get_run_directory(config: dict, run_id: str) -> Path:

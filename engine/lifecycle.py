@@ -6,7 +6,7 @@ import copy
 import json
 import pickle
 import logging
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -76,10 +76,23 @@ class LifecycleManager:
             return "development"
         return "operations"
 
+    def _fail_run_startup(self, run, exc: Exception):
+        try:
+            self.registry.finish_run(run, "failed", {"reason": f"Run logging setup failed: {exc}"})
+        except Exception:
+            logger.exception("Failed to mark run_id=%s as failed after logging setup error", run.run_id)
+
     @contextmanager
     def _activate_run_logging(self, run):
         category = self._log_category_for_run_type(run.run_type)
-        with attach_run_file_logger(self.config, category=category, run_id=run.run_id) as log_path:
+        with ExitStack() as stack:
+            try:
+                log_path = stack.enter_context(
+                    attach_run_file_logger(self.config, category=category, run_id=run.run_id)
+                )
+            except Exception as exc:
+                self._fail_run_startup(run, exc)
+                raise
             logger.info("Starting run_type=%s segment=%s run_id=%s", run.run_type, run.segment, run.run_id)
             yield log_path
 
