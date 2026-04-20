@@ -64,10 +64,10 @@ flowchart LR
         EFF[("EWS_ALERT_FEATURE_EFFECTS")]
     end
 
-    subgraph S2["meta/ + artifacts/"]
+    subgraph S2["runtime/"]
         direction TB
-        ART[("model pickle + calibration + shadow artifacts")]
-        META[("run_registry + model_registry + champions + monitoring")]
+        ART[("run artifacts + run manifests + run logs + monitoring bundles")]
+        META[("run_registry + model_registry + champions")]
     end
 
     START --> CLI --> CLOAD
@@ -301,12 +301,12 @@ Desteklenen kategorik transformlar:
 
 ```mermaid
 flowchart LR
-    A["meta/run_registry.json"] --> B["Batch / lifecycle run log"]
-    C["meta/model_registry.json"] --> D["Model metadata + calibration + weights + evaluation"]
-    E["meta/champions.json"] --> F["Active champion pointer"]
-    G["meta/runs/<run_id>/manifest.json"] --> H["Per-run manifest + monitoring json"]
-    I["artifacts/<segment>/<run_id>/"] --> J["model.pkl + calibration.json + weights.json + evaluation.json + stability.json"]
-    K["logs/"] --> L["CLI and runtime logs"]
+    A["runtime/registry/run_registry.json"] --> B["Batch / lifecycle run state"]
+    C["runtime/registry/model_registry.json"] --> D["Model metadata + calibration + weights + evaluation"]
+    E["runtime/registry/champions.json"] --> F["Active champion pointer"]
+    G["runtime/runs/<run_id>/manifest.json"] --> H["Per-run manifest + run logs + monitoring bundle"]
+    I["runtime/models/<segment>/<run_id>/"] --> J["model.pkl + calibration.json + weights.json + evaluation.json + stability.json"]
+    K["runtime/logs/cli/"] --> L["CLI session logs"]
 ```
 
 ## Manual Reset
@@ -319,12 +319,12 @@ python cli.py reset-runtime
 
 Bu komut:
 
-- `logs/`
-- `artifacts/`
-- `meta/runs/`
-- `meta/monitoring/`
+- `runtime/logs/`
+- `runtime/models/`
+- `runtime/runs/`
+- legacy kalmis `runtime/monitoring/` veya config ile tanimlanmis eski monitoring klasorleri
 
-temizler ve registry dosyalarini sifirdan olusturur. Oracle tablolari silmez.
+temizler, `runtime/registry/` altindaki registry dosyalarini sifirdan olusturur ve Oracle tablolari silmez.
 
 ## Airflow Entry Point
 

@@ -35,12 +35,15 @@ class RetentionManagerTests(unittest.TestCase):
                 path.write_text("x", encoding="utf-8")
 
             retention = RetentionManager(config)
+            self.assertEqual(retention.runs_dir, root / "meta" / "runs")
             result = retention.reset_runtime_state()
 
+            self.assertEqual(result["monitoring"], 1)
             self.assertEqual(result["registry_files"], 3)
             self.assertTrue((root / "logs").exists())
             self.assertTrue((root / "artifacts").exists())
             self.assertTrue((root / "meta" / "runs").exists())
+            self.assertFalse((root / "meta" / "monitoring" / "summary.json").exists())
             self.assertEqual(json.loads((root / "meta" / "run_registry.json").read_text(encoding="utf-8")), [])
             self.assertEqual(json.loads((root / "meta" / "model_registry.json").read_text(encoding="utf-8")), [])
             self.assertEqual(json.loads((root / "meta" / "champions.json").read_text(encoding="utf-8")), {})

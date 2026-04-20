@@ -20,7 +20,10 @@ class RegistryManagerTests(unittest.TestCase):
             }
 
             registry = RegistryManager(config)
+            self.assertEqual(registry.runs_dir, root / "meta" / "runs")
             run = registry.start_run("develop", "SEG_A", {"foo": "bar"})
+            self.assertEqual(run.run_dir, root / "meta" / "runs" / run.run_id)
+            self.assertEqual(run.manifest_path, run.run_dir / "manifest.json")
             registry.finish_run(run, "completed", {"ok": True})
 
             registry.register_model(
@@ -52,6 +55,7 @@ class RegistryManagerTests(unittest.TestCase):
             }
 
             registry = RegistryManager(config)
+            self.assertEqual(registry.runs_dir, root / "meta" / "runs")
             run = registry.start_run("develop", "SEG_A", {"foo": "bar"})
             registry.finish_run(run, "completed", {"ok": True})
 

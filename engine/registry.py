@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Optional
 import time
 
-from engine.config_loader import resolve_project_path
+from engine.config_loader import (
+    resolve_models_dir,
+    resolve_project_path,
+    resolve_registry_dir,
+    resolve_runs_dir,
+)
 
 
 def _utc_now():
@@ -76,13 +81,9 @@ class RegistryManager:
 
     def __init__(self, config: dict):
         registry_cfg = config.get("registry", {})
-        self.registry_dir = resolve_project_path(
-            registry_cfg.get("registry_dir", registry_cfg.get("meta_dir", "runtime/registry"))
-        )
-        self.runs_dir = resolve_project_path(registry_cfg.get("runs_dir", "runtime/runs"))
-        self.models_dir = resolve_project_path(
-            registry_cfg.get("models_dir", registry_cfg.get("artifacts_dir", "runtime/models"))
-        )
+        self.registry_dir = resolve_registry_dir(config)
+        self.runs_dir = resolve_runs_dir(config)
+        self.models_dir = resolve_models_dir(config)
         self.run_registry_path = resolve_project_path(
             registry_cfg.get("run_registry_file", self.registry_dir / "run_registry.json")
         )

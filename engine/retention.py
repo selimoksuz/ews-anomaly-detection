@@ -6,7 +6,14 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
-from engine.config_loader import resolve_project_path
+from engine.config_loader import (
+    resolve_logs_dir,
+    resolve_models_dir,
+    resolve_monitoring_dir,
+    resolve_project_path,
+    resolve_registry_dir,
+    resolve_runs_dir,
+)
 
 
 class RetentionManager:
@@ -16,16 +23,12 @@ class RetentionManager:
         self.config = config
         self.registry_cfg = config.get("registry", {})
         self.retention_cfg = config.get("retention", {})
-        self.logs_dir = resolve_project_path(self.registry_cfg.get("logs_dir", "runtime/logs"))
+        self.logs_dir = resolve_logs_dir(config)
         self.legacy_logs_dir = resolve_project_path("runtime/logs")
-        self.registry_dir = resolve_project_path(
-            self.registry_cfg.get("registry_dir", self.registry_cfg.get("meta_dir", "runtime/registry"))
-        )
-        self.runs_dir = resolve_project_path(self.registry_cfg.get("runs_dir", "runtime/runs"))
+        self.registry_dir = resolve_registry_dir(config)
+        self.runs_dir = resolve_runs_dir(config)
         self.legacy_registry_runs_dir = self.registry_dir / "runs"
-        self.models_dir = resolve_project_path(
-            self.registry_cfg.get("models_dir", self.registry_cfg.get("artifacts_dir", "runtime/models"))
-        )
+        self.models_dir = resolve_models_dir(config)
         self.run_registry_path = resolve_project_path(
             self.registry_cfg.get("run_registry_file", self.registry_dir / "run_registry.json")
         )
@@ -38,6 +41,7 @@ class RetentionManager:
         self.registry_lock_path = resolve_project_path(
             self.registry_cfg.get("registry_lock_file", self.registry_dir / ".registry.lock")
         )
+        self.monitoring_dir = resolve_monitoring_dir(config)
         self.legacy_monitoring_dir = resolve_project_path("runtime/monitoring")
 
     def cleanup(self) -> dict:
@@ -61,8 +65,13 @@ class RetentionManager:
             "legacy_logs": self._clear_directory(self.legacy_logs_dir) if self.legacy_logs_dir != self.logs_dir else 0,
             "models": self._clear_directory(self.models_dir),
             "runs": self._clear_directory(self.runs_dir),
-            "legacy_registry_runs": self._clear_directory(self.legacy_registry_runs_dir),
-            "legacy_monitoring": self._clear_directory(self.legacy_monitoring_dir),
+            "legacy_registry_runs": self._clear_directory(self.legacy_registry_runs_dir)
+            if self.legacy_registry_runs_dir != self.runs_dir
+            else 0,
+            "monitoring": self._clear_directory(self.monitoring_dir),
+            "legacy_monitoring": self._clear_directory(self.legacy_monitoring_dir)
+            if self.legacy_monitoring_dir != self.monitoring_dir
+            else 0,
             "registry_files": 0,
         }
 
@@ -81,8 +90,10 @@ class RetentionManager:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        self._remove_directory_if_empty(self.legacy_registry_runs_dir)
-        self._remove_directory_if_empty(self.legacy_monitoring_dir)
+        if self.legacy_registry_runs_dir != self.runs_dir:
+            self._remove_directory_if_empty(self.legacy_registry_runs_dir)
+        if self.legacy_monitoring_dir != self.monitoring_dir:
+            self._remove_directory_if_empty(self.legacy_monitoring_dir)
         return deleted
 
     def _cleanup_files(self, directory: Path, max_age_days: int) -> int:

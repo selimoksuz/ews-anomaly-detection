@@ -83,6 +83,34 @@ def resolve_project_path(path_like) -> Path:
     return (PROJECT_ROOT / path).resolve()
 
 
+def resolve_registry_dir(config: dict) -> Path:
+    registry_cfg = config.get("registry", {}) or {}
+    return resolve_project_path(
+        registry_cfg.get("registry_dir", registry_cfg.get("meta_dir", "runtime/registry"))
+    )
+
+
+def resolve_runs_dir(config: dict) -> Path:
+    registry_cfg = config.get("registry", {}) or {}
+    return resolve_project_path(registry_cfg.get("runs_dir", resolve_registry_dir(config) / "runs"))
+
+
+def resolve_models_dir(config: dict) -> Path:
+    registry_cfg = config.get("registry", {}) or {}
+    return resolve_project_path(
+        registry_cfg.get("models_dir", registry_cfg.get("artifacts_dir", "runtime/models"))
+    )
+
+
+def resolve_logs_dir(config: dict) -> Path:
+    registry_cfg = config.get("registry", {}) or {}
+    return resolve_project_path(registry_cfg.get("logs_dir", "runtime/logs"))
+
+
+def resolve_monitoring_dir(config: dict) -> Path:
+    return resolve_project_path(config.get("monitoring", {}).get("directory", "runtime/monitoring"))
+
+
 def _normalize_columns(columns: Iterable[str]) -> list[str]:
     return [str(column).strip().lower() for column in columns if str(column).strip()]
 
