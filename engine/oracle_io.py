@@ -870,6 +870,7 @@ class OracleConnector:
                 STATUS                 VARCHAR2(32),
                 STARTED_AT             TIMESTAMP,
                 FINISHED_AT            TIMESTAMP,
+                DURATION_SECONDS       NUMBER(12,3),
                 MODEL_VERSION          VARCHAR2(200),
                 SCOPE_SNAPSHOT         DATE,
                 SCOPE_START            DATE,
@@ -882,10 +883,15 @@ class OracleConnector:
                 BAND_SARI              NUMBER(7,4),
                 BAND_TURUNCU           NUMBER(7,4),
                 BAND_KIRMIZI           NUMBER(7,4),
+                BAND_PERSISTENCE_KIRMIZI NUMBER(7,4),
                 SCORE_MEAN             NUMBER(10,4),
                 SCORE_MEDIAN           NUMBER(10,4),
                 SCORE_P95              NUMBER(10,4),
                 SCORE_P99              NUMBER(10,4),
+                SCORE_SKEW             NUMBER(10,4),
+                SCORE_KURTOSIS         NUMBER(10,4),
+                SCORE_PSI_VS_PREV      NUMBER(10,6),
+                SCORE_BUCKETS          VARCHAR2(1000),
                 AE_SCORE_MEAN          NUMBER(10,4),
                 IF_SCORE_MEAN          NUMBER(10,4),
                 MD_SCORE_MEAN          NUMBER(10,4),
@@ -897,8 +903,15 @@ class OracleConnector:
                 DERIVED_AVG_COVERAGE   NUMBER(8,6),
                 NATIVE_MAX_OUTLIER     NUMBER(8,6),
                 DERIVED_MAX_OUTLIER    NUMBER(8,6),
+                FRESHNESS_MAX_AGE_DAYS NUMBER,
+                STABILITY_TEST_KS      NUMBER(8,6),
+                STABILITY_TEST_MEAN_RATIO NUMBER(10,6),
+                STABILITY_CAL_KS       NUMBER(8,6),
+                STABILITY_CAL_MEAN_RATIO NUMBER(10,6),
                 STABILITY_OOT_KS       NUMBER(8,6),
                 STABILITY_OOT_MEAN_RATIO NUMBER(10,6),
+                CALIBRATION_ROWS       NUMBER,
+                CALIBRATION_MONOTONIC  NUMBER(1),
                 SUPERVISED_PRECISION   NUMBER(8,6),
                 SUPERVISED_RECALL      NUMBER(8,6),
                 SUPERVISED_F1          NUMBER(8,6),
@@ -906,30 +919,42 @@ class OracleConnector:
                 WEIGHT_AE              NUMBER(6,4),
                 WEIGHT_IF              NUMBER(6,4),
                 WEIGHT_MD              NUMBER(6,4),
+                DOMINANT_REASON_FEATURE VARCHAR2(128),
+                DOMINANT_REASON_SHARE  NUMBER(7,4),
+                RESULT_ROW_COUNT       NUMBER,
                 MONITORING_PATH        VARCHAR2(500),
                 CREATED_AT             TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
                 CONSTRAINT {pk_name} PRIMARY KEY (RUN_ID)
             )
         """
 
+    MONITOR_HISTORY_COLUMNS: tuple[str, ...] = (
+        "RUN_ID", "RUN_TYPE", "SEGMENT", "STATUS", "STARTED_AT", "FINISHED_AT",
+        "DURATION_SECONDS", "MODEL_VERSION", "SCOPE_SNAPSHOT", "SCOPE_START", "SCOPE_END",
+        "INPUT_ROWS", "INPUT_CUSTOMERS", "INPUT_SNAPSHOTS", "AVG_MISSING_RATIO",
+        "BAND_NORMAL", "BAND_SARI", "BAND_TURUNCU", "BAND_KIRMIZI", "BAND_PERSISTENCE_KIRMIZI",
+        "SCORE_MEAN", "SCORE_MEDIAN", "SCORE_P95", "SCORE_P99",
+        "SCORE_SKEW", "SCORE_KURTOSIS", "SCORE_PSI_VS_PREV", "SCORE_BUCKETS",
+        "AE_SCORE_MEAN", "IF_SCORE_MEAN", "MD_SCORE_MEAN",
+        "QUALITY_NATIVE_FULL", "QUALITY_NATIVE_SCOPE", "QUALITY_DERIVED_FULL", "QUALITY_DERIVED_SCOPE",
+        "NATIVE_AVG_COVERAGE", "DERIVED_AVG_COVERAGE", "NATIVE_MAX_OUTLIER", "DERIVED_MAX_OUTLIER",
+        "FRESHNESS_MAX_AGE_DAYS",
+        "STABILITY_TEST_KS", "STABILITY_TEST_MEAN_RATIO",
+        "STABILITY_CAL_KS", "STABILITY_CAL_MEAN_RATIO",
+        "STABILITY_OOT_KS", "STABILITY_OOT_MEAN_RATIO",
+        "CALIBRATION_ROWS", "CALIBRATION_MONOTONIC",
+        "SUPERVISED_PRECISION", "SUPERVISED_RECALL", "SUPERVISED_F1", "SUPERVISED_LIFT",
+        "WEIGHT_AE", "WEIGHT_IF", "WEIGHT_MD",
+        "DOMINANT_REASON_FEATURE", "DOMINANT_REASON_SHARE", "RESULT_ROW_COUNT",
+        "MONITORING_PATH",
+    )
+
     def write_monitor_history_row(self, row: dict) -> int:
         """Insert or replace a run-level monitoring history row."""
         if "monitor_history" not in self.oracle_settings.get("tables", {}):
             return 0
 
-        columns = [
-            "RUN_ID", "RUN_TYPE", "SEGMENT", "STATUS", "STARTED_AT", "FINISHED_AT",
-            "MODEL_VERSION", "SCOPE_SNAPSHOT", "SCOPE_START", "SCOPE_END",
-            "INPUT_ROWS", "INPUT_CUSTOMERS", "INPUT_SNAPSHOTS", "AVG_MISSING_RATIO",
-            "BAND_NORMAL", "BAND_SARI", "BAND_TURUNCU", "BAND_KIRMIZI",
-            "SCORE_MEAN", "SCORE_MEDIAN", "SCORE_P95", "SCORE_P99",
-            "AE_SCORE_MEAN", "IF_SCORE_MEAN", "MD_SCORE_MEAN",
-            "QUALITY_NATIVE_FULL", "QUALITY_NATIVE_SCOPE", "QUALITY_DERIVED_FULL", "QUALITY_DERIVED_SCOPE",
-            "NATIVE_AVG_COVERAGE", "DERIVED_AVG_COVERAGE", "NATIVE_MAX_OUTLIER", "DERIVED_MAX_OUTLIER",
-            "STABILITY_OOT_KS", "STABILITY_OOT_MEAN_RATIO",
-            "SUPERVISED_PRECISION", "SUPERVISED_RECALL", "SUPERVISED_F1", "SUPERVISED_LIFT",
-            "WEIGHT_AE", "WEIGHT_IF", "WEIGHT_MD", "MONITORING_PATH",
-        ]
+        columns = list(self.MONITOR_HISTORY_COLUMNS)
         values = [row.get(col.lower()) for col in columns]
         placeholders = ", ".join(f":{index + 1}" for index in range(len(columns)))
         column_clause = ", ".join(columns)
@@ -945,6 +970,40 @@ class OracleConnector:
         connection.commit()
         return 1
 
+    def read_previous_monitor_row(
+        self,
+        *,
+        segment: str,
+        run_type: str,
+        before: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Fetch the most recent completed monitor history row before a given timestamp."""
+        if "monitor_history" not in self.oracle_settings.get("tables", {}):
+            return None
+
+        table_full = self._qualified_table_name("monitor_history")
+        params: dict[str, Any] = {"segment": segment, "run_type": run_type}
+        filter_clause = ""
+        if before is not None:
+            filter_clause = "AND FINISHED_AT < :before"
+            params["before"] = pd.Timestamp(before).to_pydatetime()
+
+        query = f"""
+            SELECT *
+            FROM {table_full}
+            WHERE SEGMENT = :segment
+              AND RUN_TYPE = :run_type
+              AND STATUS = 'completed'
+              {filter_clause}
+            ORDER BY FINISHED_AT DESC
+            FETCH FIRST 1 ROWS ONLY
+        """
+        frame = self._read_query(query, params)
+        if frame.empty:
+            return None
+        row = frame.iloc[0].to_dict()
+        return {str(key).lower(): value for key, value in row.items()}
+
     def _ensure_managed_columns(self, cursor, table_key: str) -> None:
         available_columns = self._table_columns(table_key)
         if table_key == "input_features" and "DATA_TIME" not in available_columns:
@@ -956,6 +1015,37 @@ class OracleConnector:
                 "Added DATA_TIME column to existing table %s",
                 self._qualified_table_name(table_key),
             )
+        if table_key == "monitor_history":
+            migration = {
+                "DURATION_SECONDS": "NUMBER(12,3)",
+                "BAND_PERSISTENCE_KIRMIZI": "NUMBER(7,4)",
+                "SCORE_SKEW": "NUMBER(10,4)",
+                "SCORE_KURTOSIS": "NUMBER(10,4)",
+                "SCORE_PSI_VS_PREV": "NUMBER(10,6)",
+                "SCORE_BUCKETS": "VARCHAR2(1000)",
+                "FRESHNESS_MAX_AGE_DAYS": "NUMBER",
+                "STABILITY_TEST_KS": "NUMBER(8,6)",
+                "STABILITY_TEST_MEAN_RATIO": "NUMBER(10,6)",
+                "STABILITY_CAL_KS": "NUMBER(8,6)",
+                "STABILITY_CAL_MEAN_RATIO": "NUMBER(10,6)",
+                "CALIBRATION_ROWS": "NUMBER",
+                "CALIBRATION_MONOTONIC": "NUMBER(1)",
+                "DOMINANT_REASON_FEATURE": "VARCHAR2(128)",
+                "DOMINANT_REASON_SHARE": "NUMBER(7,4)",
+                "RESULT_ROW_COUNT": "NUMBER",
+            }
+            missing = [(name, ddl) for name, ddl in migration.items() if name not in available_columns]
+            if missing:
+                add_clause = ", ".join(f"{name} {ddl}" for name, ddl in missing)
+                cursor.execute(
+                    f"ALTER TABLE {self._qualified_table_name(table_key)} ADD ({add_clause})"
+                )
+                self.logger.info(
+                    "Added %d new columns to %s: %s",
+                    len(missing),
+                    self._qualified_table_name(table_key),
+                    ", ".join(name for name, _ in missing),
+                )
 
     def _table_name(self, table_key: str) -> str:
         tables = self.oracle_settings["tables"]

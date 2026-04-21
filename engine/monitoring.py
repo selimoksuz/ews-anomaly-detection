@@ -46,6 +46,8 @@ class MonitoringManager:
             },
         }
 
+    SCORE_BUCKET_EDGES: tuple[float, ...] = (0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+
     def summarize_scores(self, results: pd.DataFrame) -> dict:
         if results.empty:
             return {"rows": 0}
@@ -69,13 +71,68 @@ class MonitoringManager:
             if column not in results.columns:
                 continue
             values = np.asarray(results[column], dtype=float)
+            values = values[~np.isnan(values)]
+            if values.size == 0:
+                continue
             summary[column] = {
                 "mean": round(float(values.mean()), 4),
                 "median": round(float(np.median(values)), 4),
                 "p95": round(float(np.percentile(values, 95)), 4),
                 "p99": round(float(np.percentile(values, 99)), 4),
+                "skew": round(float(self._series_skew(values)), 4),
+                "kurtosis": round(float(self._series_kurtosis(values)), 4),
             }
+            if column == "anomaly_score":
+                summary["score_buckets"] = self._bucket_counts(values)
         return summary
+
+    @classmethod
+    def _bucket_counts(cls, values: np.ndarray) -> dict[str, float]:
+        if values.size == 0:
+            return {}
+        edges = np.array(cls.SCORE_BUCKET_EDGES, dtype=float)
+        counts, _ = np.histogram(values, bins=edges)
+        total = float(counts.sum()) or 1.0
+        buckets = {}
+        for idx in range(len(counts)):
+            low = int(edges[idx])
+            high = int(edges[idx + 1])
+            buckets[f"{low:03d}_{high:03d}"] = round(float(counts[idx] / total), 6)
+        return buckets
+
+    @staticmethod
+    def _series_skew(values: np.ndarray) -> float:
+        if values.size < 3:
+            return 0.0
+        mean = float(values.mean())
+        std = float(values.std(ddof=0))
+        if std <= 1e-12:
+            return 0.0
+        return float(((values - mean) ** 3).mean() / (std ** 3))
+
+    @staticmethod
+    def _series_kurtosis(values: np.ndarray) -> float:
+        if values.size < 4:
+            return 0.0
+        mean = float(values.mean())
+        std = float(values.std(ddof=0))
+        if std <= 1e-12:
+            return 0.0
+        return float(((values - mean) ** 4).mean() / (std ** 4) - 3.0)
+
+    @staticmethod
+    def compute_psi(current: dict, previous: dict) -> Optional[float]:
+        """Population Stability Index between two bucket share dicts."""
+        if not current or not previous:
+            return None
+        keys = sorted(set(current) | set(previous))
+        eps = 1e-6
+        psi = 0.0
+        for key in keys:
+            p_curr = max(float(current.get(key, 0.0)), eps)
+            p_prev = max(float(previous.get(key, 0.0)), eps)
+            psi += (p_curr - p_prev) * np.log(p_curr / p_prev)
+        return round(float(psi), 6)
 
     def summarize_outcomes(self, frame: pd.DataFrame, target_columns: list[str]) -> dict:
         if frame.empty:
@@ -245,9 +302,21 @@ class MonitoringManager:
         input_section = payload.get("input") or {}
         materialization_quality = (payload.get("quality") or {}).get("materialization") or {}
         stability = extras.get("stability") or {}
-        stability_oot = (stability.get("oot") or {}).get("metrics", {}).get("ensemble_score", {}) if stability else {}
+
+        def _stability_metrics(window_key):
+            window = stability.get(window_key) if stability else None
+            if not isinstance(window, dict):
+                return {}
+            return (window.get("metrics") or {}).get("ensemble_score", {}) or {}
+
+        stability_test = _stability_metrics("test")
+        stability_cal = _stability_metrics("calibration")
+        stability_oot = _stability_metrics("oot")
+
         supervised = extras.get("supervised") or {}
         weights = extras.get("weights") or {}
+        calibration = extras.get("calibration") or {}
+        freshness_detail = extras.get("freshness") or {}
 
         def _num(value):
             try:
@@ -278,13 +347,36 @@ class MonitoringManager:
             except Exception:  # noqa: BLE001
                 return None
 
+        started_at = _as_date(run_info.get("started_at"))
+        finished_at = _as_date(
+            run_info.get("finished_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        )
+        duration_seconds = None
+        if started_at and finished_at:
+            try:
+                duration_seconds = round((finished_at - started_at).total_seconds(), 3)
+            except Exception:  # noqa: BLE001
+                duration_seconds = None
+
+        freshness_age = _num(freshness_detail.get("max_age_days"))
+        if freshness_age is None:
+            native_full = materialization_quality.get("native_full") or {}
+            fs_report = (native_full.get("freshness") or {}).get("fs_last_update_date") or {}
+            freshness_age = _num(fs_report.get("max_age_days_observed"))
+
+        score_buckets = scores.get("score_buckets") or {}
+        score_buckets_json = json.dumps(score_buckets, ensure_ascii=False) if score_buckets else None
+
+        dominant = extras.get("dominant_reason") or {}
+
         row = {
             "run_id": run_info.get("run_id"),
             "run_type": run_info.get("run_type"),
             "segment": run_info.get("segment"),
             "status": run_info.get("status"),
-            "started_at": _as_date(run_info.get("started_at")),
-            "finished_at": _as_date(run_info.get("finished_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_seconds": duration_seconds,
             "model_version": run_info.get("model_version"),
             "scope_snapshot": _as_date(run_info.get("scope_snapshot")),
             "scope_start": _as_date(run_info.get("scope_start")),
@@ -297,10 +389,15 @@ class MonitoringManager:
             "band_sari": _num(bands.get("SARI")),
             "band_turuncu": _num(bands.get("TURUNCU")),
             "band_kirmizi": _num(bands.get("KIRMIZI")),
+            "band_persistence_kirmizi": _num(extras.get("band_persistence_kirmizi")),
             "score_mean": _score_stat("anomaly_score", "mean"),
             "score_median": _score_stat("anomaly_score", "median"),
             "score_p95": _score_stat("anomaly_score", "p95"),
             "score_p99": _score_stat("anomaly_score", "p99"),
+            "score_skew": _score_stat("anomaly_score", "skew"),
+            "score_kurtosis": _score_stat("anomaly_score", "kurtosis"),
+            "score_psi_vs_prev": _num(extras.get("score_psi_vs_prev")),
+            "score_buckets": score_buckets_json,
             "ae_score_mean": _score_stat("ae_score", "mean"),
             "if_score_mean": _score_stat("if_score", "mean"),
             "md_score_mean": _score_stat("md_score", "mean"),
@@ -312,8 +409,15 @@ class MonitoringManager:
             "derived_avg_coverage": _quality_field("derived_full", "avg_feature_coverage"),
             "native_max_outlier": _quality_field("native_full", "max_outlier_share"),
             "derived_max_outlier": _quality_field("derived_full", "max_outlier_share"),
+            "freshness_max_age_days": int(freshness_age) if freshness_age is not None else None,
+            "stability_test_ks": _num(stability_test.get("ks_stat")),
+            "stability_test_mean_ratio": _num(stability_test.get("mean_ratio")),
+            "stability_cal_ks": _num(stability_cal.get("ks_stat")),
+            "stability_cal_mean_ratio": _num(stability_cal.get("mean_ratio")),
             "stability_oot_ks": _num(stability_oot.get("ks_stat")),
             "stability_oot_mean_ratio": _num(stability_oot.get("mean_ratio")),
+            "calibration_rows": int(calibration["rows"]) if calibration.get("rows") is not None else None,
+            "calibration_monotonic": int(bool(calibration.get("monotonic"))) if calibration.get("monotonic") is not None else None,
             "supervised_precision": _num(supervised.get("precision_at_top_percent")),
             "supervised_recall": _num(supervised.get("recall_at_top_percent")),
             "supervised_f1": _num(supervised.get("f1_at_top_percent")),
@@ -321,6 +425,9 @@ class MonitoringManager:
             "weight_ae": _num(weights.get("autoencoder") if weights else None),
             "weight_if": _num(weights.get("isolation_forest") if weights else None),
             "weight_md": _num(weights.get("mahalanobis") if weights else None),
+            "dominant_reason_feature": dominant.get("feature"),
+            "dominant_reason_share": _num(dominant.get("share")),
+            "result_row_count": int(extras["result_row_count"]) if extras.get("result_row_count") is not None else None,
             "monitoring_path": run_info.get("monitoring_path"),
         }
         return row

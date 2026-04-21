@@ -746,6 +746,8 @@ class LifecycleManager:
                         "end": end_date,
                     },
                     monitoring_path=monitoring_summary.get("monitoring_path"),
+                    results_frame=results,
+                    result_row_count=int(len(results)),
                 )
                 self.registry.finish_run(run, "completed", summary)
                 return summary
@@ -1089,14 +1091,23 @@ class LifecycleManager:
                     "feature_selection": model.feature_selection_summary(),
                     "log_path": str(log_path),
                 }
+                dev_input_section = (monitoring_payload.get("input") or {}).get("oot") or {}
+                materialization_quality_payload = (
+                    (self.last_materialization_summary.get("development") or {}).get("quality") or {}
+                )
+                calibration_info = {
+                    "rows": calibration_record.get("rows"),
+                    "monotonic": True if calibration_record.get("status") == "fitted" else None,
+                }
                 self._record_monitor_history(
                     run,
                     payload={
-                        "input": monitoring_payload.get("input"),
-                        "scores": monitoring_payload.get("scores"),
-                        "quality": {"materialization": monitoring_payload.get("quality")},
+                        "input": dev_input_section,
+                        "scores": {},
+                        "quality": {"materialization": materialization_quality_payload},
                     },
                     stability=stability,
+                    calibration=calibration_info,
                     model_version=model_version,
                     monitoring_path=str(monitoring_path),
                 )
@@ -1114,10 +1125,13 @@ class LifecycleManager:
         stability: Optional[dict] = None,
         supervised: Optional[dict] = None,
         weights: Optional[dict] = None,
+        calibration: Optional[dict] = None,
         model_version: Optional[str] = None,
         scope: Optional[dict] = None,
         monitoring_path: Optional[str] = None,
         status: str = "completed",
+        results_frame: Optional[pd.DataFrame] = None,
+        result_row_count: Optional[int] = None,
     ) -> None:
         """Persist a run-level summary row to the Oracle monitor history table."""
         if str((self.config.get("monitoring", {}) or {}).get("history", {}).get("backend", "oracle")).lower() != "oracle":
@@ -1140,21 +1154,159 @@ class LifecycleManager:
                 "scope_end": scope.get("end"),
             })
 
-        extras = {
-            "stability": {"oot": (stability or {}).get("oot")} if stability else None,
+        extras: dict = {
+            "stability": stability,
             "supervised": supervised,
             "weights": weights,
+            "calibration": calibration,
+            "result_row_count": result_row_count,
         }
+
+        from engine.oracle_io import OracleConnector
+        from engine.monitoring import MonitoringManager
+
+        # Enrich score-live runs with previous-snapshot derived metrics (PSI + band persistence + dominant reason).
+        try:
+            if run.run_type == "score-live" and results_frame is not None and not results_frame.empty:
+                with OracleConnector(self.config, self.secrets) as ora:
+                    ora.setup_tables(drop_existing=False)
+                    prev_row = ora.read_previous_monitor_row(
+                        segment=run.segment,
+                        run_type="score-live",
+                        before=run_info["finished_at"],
+                    )
+                    current_buckets = ((payload or {}).get("scores") or {}).get("score_buckets") or {}
+                    prev_buckets = {}
+                    if prev_row and prev_row.get("score_buckets"):
+                        try:
+                            prev_buckets = json.loads(prev_row["score_buckets"])
+                        except Exception:  # noqa: BLE001
+                            prev_buckets = {}
+                    if current_buckets and prev_buckets:
+                        extras["score_psi_vs_prev"] = MonitoringManager.compute_psi(current_buckets, prev_buckets)
+
+                    persistence = self._compute_band_persistence(
+                        ora=ora,
+                        segment=run.segment,
+                        current_results=results_frame,
+                        prev_snapshot=prev_row.get("scope_snapshot") if prev_row else None,
+                    )
+                    if persistence is not None:
+                        extras["band_persistence_kirmizi"] = persistence
+
+                    dominant = self._fetch_dominant_reason(
+                        ora=ora,
+                        segment=run.segment,
+                        current_results=results_frame,
+                    )
+                    if dominant:
+                        extras["dominant_reason"] = dominant
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to enrich score-live monitor row with derived metrics for run_id=%s", run.run_id)
 
         row = self.monitoring.build_history_row(run_info=run_info, payload=payload, extras=extras)
         try:
-            from engine.oracle_io import OracleConnector
-
             with OracleConnector(self.config, self.secrets) as ora:
                 ora.setup_tables(drop_existing=False)
                 self.monitoring.write_history_row(ora, row)
         except Exception:  # noqa: BLE001 - history best-effort
             logger.exception("Unable to record monitor history for run_id=%s", run.run_id)
+
+    def _compute_band_persistence(
+        self,
+        *,
+        ora,
+        segment: str,
+        current_results: pd.DataFrame,
+        prev_snapshot,
+    ) -> Optional[float]:
+        if prev_snapshot is None:
+            return None
+        try:
+            results_table = ora._qualified_table_name("results")
+            prev_frame = ora._read_query(
+                f"""
+                SELECT {self.id_column.upper()} AS customer_id, ALERT_BAND
+                FROM {results_table}
+                WHERE SEGMENT = :segment
+                  AND TRUNC({self.time_column.upper()}) = TRUNC(:snap)
+                """,
+                {"segment": segment, "snap": pd.Timestamp(prev_snapshot).to_pydatetime()},
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Band persistence query failed for segment=%s", segment)
+            return None
+        if prev_frame.empty:
+            return None
+        prev_frame.columns = [str(c).lower() for c in prev_frame.columns]
+        prev_kirmizi = set(
+            prev_frame.loc[prev_frame["alert_band"] == "KIRMIZI", "customer_id"].astype(str)
+        )
+        if not prev_kirmizi:
+            return 0.0
+        current = current_results.copy()
+        current.columns = [str(c).lower() for c in current.columns]
+        id_col = self.id_column.lower()
+        current_kirmizi = set(
+            current.loc[current["alert_band"] == "KIRMIZI", id_col].astype(str)
+        )
+        persistent = len(prev_kirmizi & current_kirmizi)
+        return round(persistent / len(prev_kirmizi), 4)
+
+    def _fetch_dominant_reason(
+        self,
+        *,
+        ora,
+        segment: str,
+        current_results: pd.DataFrame,
+    ) -> Optional[dict]:
+        try:
+            results_local = current_results.copy()
+            results_local.columns = [str(c).lower() for c in results_local.columns]
+            if "reasons" in results_local.columns:
+                top_features = []
+                for payload in results_local["reasons"].dropna():
+                    reason_list = list(payload.values()) if isinstance(payload, dict) else (payload or [])
+                    if not reason_list:
+                        continue
+                    first = reason_list[0]
+                    feature = (first or {}).get("feature") if isinstance(first, dict) else None
+                    if feature:
+                        top_features.append(str(feature))
+                if not top_features:
+                    return None
+                series = pd.Series(top_features)
+                top_feature = series.value_counts().head(1)
+                if top_feature.empty:
+                    return None
+                feature_name = str(top_feature.index[0])
+                share = round(float(top_feature.iloc[0] / len(series)), 4)
+                return {"feature": feature_name, "share": share}
+
+            details_table = ora._qualified_table_name("details")
+            query = f"""
+                SELECT FEATURE_NAME, COUNT(*) AS cnt
+                FROM {details_table}
+                WHERE FEATURE_RANK = 1
+                GROUP BY FEATURE_NAME
+                ORDER BY cnt DESC
+                FETCH FIRST 1 ROWS ONLY
+            """
+            frame = ora._read_query(query)
+            if frame.empty:
+                return None
+            frame.columns = [str(c).lower() for c in frame.columns]
+            total_query = f"SELECT COUNT(*) AS total FROM {details_table} WHERE FEATURE_RANK = 1"
+            total_frame = ora._read_query(total_query)
+            total_frame.columns = [str(c).lower() for c in total_frame.columns]
+            total = int(total_frame["total"].iloc[0] or 0)
+            if total <= 0:
+                return None
+            share = round(float(frame["cnt"].iloc[0]) / total, 4)
+            return {"feature": str(frame["feature_name"].iloc[0]), "share": share}
+        except Exception:  # noqa: BLE001
+            logger.exception("Dominant reason lookup failed for segment=%s", segment)
+            return None
 
     def _resolve_segment(self, segment: Optional[str]) -> str:
         if segment:
