@@ -13,3 +13,4 @@ runtime/
 dist/
 build/
 .env
+.claude/
