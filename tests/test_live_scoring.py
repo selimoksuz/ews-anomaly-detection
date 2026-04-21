@@ -2,6 +2,8 @@ import unittest
 from unittest.mock import Mock
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
+from contextlib import contextmanager
 
 import pandas as pd
 import yaml
@@ -87,6 +89,42 @@ class LiveScoringSelectionTests(unittest.TestCase):
             persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             self.assertIsNone(manager.live_scoring_cfg["snapshot"]["explicit_date"])
             self.assertIsNone(persisted["live_scoring"]["snapshot"]["explicit_date"])
+
+    def test_score_live_marks_empty_scope_as_skipped(self):
+        manager = LifecycleManager.__new__(LifecycleManager)
+        manager.config = {"pipeline": {"id_column": "customer_id", "time_column": "snapshot_date"}}
+        manager.development_cfg = {"segment_value": "SEG_A"}
+        manager.live_scoring_cfg = {
+            "snapshot": {
+                "selector": "today",
+                "explicit_date": None,
+                "start_date": None,
+                "end_date": None,
+            }
+        }
+        manager.last_materialization_summary = {"live_scoring": {"quality": {"derived_scope": {"status": "empty"}}}}
+        manager.registry = Mock()
+        run = SimpleNamespace(run_id="run-1", run_type="score-live", segment="SEG_A")
+        manager.registry.start_run.return_value = run
+        manager.registry.get_champion.return_value = {"artifact_path": "artifact.pkl", "model_version": "champion-v1"}
+        manager._load_model = Mock(return_value=Mock())
+        manager._resolve_model_feature_names = Mock(return_value=["feature_a"])
+        manager._load_live_source_frame = Mock(return_value=pd.DataFrame())
+        manager._resolve_segment = Mock(return_value="SEG_A")
+
+        @contextmanager
+        def fake_logging(_run):
+            yield Path("runtime/runs/run-1/logs/scoring.log")
+
+        manager._activate_run_logging = fake_logging
+
+        result = manager.score_live(segment="SEG_A")
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["rows"], 0)
+        manager.registry.finish_run.assert_called_once()
+        finish_args = manager.registry.finish_run.call_args.args
+        self.assertEqual(finish_args[1], "skipped")
 
 
 if __name__ == "__main__":

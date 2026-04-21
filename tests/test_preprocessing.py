@@ -16,16 +16,16 @@ class PreprocessingTests(unittest.TestCase):
         preprocessor = FeaturePreprocessor(config, features)
 
         frame = pd.DataFrame([{feature: 1.0 for feature in features}])
-        frame["cash_advance_ratio_4w"] = 1.8
-        frame["dpd_current"] = -5
+        frame["bank_debt_to_ebitda"] = -5.0
+        frame["ifrs9_behavioral_pd"] = 1.8
         transformed = preprocessor.fit_transform(frame)
         self.assertEqual(transformed.shape[1], len(features))
 
         actual = preprocessor.prepare_actual_values(frame)
-        cash_idx = features.index("cash_advance_ratio_4w")
-        dpd_idx = features.index("dpd_current")
-        self.assertEqual(actual[0, cash_idx], 1.0)
-        self.assertEqual(actual[0, dpd_idx], 0.0)
+        debt_idx = features.index("bank_debt_to_ebitda")
+        pd_idx = features.index("ifrs9_behavioral_pd")
+        self.assertEqual(actual[0, debt_idx], 0.0)
+        self.assertEqual(actual[0, pd_idx], 1.0)
 
     def test_data_loader_allows_missing_feature_values(self):
         config = load_config()
@@ -34,10 +34,10 @@ class PreprocessingTests(unittest.TestCase):
         frame = pd.DataFrame([{feature: 1.0 for feature in features}])
         frame["customer_id"] = "CUST_1"
         frame["snapshot_date"] = "2026-01-01"
-        frame["txn_amount_weekly"] = None
+        frame["pos_volume_change"] = None
 
         validated = loader.validate_data(frame)
-        self.assertTrue(validated["txn_amount_weekly"].isnull().any())
+        self.assertTrue(validated["pos_volume_change"].isnull().any())
 
     def test_feature_level_missing_strategies_support_min_max_mean_constant(self):
         config = load_config()
@@ -45,37 +45,37 @@ class PreprocessingTests(unittest.TestCase):
         config["preprocessing"]["missing"] = {
             "default_strategy": "median",
             "feature_strategies": {
-                "txn_count_weekly": {"strategy": "constant", "value": 0},
-                "channel_count_4w": {"strategy": "min"},
-                "payment_reversal_count_4w": {"strategy": "max"},
-                "checking_balance": {"strategy": "mean"},
+                "bank_debt_to_turnover": {"strategy": "constant", "value": 0},
+                "kkb_commercial_score": {"strategy": "min"},
+                "kkb_indebtedness_index": {"strategy": "max"},
+                "ifrs9_behavioral_pd": {"strategy": "mean"},
             },
         }
         preprocessor = FeaturePreprocessor(config, features)
 
         rows = []
-        for index, checking_balance in enumerate([100.0, 200.0, 300.0], start=1):
+        for index, pd_value in enumerate([0.10, 0.20, 0.30], start=1):
             row = {feature: float(index) for feature in features}
-            row["txn_count_weekly"] = float(index)
-            row["channel_count_4w"] = float(index + 2)
-            row["payment_reversal_count_4w"] = float(index + 4)
-            row["checking_balance"] = checking_balance
+            row["bank_debt_to_turnover"] = float(index)
+            row["kkb_commercial_score"] = float(1000 + index * 100)
+            row["kkb_indebtedness_index"] = float(index + 2)
+            row["ifrs9_behavioral_pd"] = pd_value
             rows.append(row)
         frame = pd.DataFrame(rows)
-        frame.loc[1, "txn_count_weekly"] = None
-        frame.loc[1, "channel_count_4w"] = None
-        frame.loc[1, "payment_reversal_count_4w"] = None
-        frame.loc[1, "checking_balance"] = None
-        frame.loc[1, "outstanding_balance"] = None
+        frame.loc[1, "bank_debt_to_turnover"] = None
+        frame.loc[1, "kkb_commercial_score"] = None
+        frame.loc[1, "kkb_indebtedness_index"] = None
+        frame.loc[1, "ifrs9_behavioral_pd"] = None
+        frame.loc[1, "pos_volume_change"] = None
 
         preprocessor.fit(frame)
         actual = pd.DataFrame(preprocessor.prepare_actual_values(frame), columns=features)
 
-        self.assertEqual(actual.loc[1, "txn_count_weekly"], 0.0)
-        self.assertEqual(actual.loc[1, "channel_count_4w"], 3.0)
-        self.assertEqual(actual.loc[1, "payment_reversal_count_4w"], 7.0)
-        self.assertEqual(actual.loc[1, "checking_balance"], 200.0)
-        self.assertEqual(actual.loc[1, "outstanding_balance"], 2.0)
+        self.assertEqual(actual.loc[1, "bank_debt_to_turnover"], 0.0)
+        self.assertEqual(actual.loc[1, "kkb_commercial_score"], 1100.0)
+        self.assertEqual(actual.loc[1, "kkb_indebtedness_index"], 5.0)
+        self.assertEqual(actual.loc[1, "ifrs9_behavioral_pd"], 0.20)
+        self.assertEqual(actual.loc[1, "pos_volume_change"], 2.0)
 
     def test_data_loader_can_infer_numeric_features_without_explicit_config(self):
         config = load_config()
@@ -239,17 +239,17 @@ class PreprocessingTests(unittest.TestCase):
     def test_raw_type_overrides_lock_binary_inference_from_reference_schema(self):
         config = load_config()
         features = get_feature_list(config)
-        config.setdefault("features", {})["raw_type_overrides"] = {"overlimit_count_4w": "continuous"}
+        config.setdefault("features", {})["raw_type_overrides"] = {"equity_change": "continuous"}
 
         frame = pd.DataFrame([{feature: 1.0 for feature in features} for _ in range(5)])
-        frame["overlimit_count_4w"] = [0.0, 1.0, 0.0, 1.0, 0.0]
+        frame["equity_change"] = [0.0, 1.0, 0.0, 1.0, 0.0]
 
         preprocessor = FeaturePreprocessor(config, features)
         preprocessor.fit(frame)
         summary = preprocessor.summarize()
 
         self.assertEqual(
-            summary["feature_registry"]["overlimit_count_4w"]["raw_type"],
+            summary["feature_registry"]["equity_change"]["raw_type"],
             "continuous",
         )
 

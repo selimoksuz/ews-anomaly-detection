@@ -57,12 +57,16 @@ def _resolve_config_refs(config: dict[str, Any], config_path: Path) -> dict[str,
     if not isinstance(refs, Mapping):
         raise ValueError("config_refs must be a mapping of section names to yaml file paths.")
     for section_name, relative_path in refs.items():
+        section_key = str(section_name).strip()
+        existing_value = merged.get(section_key)
+        if isinstance(existing_value, Mapping) and existing_value:
+            continue
         resolved_path = (config_path.parent / str(relative_path)).resolve()
         with resolved_path.open("r", encoding="utf-8") as handle:
             section_payload = yaml.safe_load(handle) or {}
         if not isinstance(section_payload, Mapping):
             raise ValueError(f"Referenced config file must contain a mapping at the root: {resolved_path}")
-        merged[str(section_name).strip()] = dict(section_payload)
+        merged[section_key] = dict(section_payload)
     return merged
 
 

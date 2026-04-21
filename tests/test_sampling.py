@@ -28,9 +28,9 @@ class SamplingTests(unittest.TestCase):
 
         frame = make_feature_frame(rows, seed=123)
         frame["snapshot_date"] = pd.date_range("2026-01-01", periods=10, freq="D").repeat(rows // 10)
-        frame.loc[::11, "txn_amount_weekly"] = None
-        frame.loc[::17, "checking_balance"] = None
-        frame.loc[[5, 35, 95], "outstanding_balance"] = frame["outstanding_balance"].max() * 25
+        frame.loc[::11, "pos_volume_change"] = None
+        frame.loc[::17, "ifrs9_behavioral_pd"] = None
+        frame.loc[[5, 35, 95], "bank_debt_to_turnover"] = frame["bank_debt_to_turnover"].max() * 25
         feature_names = get_feature_list(config)
         return config, frame, feature_names
 

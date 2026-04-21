@@ -26,9 +26,13 @@ def _resolve_config_refs(config: dict, *, config_path: Path) -> dict:
     if not isinstance(refs, dict):
         raise ValueError("config_refs must be a mapping of section names to yaml file paths.")
     for section_name, relative_path in refs.items():
+        section_key = str(section_name).strip()
+        existing_value = merged.get(section_key)
+        if isinstance(existing_value, dict) and existing_value:
+            continue
         resolved_path = (config_path.parent / str(relative_path)).resolve()
         section_payload = _load_yaml_mapping(resolved_path)
-        merged[str(section_name).strip()] = section_payload
+        merged[section_key] = section_payload
     return merged
 
 

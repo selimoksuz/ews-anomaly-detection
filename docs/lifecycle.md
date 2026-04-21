@@ -2,6 +2,26 @@
 
 Bu proje Oracle-first, config-driven ve batch orchestrated anomaly lifecycle olarak calisir.
 
+## Data Quality Layer
+
+Pipeline yalnizca `native -> derived -> model` akisi degil, ayni zamanda zorunlu bir veri kalitesi katmani ile calisir.
+
+- `engine/quality.py` native ve derived katmanda asagidaki kontrolleri uygular:
+- satir sayisi ve benzersiz musteri sayisi esikleri
+- duplicate `customer_id + snapshot_date` kontrolu
+- feature coverage / missing ratio kontrolu
+- robust outlier share kontrolu
+- freshness kontrolu
+
+Native katmanda freshness su an `fs_last_update_date` uzerinden olculur. Yani bilanço tarihi ile skor snapshot'i arasindaki yas farki izlenir. Derived katmanda ise artik model girdisi oldugu icin coverage, duplicate ve outlier kontrolleri onceliklidir.
+
+Quality davranisi config ile yonetilir:
+
+- `config/quality_rules.yaml`
+- `development` run'larinda fail seviye quality sonucu run'i bloklar
+- `live_scoring` run'larinda veri yoksa run fail olmaz, `skipped` olarak kapanir
+- quality ozetleri run bazli monitoring bundle icine yazilir
+
 ## Simplified Folder-Mapped Flow
 
 Bu diyagramda:
@@ -176,6 +196,7 @@ flowchart LR
   - `explicit_date` verilirse selector override edilir
   - `explicit_date` ile basarili bir run tamamlanirsa alan tekrar `null` yapilir; ertesi run default `today` davranisina doner
   - `start_date/end_date` verilirse date range kullanilir
+  - secilen kapsamda veri yoksa `score-live` run'i `failed` degil `skipped` status ile kapanir
 - Oracle output tablolarinin olusumu:
   - `EWS_ALERT_RESULTS`: `PM24 scored dataframe` dogrudan bu tabloya yazilir
   - `EWS_ALERT_DETAILS`: `PM24` icindeki `top-N reason` alanlari `OB3` adiminda satirlastirilir
@@ -329,3 +350,5 @@ temizler, `runtime/registry/` altindaki registry dosyalarini sifirdan olusturur 
 ## Airflow Entry Point
 
 `orchestration/airflow/ews_batch_dag.py` tek giris noktasi olarak `cli.py run-batch` cagirir. Boylece scheduling katmani ince kalir; is mantigi uygulama icinde kalir.
+
+Airflow DAG icindeki `dag_id`, `schedule` ve `max_active_runs` degerleri root config'teki `orchestration.airflow` alanindan okunur. Boylece config ile DAG arasinda ayri bir cron drift'i olusmaz.

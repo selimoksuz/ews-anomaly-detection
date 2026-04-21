@@ -4,6 +4,7 @@ config_refs:
   feature_selection: feature_selection_rules.yaml
   preprocessing: preprocessing_rules.yaml
   materialization: materialization_rules.yaml
+  quality: quality_rules.yaml
 
 pipeline:
   name: ews_anomaly_detection

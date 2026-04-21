@@ -29,6 +29,7 @@ from engine.models import AnomalyModels
 from engine.materialization import NativeMaterializer
 from engine.monitoring import MonitoringManager
 from engine.output_writer import OutputWriter
+from engine.quality import QualityManager
 from engine.registry import RegistryManager
 from engine.retention import RetentionManager
 from engine.run_logging import attach_run_file_logger
@@ -64,8 +65,10 @@ class LifecycleManager:
         self.retention = RetentionManager(self.config)
         self.output_writer = OutputWriter(self.config, self.secrets)
         self.monitoring = MonitoringManager(self.config)
+        self.quality = QualityManager(self.config)
         self.data_loader = DataLoader(self.config)
         self.sampling_reports = {}
+        self.last_materialization_summary = {"development": None, "live_scoring": None}
 
     @staticmethod
     def _log_category_for_run_type(run_type: str) -> str:
@@ -659,7 +662,23 @@ class LifecycleManager:
                     end_date=end_date,
                 )
                 if frame.empty:
-                    raise ValueError("No rows returned for live scoring.")
+                    requested_scope = {
+                        "snapshot_date": snapshot_date or self.live_scoring_cfg.get("snapshot", {}).get("explicit_date"),
+                        "start_date": start_date or self.live_scoring_cfg.get("snapshot", {}).get("start_date"),
+                        "end_date": end_date or self.live_scoring_cfg.get("snapshot", {}).get("end_date"),
+                        "selector": self.live_scoring_cfg.get("snapshot", {}).get("selector", "today"),
+                    }
+                    summary = {
+                        "status": "skipped",
+                        "segment": segment_value,
+                        "rows": 0,
+                        "reason": "No rows returned for live scoring.",
+                        "requested_scope": requested_scope,
+                        "quality": (self.last_materialization_summary.get("live_scoring") or {}).get("quality"),
+                        "log_path": str(log_path),
+                    }
+                    self.registry.finish_run(run, "skipped", summary)
+                    return summary
                 frame = self.data_loader.validate_data(frame, feature_names=model_feature_names)
                 logger.info("Validated live frame rows=%s snapshot_start=%s snapshot_end=%s", len(frame), pd.to_datetime(frame[self.time_column]).min(), pd.to_datetime(frame[self.time_column]).max())
 
@@ -675,9 +694,20 @@ class LifecycleManager:
                     results["score_delta"] = (results["anomaly_score"] - results["raw_shadow_score"]).round(2)
                 effective_snapshot = pd.to_datetime(frame[self.time_column]).max()
 
+                live_quality = self.quality.evaluate(
+                    frame,
+                    dataset_name="live_input",
+                    stage="live_scoring",
+                    rule_key="derived",
+                    feature_columns=model_feature_names,
+                )
                 monitoring_payload = {
                     "input": self.monitoring.summarize_input(frame, model_feature_names),
                     "scores": self.monitoring.summarize_scores(results),
+                    "quality": {
+                        "materialization": (self.last_materialization_summary.get("live_scoring") or {}).get("quality"),
+                        "live_input": live_quality,
+                    },
                 }
                 monitoring_summary = self.monitoring.write_bundle(
                     segment=segment_value,
@@ -698,6 +728,7 @@ class LifecycleManager:
                     "model_version": champion["model_version"],
                     "calibration_version": champion.get("calibration", {}).get("version"),
                     "weight_version": champion.get("weighting", {}).get("weight_version"),
+                    "quality": monitoring_payload["quality"],
                     "output": output_summary,
                     "monitoring_path": monitoring_summary["monitoring_path"],
                     "monitoring_dir": monitoring_summary["directory"],
@@ -931,11 +962,24 @@ class LifecycleManager:
                 calibration_artifact = self._load_calibration_artifact_from_record(calibration_record)
 
                 stability = {}
-                monitoring_payload = {"input": {}, "scores": {}}
+                monitoring_payload = {
+                    "input": {},
+                    "scores": {},
+                    "quality": {
+                        "materialization": (self.last_materialization_summary.get("development") or {}).get("quality"),
+                    },
+                }
                 default_weights = get_ensemble_weights(self.config)
                 model_feature_names = self._resolve_model_feature_names(model)
                 for window_name, frame in frames.items():
                     monitoring_payload["input"][window_name] = self.monitoring.summarize_input(frame, model_feature_names)
+                    monitoring_payload["quality"][window_name] = self.quality.evaluate(
+                        frame,
+                        dataset_name=f"{window_name}_derived",
+                        stage="development",
+                        rule_key="derived",
+                        feature_columns=model_feature_names,
+                    )
                     if frame.empty:
                         continue
                     scorer = self._build_scorer(
@@ -1016,6 +1060,7 @@ class LifecycleManager:
                     "feature_selection_path": str(feature_selection_path),
                     "windows": {name: self._window_boundaries(spec) for name, spec in windows.items()},
                     "sampling": self.sampling_reports,
+                    "quality": monitoring_payload["quality"],
                     "calibration_status": calibration_record["status"],
                     "shadow_status": shadow_record["status"],
                     "preprocessing": model.preprocessing_summary(),
@@ -1540,13 +1585,15 @@ class LifecycleManager:
             "segment_value": None if segment_value == "ALL" else segment_value,
         }
 
-        self._materialize_live_inputs(
+        materialization_summary = self._materialize_live_inputs(
             segment_value,
             snapshot_date=explicit_date,
             start_date=requested_start,
             end_date=requested_end,
             selector=selector,
         )
+        if materialization_summary is not None and int(materialization_summary.get("scoped_rows", 0)) == 0:
+            return pd.DataFrame()
 
         if explicit_date:
             return self.source_loader.load_frame(
@@ -1567,11 +1614,14 @@ class LifecycleManager:
             return self.source_loader.load_frame(source_name, latest_snapshot=True, **base_kwargs)
         raise ValueError(f"Unsupported live_scoring.snapshot.selector: {selector}")
 
-    def _materialize_development_inputs(self, config_variant: dict, segment_value: str) -> None:
+    def _materialize_development_inputs(self, config_variant: dict, segment_value: str) -> dict | None:
         materializer = NativeMaterializer(config_variant, self.secrets)
         if not materializer.enabled:
-            return
-        materializer.materialize_development(segment_value)
+            return None
+        summary = materializer.materialize_development(segment_value)
+        if config_variant is self.config:
+            self.last_materialization_summary["development"] = summary
+        return summary
 
     def _materialize_live_inputs(
         self,
@@ -1581,11 +1631,11 @@ class LifecycleManager:
         start_date=None,
         end_date=None,
         selector: str,
-    ) -> None:
+    ) -> dict | None:
         materializer = getattr(self, "materializer", None)
         if materializer is None or not materializer.enabled:
-            return
-        materializer.materialize_live(
+            return None
+        summary = materializer.materialize_live(
             segment_value,
             snapshot_date=snapshot_date,
             start_date=start_date,
@@ -1593,6 +1643,8 @@ class LifecycleManager:
             current_day=(snapshot_date is None and start_date is None and end_date is None and selector == "today"),
             latest_snapshot=(snapshot_date is None and start_date is None and end_date is None and selector == "latest"),
         )
+        self.last_materialization_summary["live_scoring"] = summary
+        return summary
 
     def _reset_live_explicit_date_after_success(self) -> None:
         snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})

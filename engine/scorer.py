@@ -321,8 +321,8 @@ class AnomalyScorer:
         unified_pct: np.ndarray,
         rank: int,
     ) -> dict:
-        base_index = base_feature_indices[family_name]
         family_feature_indices = family_indices[family_name]
+        base_index = base_feature_indices.get(family_name, family_feature_indices[0])
         actual = actual_values[row_index, base_index]
         ae_reference = expected_values[row_index, base_index]
 

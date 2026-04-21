@@ -143,7 +143,7 @@ def cmd_score_live(*args):
         start_date=start_date,
         end_date=end_date,
     )
-    print(result["snapshot_date"])
+    print(result.get("snapshot_date") or result.get("status"))
 
 
 def cmd_run_batch(*args):

@@ -108,6 +108,23 @@ class MonitoringManager:
             self.write_json(sampling_path, payload["sampling"])
             written_files["sampling_path"] = str(sampling_path)
 
+        if payload.get("quality"):
+            quality_path = bundle_dir / "quality.json"
+            self.write_json(quality_path, payload["quality"])
+            written_files["quality_path"] = str(quality_path)
+
+            quality_summary = self._quality_summary_frame(payload["quality"])
+            if not quality_summary.empty:
+                quality_summary_path = bundle_dir / "quality_summary.csv"
+                quality_summary.to_csv(quality_summary_path, index=False, encoding="utf-8-sig")
+                written_files["quality_summary_path"] = str(quality_summary_path)
+
+            quality_checks = self._quality_checks_frame(payload["quality"])
+            if not quality_checks.empty:
+                quality_checks_path = bundle_dir / "quality_checks.csv"
+                quality_checks.to_csv(quality_checks_path, index=False, encoding="utf-8-sig")
+                written_files["quality_checks_path"] = str(quality_checks_path)
+
         self._write_monitoring_log(segment=segment, run_id=run_id, payload=payload, written_files=written_files)
         return written_files
 
@@ -132,6 +149,64 @@ class MonitoringManager:
             return pd.json_normalize(payload, sep=".")
         return pd.DataFrame([{"value": payload}])
 
+    @staticmethod
+    def _quality_reports(payload, prefix: str = ""):
+        if isinstance(payload, dict):
+            if "status" in payload and "dataset_name" in payload:
+                report = dict(payload)
+                report["_quality_key"] = prefix.rstrip(".")
+                yield report
+            else:
+                for key, value in payload.items():
+                    next_prefix = f"{prefix}.{key}" if prefix else str(key)
+                    yield from MonitoringManager._quality_reports(value, next_prefix)
+
+    @staticmethod
+    def _quality_summary_frame(payload) -> pd.DataFrame:
+        rows = []
+        for report in MonitoringManager._quality_reports(payload):
+            rows.append(
+                {
+                    "quality_key": report.get("_quality_key"),
+                    "dataset_name": report.get("dataset_name"),
+                    "stage": report.get("stage"),
+                    "rule_key": report.get("rule_key"),
+                    "status": report.get("status"),
+                    "rows": report.get("rows"),
+                    "unique_customers": report.get("unique_customers"),
+                    "snapshots": report.get("snapshots"),
+                    "feature_count": report.get("feature_count"),
+                    "avg_feature_coverage": report.get("avg_feature_coverage"),
+                    "min_feature_coverage": report.get("min_feature_coverage"),
+                    "avg_missing_ratio": report.get("avg_missing_ratio"),
+                    "max_feature_missing_ratio": report.get("max_feature_missing_ratio"),
+                    "max_outlier_share": report.get("max_outlier_share"),
+                    "duplicate_key_count": report.get("duplicate_key_count"),
+                }
+            )
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def _quality_checks_frame(payload) -> pd.DataFrame:
+        rows = []
+        for report in MonitoringManager._quality_reports(payload):
+            for check in report.get("checks", []) or []:
+                rows.append(
+                    {
+                        "quality_key": report.get("_quality_key"),
+                        "dataset_name": report.get("dataset_name"),
+                        "rule_key": report.get("rule_key"),
+                        "report_status": report.get("status"),
+                        "check": check.get("check"),
+                        "check_status": check.get("status"),
+                        "observed": check.get("observed"),
+                        "warn_threshold": check.get("warn_threshold"),
+                        "fail_threshold": check.get("fail_threshold"),
+                        "message": check.get("message"),
+                    }
+                )
+        return pd.DataFrame(rows)
+
     def _write_monitoring_log(self, *, segment: str, run_id: str, payload: dict, written_files: dict):
         log_path = get_run_log_path(self.config, category="monitoring", run_id=run_id)
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +214,7 @@ class MonitoringManager:
             f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} | INFO | monitoring | segment={segment} run_id={run_id}",
             f"written_files={json.dumps(written_files, ensure_ascii=False)}",
         ]
-        for section_name in ("input", "scores", "outcomes", "sampling"):
+        for section_name in ("input", "scores", "outcomes", "sampling", "quality"):
             if section_name in payload and payload[section_name]:
                 lines.append(f"{section_name}_keys={list(payload[section_name].keys()) if isinstance(payload[section_name], dict) else section_name}")
         with open(log_path, "a", encoding="utf-8") as handle:

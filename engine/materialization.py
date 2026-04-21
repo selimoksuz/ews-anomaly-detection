@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 import numpy as np
@@ -14,7 +15,11 @@ from engine.history_features import (
     add_trend_slope_features,
 )
 from engine.oracle_io import OracleConnector
+from engine.quality import QualityManager
 from engine.source_loader import SourceLoader
+
+
+logger = logging.getLogger(__name__)
 
 
 class NativeMaterializer:
@@ -30,6 +35,7 @@ class NativeMaterializer:
         self.time_column = str(self.pipeline_cfg.get("time_column", "snapshot_date")).lower()
         self.segment_column = str(self.development_cfg.get("segment_column", "segment")).lower()
         self.source_loader = SourceLoader(config, secrets)
+        self.quality = QualityManager(config)
 
     @property
     def enabled(self) -> bool:
@@ -180,6 +186,14 @@ class NativeMaterializer:
             derived_full = pd.DataFrame(columns=[self.id_column, self.time_column, self.segment_column])
         else:
             derived_full = self.build_derived_frame(native_frame)
+        scoped_native = self._filter_scope(
+            native_frame,
+            snapshot_date=snapshot_date,
+            start_date=start_date,
+            end_date=end_date,
+            current_day=current_day,
+            latest_snapshot=latest_snapshot,
+        )
         scoped_frame = self._filter_scope(
             derived_full,
             snapshot_date=snapshot_date,
@@ -188,6 +202,14 @@ class NativeMaterializer:
             current_day=current_day,
             latest_snapshot=latest_snapshot,
         )
+        quality_summary = self._build_quality_summary(
+            native_frame=native_frame,
+            scoped_native=scoped_native,
+            derived_full=derived_full,
+            scoped_derived=scoped_frame,
+            stage="development" if full_refresh else "live_scoring",
+        )
+        self._enforce_quality(quality_summary, stage="development" if full_refresh else "live_scoring")
 
         persisted_rows = 0
         if self.persist_target:
@@ -222,12 +244,71 @@ class NativeMaterializer:
             "enabled": True,
             "segment": segment_value,
             "native_rows": int(len(native_frame)),
+            "native_scope_rows": int(len(scoped_native)),
             "derived_rows": int(len(derived_full)),
+            "scoped_rows": int(len(scoped_frame)),
             "persisted_rows": int(persisted_rows),
             "frame": scoped_frame,
+            "quality": quality_summary,
             "snapshot_min": self._date_or_none(scoped_frame[self.time_column].min()) if not scoped_frame.empty else None,
             "snapshot_max": self._date_or_none(scoped_frame[self.time_column].max()) if not scoped_frame.empty else None,
         }
+
+    def _build_quality_summary(
+        self,
+        *,
+        native_frame: pd.DataFrame,
+        scoped_native: pd.DataFrame,
+        derived_full: pd.DataFrame,
+        scoped_derived: pd.DataFrame,
+        stage: str,
+    ) -> dict[str, Any]:
+        quality = {
+            "native_full": self.quality.evaluate(
+                native_frame,
+                dataset_name="native_full",
+                stage=stage,
+                rule_key="native",
+            ),
+            "native_scope": self.quality.evaluate(
+                scoped_native,
+                dataset_name="native_scope",
+                stage=stage,
+                rule_key="native",
+            ),
+            "derived_full": self.quality.evaluate(
+                derived_full,
+                dataset_name="derived_full",
+                stage=stage,
+                rule_key="derived",
+            ),
+            "derived_scope": self.quality.evaluate(
+                scoped_derived,
+                dataset_name="derived_scope",
+                stage=stage,
+                rule_key="derived",
+            ),
+        }
+        logger.info(
+            "Materialization quality stage=%s native_full=%s native_scope=%s derived_full=%s derived_scope=%s",
+            stage,
+            quality["native_full"]["status"],
+            quality["native_scope"]["status"],
+            quality["derived_full"]["status"],
+            quality["derived_scope"]["status"],
+        )
+        return quality
+
+    def _enforce_quality(self, quality_summary: dict[str, Any], *, stage: str) -> None:
+        if stage == "development":
+            reports = [quality_summary["native_full"], quality_summary["derived_full"]]
+        else:
+            reports = []
+            if quality_summary["native_scope"].get("status") != "empty":
+                reports.append(quality_summary["native_scope"])
+            if quality_summary["derived_scope"].get("status") != "empty":
+                reports.append(quality_summary["derived_scope"])
+        self.quality.enforce_many(reports, stage=stage)
 
     def _trim_warmup_rows(self, frame: pd.DataFrame) -> pd.DataFrame:
         warmup = self.trim_warmup_snapshots
