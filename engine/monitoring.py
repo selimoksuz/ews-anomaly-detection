@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 
 from engine.run_logging import get_run_directory, get_run_log_path
+
+
+logger = logging.getLogger(__name__)
 
 
 class MonitoringManager:
@@ -19,6 +24,7 @@ class MonitoringManager:
         self.config = config
         self.id_column = config["pipeline"]["id_column"]
         self.time_column = config["pipeline"]["time_column"]
+        self.history_cfg = (config.get("monitoring", {}) or {}).get("history", {}) or {}
 
     def summarize_input(self, frame: pd.DataFrame, feature_names: list[str]) -> dict:
         if frame.empty:
@@ -219,3 +225,114 @@ class MonitoringManager:
                 lines.append(f"{section_name}_keys={list(payload[section_name].keys()) if isinstance(payload[section_name], dict) else section_name}")
         with open(log_path, "a", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
+
+    # ---------------------------------------------------------------------
+    # Monitor history (Oracle-backed run-level trend table)
+    # ---------------------------------------------------------------------
+
+    def build_history_row(
+        self,
+        *,
+        run_info: dict,
+        payload: Optional[dict] = None,
+        extras: Optional[dict] = None,
+    ) -> dict:
+        """Flatten a monitoring payload into a single history row."""
+        payload = payload or {}
+        extras = extras or {}
+        scores = payload.get("scores") or {}
+        bands = scores.get("band_share") or {}
+        input_section = payload.get("input") or {}
+        materialization_quality = (payload.get("quality") or {}).get("materialization") or {}
+        stability = extras.get("stability") or {}
+        stability_oot = (stability.get("oot") or {}).get("metrics", {}).get("ensemble_score", {}) if stability else {}
+        supervised = extras.get("supervised") or {}
+        weights = extras.get("weights") or {}
+
+        def _num(value):
+            try:
+                if value is None:
+                    return None
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _score_stat(section, stat):
+            inner = scores.get(section)
+            if not isinstance(inner, dict):
+                return None
+            return _num(inner.get(stat))
+
+        def _quality_field(key, attr="status"):
+            report = materialization_quality.get(key) or {}
+            value = report.get(attr)
+            if attr == "status":
+                return str(value).upper() if value is not None else None
+            return _num(value)
+
+        def _as_date(value):
+            if value in (None, "", "null"):
+                return None
+            try:
+                return pd.Timestamp(value).to_pydatetime()
+            except Exception:  # noqa: BLE001
+                return None
+
+        row = {
+            "run_id": run_info.get("run_id"),
+            "run_type": run_info.get("run_type"),
+            "segment": run_info.get("segment"),
+            "status": run_info.get("status"),
+            "started_at": _as_date(run_info.get("started_at")),
+            "finished_at": _as_date(run_info.get("finished_at") or datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            "model_version": run_info.get("model_version"),
+            "scope_snapshot": _as_date(run_info.get("scope_snapshot")),
+            "scope_start": _as_date(run_info.get("scope_start")),
+            "scope_end": _as_date(run_info.get("scope_end")),
+            "input_rows": int(input_section.get("rows", 0)) if input_section.get("rows") is not None else None,
+            "input_customers": int(input_section.get("unique_customers", 0)) if input_section.get("unique_customers") is not None else None,
+            "input_snapshots": int(input_section.get("snapshots", 0)) if input_section.get("snapshots") is not None else None,
+            "avg_missing_ratio": _num(input_section.get("avg_feature_missing_ratio")),
+            "band_normal": _num(bands.get("NORMAL")),
+            "band_sari": _num(bands.get("SARI")),
+            "band_turuncu": _num(bands.get("TURUNCU")),
+            "band_kirmizi": _num(bands.get("KIRMIZI")),
+            "score_mean": _score_stat("anomaly_score", "mean"),
+            "score_median": _score_stat("anomaly_score", "median"),
+            "score_p95": _score_stat("anomaly_score", "p95"),
+            "score_p99": _score_stat("anomaly_score", "p99"),
+            "ae_score_mean": _score_stat("ae_score", "mean"),
+            "if_score_mean": _score_stat("if_score", "mean"),
+            "md_score_mean": _score_stat("md_score", "mean"),
+            "quality_native_full": _quality_field("native_full"),
+            "quality_native_scope": _quality_field("native_scope"),
+            "quality_derived_full": _quality_field("derived_full"),
+            "quality_derived_scope": _quality_field("derived_scope"),
+            "native_avg_coverage": _quality_field("native_full", "avg_feature_coverage"),
+            "derived_avg_coverage": _quality_field("derived_full", "avg_feature_coverage"),
+            "native_max_outlier": _quality_field("native_full", "max_outlier_share"),
+            "derived_max_outlier": _quality_field("derived_full", "max_outlier_share"),
+            "stability_oot_ks": _num(stability_oot.get("ks_stat")),
+            "stability_oot_mean_ratio": _num(stability_oot.get("mean_ratio")),
+            "supervised_precision": _num(supervised.get("precision_at_top_percent")),
+            "supervised_recall": _num(supervised.get("recall_at_top_percent")),
+            "supervised_f1": _num(supervised.get("f1_at_top_percent")),
+            "supervised_lift": _num(supervised.get("lift_at_top_percent")),
+            "weight_ae": _num(weights.get("autoencoder") if weights else None),
+            "weight_if": _num(weights.get("isolation_forest") if weights else None),
+            "weight_md": _num(weights.get("mahalanobis") if weights else None),
+            "monitoring_path": run_info.get("monitoring_path"),
+        }
+        return row
+
+    def write_history_row(self, oracle_connector, row: dict) -> int:
+        """Persist a history row to the Oracle monitor history table."""
+        if not row.get("run_id"):
+            return 0
+        if str(self.history_cfg.get("backend", "oracle")).lower() != "oracle":
+            return 0
+        try:
+            return oracle_connector.write_monitor_history_row(row)
+        except Exception:  # noqa: BLE001 - history is best-effort, never blocks a run
+            logger.exception("Failed to persist monitor history row for run_id=%s", row.get("run_id"))
+            return 0

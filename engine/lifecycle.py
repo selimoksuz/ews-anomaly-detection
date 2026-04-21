@@ -736,6 +736,17 @@ class LifecycleManager:
                 }
                 if snapshot_date is None and start_date is None and end_date is None:
                     self._reset_live_explicit_date_after_success()
+                self._record_monitor_history(
+                    run,
+                    payload=monitoring_payload,
+                    model_version=champion["model_version"],
+                    scope={
+                        "snapshot": effective_snapshot.date().isoformat(),
+                        "start": start_date,
+                        "end": end_date,
+                    },
+                    monitoring_path=monitoring_summary.get("monitoring_path"),
+                )
                 self.registry.finish_run(run, "completed", summary)
                 return summary
             except Exception as exc:
@@ -840,6 +851,12 @@ class LifecycleManager:
                     "validation_metrics": artifact["validation_metrics"],
                     "log_path": str(log_path),
                 }
+                self._record_monitor_history(
+                    run,
+                    weights=artifact["weights"],
+                    supervised=(artifact["validation_metrics"] or {}).get("primary"),
+                    model_version=model_record["model_version"],
+                )
                 self.registry.finish_run(run, "completed", summary)
                 return summary
             except Exception as exc:
@@ -919,6 +936,11 @@ class LifecycleManager:
                     "metrics": metrics,
                     "log_path": str(log_path),
                 }
+                self._record_monitor_history(
+                    run,
+                    supervised=(metrics or {}).get("primary"),
+                    model_version=model_record["model_version"],
+                )
                 self.registry.finish_run(run, "completed", summary)
                 return summary
             except Exception as exc:
@@ -1067,11 +1089,72 @@ class LifecycleManager:
                     "feature_selection": model.feature_selection_summary(),
                     "log_path": str(log_path),
                 }
+                self._record_monitor_history(
+                    run,
+                    payload={
+                        "input": monitoring_payload.get("input"),
+                        "scores": monitoring_payload.get("scores"),
+                        "quality": {"materialization": monitoring_payload.get("quality")},
+                    },
+                    stability=stability,
+                    model_version=model_version,
+                    monitoring_path=str(monitoring_path),
+                )
                 self.registry.finish_run(run, "completed", summary)
                 return record
             except Exception as exc:
                 self.registry.finish_run(run, "failed", {"reason": str(exc), "log_path": str(log_path)})
                 raise
+
+    def _record_monitor_history(
+        self,
+        run,
+        *,
+        payload: Optional[dict] = None,
+        stability: Optional[dict] = None,
+        supervised: Optional[dict] = None,
+        weights: Optional[dict] = None,
+        model_version: Optional[str] = None,
+        scope: Optional[dict] = None,
+        monitoring_path: Optional[str] = None,
+        status: str = "completed",
+    ) -> None:
+        """Persist a run-level summary row to the Oracle monitor history table."""
+        if str((self.config.get("monitoring", {}) or {}).get("history", {}).get("backend", "oracle")).lower() != "oracle":
+            return
+
+        run_info = {
+            "run_id": run.run_id,
+            "run_type": run.run_type,
+            "segment": run.segment,
+            "status": status,
+            "started_at": getattr(run, "created_at", None),
+            "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "model_version": model_version,
+            "monitoring_path": monitoring_path,
+        }
+        if scope:
+            run_info.update({
+                "scope_snapshot": scope.get("snapshot"),
+                "scope_start": scope.get("start"),
+                "scope_end": scope.get("end"),
+            })
+
+        extras = {
+            "stability": {"oot": (stability or {}).get("oot")} if stability else None,
+            "supervised": supervised,
+            "weights": weights,
+        }
+
+        row = self.monitoring.build_history_row(run_info=run_info, payload=payload, extras=extras)
+        try:
+            from engine.oracle_io import OracleConnector
+
+            with OracleConnector(self.config, self.secrets) as ora:
+                ora.setup_tables(drop_existing=False)
+                self.monitoring.write_history_row(ora, row)
+        except Exception:  # noqa: BLE001 - history best-effort
+            logger.exception("Unable to record monitor history for run_id=%s", run.run_id)
 
     def _resolve_segment(self, segment: Optional[str]) -> str:
         if segment:

@@ -147,6 +147,9 @@ weight_optimization:
 
 monitoring:
   enabled: true
+  history:
+    backend: oracle
+    table_key: monitor_history
 
 live_scoring:
   source_name: input_features
@@ -210,6 +213,7 @@ oracle:
     results: EWS_TO_FAZ1_RESULTS
     details: EWS_TO_FAZ1_DETAILS
     full_effects: EWS_TO_FAZ1_FEATURE_EFFECTS
+    monitor_history: EWS_TO_FAZ1_MONITOR_HISTORY
 
 logging:
   logger_name: ews.pipeline

@@ -602,20 +602,21 @@ class OracleConnector:
             "results": self._results_table_ddl(),
             "details": self._details_table_ddl(),
             "full_effects": self._full_effects_table_ddl() if "full_effects" in self.oracle_settings["tables"] else None,
+            "monitor_history": self._monitor_history_table_ddl() if "monitor_history" in self.oracle_settings["tables"] else None,
         }
         active_keys = self._active_table_keys()
 
         connection = self.connect()
         with connection.cursor() as cursor:
             if drop_existing:
-                for table_key in ("full_effects", "details", "results", "outcomes", "input_features", "scoring", "training"):
+                for table_key in ("full_effects", "details", "results", "outcomes", "input_features", "scoring", "training", "monitor_history"):
                     if table_key not in active_keys:
                         continue
                     if self._table_exists(table_key):
                         cursor.execute(f"DROP TABLE {self._qualified_table_name(table_key)} PURGE")
                         self.logger.info("Dropped table %s", self._qualified_table_name(table_key))
 
-            for table_key in ("input_features", "training", "scoring", "outcomes", "results", "details", "full_effects"):
+            for table_key in ("input_features", "training", "scoring", "outcomes", "results", "details", "full_effects", "monitor_history"):
                 if table_key not in active_keys or table_ddls.get(table_key) is None:
                     continue
                 if self._table_exists(table_key):
@@ -647,6 +648,13 @@ class OracleConnector:
                 table_key = oracle_cfg.get(key_name)
                 if table_key in self.oracle_settings.get("tables", {}):
                     active.add(table_key)
+
+        monitoring_cfg = self.pipeline_config.get("monitoring", {}) or {}
+        history_cfg = monitoring_cfg.get("history", {}) or {}
+        if history_cfg.get("backend", "oracle") == "oracle":
+            history_key = history_cfg.get("table_key", "monitor_history")
+            if history_key in self.oracle_settings.get("tables", {}):
+                active.add(history_key)
         return active
 
     def _table_exists(self, table_key: str) -> bool:
@@ -850,6 +858,92 @@ class OracleConnector:
         return ",\n                ".join(
             f"{feature_name.upper()} NUMBER(18,6)" for feature_name in self.feature_names
         )
+
+    def _monitor_history_table_ddl(self) -> str:
+        table_name = self._table_name("monitor_history")
+        pk_name = f"PK_{table_name}"[:30]
+        return f"""
+            CREATE TABLE {self._qualified_table_name("monitor_history")} (
+                RUN_ID                 VARCHAR2(200) NOT NULL,
+                RUN_TYPE               VARCHAR2(64) NOT NULL,
+                SEGMENT                VARCHAR2(128) NOT NULL,
+                STATUS                 VARCHAR2(32),
+                STARTED_AT             TIMESTAMP,
+                FINISHED_AT            TIMESTAMP,
+                MODEL_VERSION          VARCHAR2(200),
+                SCOPE_SNAPSHOT         DATE,
+                SCOPE_START            DATE,
+                SCOPE_END              DATE,
+                INPUT_ROWS             NUMBER,
+                INPUT_CUSTOMERS        NUMBER,
+                INPUT_SNAPSHOTS        NUMBER,
+                AVG_MISSING_RATIO      NUMBER(10,6),
+                BAND_NORMAL            NUMBER(7,4),
+                BAND_SARI              NUMBER(7,4),
+                BAND_TURUNCU           NUMBER(7,4),
+                BAND_KIRMIZI           NUMBER(7,4),
+                SCORE_MEAN             NUMBER(10,4),
+                SCORE_MEDIAN           NUMBER(10,4),
+                SCORE_P95              NUMBER(10,4),
+                SCORE_P99              NUMBER(10,4),
+                AE_SCORE_MEAN          NUMBER(10,4),
+                IF_SCORE_MEAN          NUMBER(10,4),
+                MD_SCORE_MEAN          NUMBER(10,4),
+                QUALITY_NATIVE_FULL    VARCHAR2(16),
+                QUALITY_NATIVE_SCOPE   VARCHAR2(16),
+                QUALITY_DERIVED_FULL   VARCHAR2(16),
+                QUALITY_DERIVED_SCOPE  VARCHAR2(16),
+                NATIVE_AVG_COVERAGE    NUMBER(8,6),
+                DERIVED_AVG_COVERAGE   NUMBER(8,6),
+                NATIVE_MAX_OUTLIER     NUMBER(8,6),
+                DERIVED_MAX_OUTLIER    NUMBER(8,6),
+                STABILITY_OOT_KS       NUMBER(8,6),
+                STABILITY_OOT_MEAN_RATIO NUMBER(10,6),
+                SUPERVISED_PRECISION   NUMBER(8,6),
+                SUPERVISED_RECALL      NUMBER(8,6),
+                SUPERVISED_F1          NUMBER(8,6),
+                SUPERVISED_LIFT        NUMBER(10,6),
+                WEIGHT_AE              NUMBER(6,4),
+                WEIGHT_IF              NUMBER(6,4),
+                WEIGHT_MD              NUMBER(6,4),
+                MONITORING_PATH        VARCHAR2(500),
+                CREATED_AT             TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+                CONSTRAINT {pk_name} PRIMARY KEY (RUN_ID)
+            )
+        """
+
+    def write_monitor_history_row(self, row: dict) -> int:
+        """Insert or replace a run-level monitoring history row."""
+        if "monitor_history" not in self.oracle_settings.get("tables", {}):
+            return 0
+
+        columns = [
+            "RUN_ID", "RUN_TYPE", "SEGMENT", "STATUS", "STARTED_AT", "FINISHED_AT",
+            "MODEL_VERSION", "SCOPE_SNAPSHOT", "SCOPE_START", "SCOPE_END",
+            "INPUT_ROWS", "INPUT_CUSTOMERS", "INPUT_SNAPSHOTS", "AVG_MISSING_RATIO",
+            "BAND_NORMAL", "BAND_SARI", "BAND_TURUNCU", "BAND_KIRMIZI",
+            "SCORE_MEAN", "SCORE_MEDIAN", "SCORE_P95", "SCORE_P99",
+            "AE_SCORE_MEAN", "IF_SCORE_MEAN", "MD_SCORE_MEAN",
+            "QUALITY_NATIVE_FULL", "QUALITY_NATIVE_SCOPE", "QUALITY_DERIVED_FULL", "QUALITY_DERIVED_SCOPE",
+            "NATIVE_AVG_COVERAGE", "DERIVED_AVG_COVERAGE", "NATIVE_MAX_OUTLIER", "DERIVED_MAX_OUTLIER",
+            "STABILITY_OOT_KS", "STABILITY_OOT_MEAN_RATIO",
+            "SUPERVISED_PRECISION", "SUPERVISED_RECALL", "SUPERVISED_F1", "SUPERVISED_LIFT",
+            "WEIGHT_AE", "WEIGHT_IF", "WEIGHT_MD", "MONITORING_PATH",
+        ]
+        values = [row.get(col.lower()) for col in columns]
+        placeholders = ", ".join(f":{index + 1}" for index in range(len(columns)))
+        column_clause = ", ".join(columns)
+        table_full = self._qualified_table_name("monitor_history")
+
+        connection = self.connect()
+        with connection.cursor() as cursor:
+            cursor.execute(f"DELETE FROM {table_full} WHERE RUN_ID = :1", [row.get("run_id")])
+            cursor.execute(
+                f"INSERT INTO {table_full} ({column_clause}) VALUES ({placeholders})",
+                values,
+            )
+        connection.commit()
+        return 1
 
     def _ensure_managed_columns(self, cursor, table_key: str) -> None:
         available_columns = self._table_columns(table_key)
