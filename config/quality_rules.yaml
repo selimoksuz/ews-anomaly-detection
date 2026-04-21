@@ -27,6 +27,11 @@ native:
     max_age_days_fail: 220
     max_stale_share_warn: 0.15
     max_stale_share_fail: 0.35
+    # Future-dated FS entries (fs_last_update_date > snapshot_date) are normal when
+    # financial statements are filed after the snapshot. Leave thresholds null to disable
+    # the future-date gate; set a share (0-1) to escalate when too many rows appear future-dated.
+    max_future_share_warn: null
+    max_future_share_fail: null
 
 derived:
   min_rows_warn: 200

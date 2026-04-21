@@ -190,10 +190,87 @@ class QualityManager:
             return
         block_cfg = self.quality_cfg.get("block_on", {}) or {}
         if bool(block_cfg.get(stage_key, False)):
-            raise QualityGateError(
-                f"Quality gate failed for {report.get('dataset_name', 'dataset')} "
-                f"(stage={stage_key}, rule_key={report.get('rule_key')})."
+            raise QualityGateError(self.format_failure_message(report, stage=stage_key))
+
+    @staticmethod
+    def _format_check(check: dict) -> str:
+        name = check.get("check", "unknown_check")
+        observed = check.get("observed")
+        warn = check.get("warn_threshold")
+        fail = check.get("fail_threshold")
+        message = check.get("message")
+        parts = [f"{name}: observed={observed}"]
+        if fail is not None:
+            parts.append(f"fail<{fail}>")
+        if warn is not None:
+            parts.append(f"warn<{warn}>")
+        if message:
+            parts.append(str(message))
+        return " ".join(parts)
+
+    @classmethod
+    def format_failure_message(cls, report: dict, *, stage: str) -> str:
+        """Human readable one-line summary for QualityGateError."""
+        failing_checks = [
+            check for check in (report.get("checks") or []) if check.get("status") == "fail"
+        ]
+        details = "; ".join(cls._format_check(check) for check in failing_checks) or (
+            "no per-check details available"
+        )
+        return (
+            f"Quality gate failed for {report.get('dataset_name', 'dataset')} "
+            f"(stage={stage}, rule_key={report.get('rule_key')}): {details}"
+        )
+
+    @classmethod
+    def format_report_lines(cls, report: dict) -> list[str]:
+        """Return multi-line human readable summary of a quality report."""
+        status = str(report.get("status", "unknown")).upper()
+        lines = [
+            f"[{status}] {report.get('dataset_name', 'dataset')} "
+            f"(stage={report.get('stage')}, rule_key={report.get('rule_key')})",
+            (
+                f"  rows={report.get('rows')} unique_customers={report.get('unique_customers')} "
+                f"snapshots={report.get('snapshots')} feature_count={report.get('feature_count')}"
+            ),
+            (
+                f"  avg_coverage={report.get('avg_feature_coverage')} "
+                f"min_coverage={report.get('min_feature_coverage')} "
+                f"max_outlier_share={report.get('max_outlier_share')} "
+                f"duplicate_keys={report.get('duplicate_key_count')}"
+            ),
+        ]
+        top_missing = report.get("top_missing_features") or {}
+        if top_missing:
+            missing_fmt = ", ".join(f"{name}={share}" for name, share in top_missing.items())
+            lines.append(f"  top_missing: {missing_fmt}")
+        top_outliers = report.get("top_outlier_features") or {}
+        if top_outliers:
+            outlier_fmt = ", ".join(f"{name}={share}" for name, share in top_outliers.items())
+            lines.append(f"  top_outliers: {outlier_fmt}")
+        freshness = report.get("freshness") or {}
+        for column_name, column_report in freshness.items():
+            lines.append(
+                f"  freshness::{column_name} status={column_report.get('status')} "
+                f"stale_fail_share={column_report.get('stale_fail_share')} "
+                f"future_date_share={column_report.get('future_date_share')} "
+                f"max_age_days={column_report.get('max_age_days_observed')}"
             )
+        failing_checks = [
+            check for check in (report.get("checks") or []) if check.get("status") == "fail"
+        ]
+        warn_checks = [
+            check for check in (report.get("checks") or []) if check.get("status") == "warn"
+        ]
+        if failing_checks:
+            lines.append("  failing checks:")
+            for check in failing_checks:
+                lines.append(f"    - {cls._format_check(check)}")
+        if warn_checks:
+            lines.append("  warn checks:")
+            for check in warn_checks:
+                lines.append(f"    - {cls._format_check(check)}")
+        return lines
 
     def enforce_many(self, reports: Iterable[dict], *, stage: str) -> None:
         for report in reports:
@@ -297,6 +374,8 @@ class QualityManager:
         fail_age = freshness_cfg.get("max_age_days_fail")
         warn_share_threshold = freshness_cfg.get("max_stale_share_warn")
         fail_share_threshold = freshness_cfg.get("max_stale_share_fail")
+        future_warn_share = freshness_cfg.get("max_future_share_warn")
+        future_fail_share = freshness_cfg.get("max_future_share_fail")
         for raw_column in freshness_cfg.get("date_columns", []) or []:
             column_name = str(raw_column).strip().lower()
             if column_name not in frame.columns:
@@ -314,20 +393,33 @@ class QualityManager:
                     "max_age_days_observed": None,
                     "max_stale_share_warn": warn_share_threshold,
                     "max_stale_share_fail": fail_share_threshold,
+                    "max_future_share_warn": future_warn_share,
+                    "max_future_share_fail": future_fail_share,
                 }
                 continue
 
             ages = (snapshot_dates.loc[valid_mask].dt.normalize() - source_dates.loc[valid_mask].dt.normalize()).dt.days.astype(float)
             future_share = float((ages < 0).mean())
-            stale_warn_share = float((ages > float(warn_age)).mean()) if warn_age is not None else 0.0
-            stale_fail_share = float((ages > float(fail_age)).mean()) if fail_age is not None else 0.0
+            # Future dates (fs issued after snapshot) are expected for recent filings; only stale side drives fail.
+            # Oldness checks run on non-negative ages so future records are ignored when measuring staleness.
+            past_ages = ages[ages >= 0]
+            if past_ages.empty:
+                stale_warn_share = 0.0
+                stale_fail_share = 0.0
+                max_age_days = 0
+            else:
+                stale_warn_share = float((past_ages > float(warn_age)).mean()) if warn_age is not None else 0.0
+                stale_fail_share = float((past_ages > float(fail_age)).mean()) if fail_age is not None else 0.0
+                max_age_days = int(past_ages.max())
 
             status = "pass"
-            if future_share > 0:
+            if fail_share_threshold is not None and stale_fail_share > float(fail_share_threshold):
                 status = "fail"
-            elif fail_share_threshold is not None and stale_fail_share > float(fail_share_threshold):
+            elif future_fail_share is not None and future_share > float(future_fail_share):
                 status = "fail"
             elif warn_share_threshold is not None and stale_warn_share > float(warn_share_threshold):
+                status = "warn"
+            elif future_warn_share is not None and future_share > float(future_warn_share):
                 status = "warn"
 
             summary[column_name] = {
@@ -336,8 +428,10 @@ class QualityManager:
                 "stale_warn_share": round(stale_warn_share, 6),
                 "stale_fail_share": round(stale_fail_share, 6),
                 "future_date_share": round(future_share, 6),
-                "max_age_days_observed": int(ages.max()) if not ages.empty else None,
+                "max_age_days_observed": max_age_days,
                 "max_stale_share_warn": warn_share_threshold,
                 "max_stale_share_fail": fail_share_threshold,
+                "max_future_share_warn": future_warn_share,
+                "max_future_share_fail": future_fail_share,
             }
         return summary

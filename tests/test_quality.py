@@ -34,8 +34,45 @@ class QualityManagerTests(unittest.TestCase):
         self.assertEqual(report["status"], "fail")
         self.assertGreater(report["duplicate_key_count"], 0)
         self.assertIn("fs_last_update_date", report["freshness"])
-        with self.assertRaises(QualityGateError):
+        with self.assertRaises(QualityGateError) as ctx:
             manager.enforce(report, stage="development")
+        message = str(ctx.exception)
+        self.assertIn("duplicate_keys", message)
+        self.assertIn("observed=", message)
+        lines = QualityManager.format_report_lines(report)
+        joined = "\n".join(lines)
+        self.assertIn("failing checks", joined)
+        self.assertIn("rows=", joined)
+
+    def test_future_fs_dates_do_not_fail_by_default(self):
+        config = load_config()
+        config["quality"]["native"]["min_rows_warn"] = 1
+        config["quality"]["native"]["min_unique_customers_warn"] = 1
+        manager = QualityManager(config)
+        frame = pd.DataFrame(
+            {
+                "customer_id": ["C1", "C2", "C3"],
+                "snapshot_date": pd.to_datetime(["2025-09-30"] * 3),
+                "segment": ["SEG_A"] * 3,
+                "fs_last_update_date": pd.to_datetime(["2025-10-15", "2025-11-01", "2025-09-15"]),
+                "metric_a": [1.0, 1.1, 0.9],
+                "metric_b": [10.0, 11.0, 9.5],
+            }
+        )
+
+        report = manager.evaluate(
+            frame,
+            dataset_name="native_full",
+            stage="development",
+            rule_key="native",
+            feature_columns=["metric_a", "metric_b"],
+        )
+
+        freshness = report["freshness"].get("fs_last_update_date")
+        self.assertIsNotNone(freshness)
+        self.assertGreater(freshness["future_date_share"], 0)
+        self.assertEqual(freshness["status"], "pass")
+        self.assertEqual(report["status"], "pass")
 
     def test_derived_quality_passes_for_clean_frame(self):
         config = load_config()

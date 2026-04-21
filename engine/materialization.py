@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 
 from engine.business_features import safe_divide
+from engine.config_loader import resolve_project_path
 from engine.history_features import (
     add_population_reference_features,
     add_self_history_features,
     add_trend_slope_features,
 )
 from engine.oracle_io import OracleConnector
-from engine.quality import QualityManager
+from engine.quality import QualityGateError, QualityManager
 from engine.source_loader import SourceLoader
 
 
@@ -297,7 +301,18 @@ class NativeMaterializer:
             quality["derived_full"]["status"],
             quality["derived_scope"]["status"],
         )
+        self._log_report_details(quality, stage=stage)
         return quality
+
+    def _log_report_details(self, quality_summary: dict[str, Any], *, stage: str) -> None:
+        """Emit warning-level human-readable summary for warn/fail reports."""
+        for report in quality_summary.values():
+            status = str(report.get("status", "")).lower()
+            if status not in {"warn", "fail"}:
+                continue
+            lines = QualityManager.format_report_lines(report)
+            level = logging.ERROR if status == "fail" else logging.WARNING
+            logger.log(level, "Quality detail stage=%s\n%s", stage, "\n".join(lines))
 
     def _enforce_quality(self, quality_summary: dict[str, Any], *, stage: str) -> None:
         if stage == "development":
@@ -308,7 +323,29 @@ class NativeMaterializer:
                 reports.append(quality_summary["native_scope"])
             if quality_summary["derived_scope"].get("status") != "empty":
                 reports.append(quality_summary["derived_scope"])
-        self.quality.enforce_many(reports, stage=stage)
+        try:
+            self.quality.enforce_many(reports, stage=stage)
+        except QualityGateError as exc:
+            dump_path = self._dump_quality_debug(quality_summary, stage=stage)
+            if dump_path is not None:
+                message = f"{exc} | See debug report: {dump_path}"
+                raise QualityGateError(message) from exc
+            raise
+
+    def _dump_quality_debug(self, quality_summary: dict[str, Any], *, stage: str) -> Optional[Path]:
+        """Persist the full quality payload so operators can investigate failures."""
+        try:
+            dump_root = resolve_project_path("runtime/logs/quality")
+            dump_root.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            dump_path = dump_root / f"{stage}_{timestamp}.json"
+            with open(dump_path, "w", encoding="utf-8") as handle:
+                json.dump(quality_summary, handle, indent=2, ensure_ascii=False, default=str)
+            logger.error("Quality debug report written to %s", dump_path)
+            return dump_path
+        except Exception:  # noqa: BLE001 - diagnostic path, never mask original error
+            logger.exception("Failed to write quality debug report to runtime/logs/quality")
+            return None
 
     def _trim_warmup_rows(self, frame: pd.DataFrame) -> pd.DataFrame:
         warmup = self.trim_warmup_snapshots
