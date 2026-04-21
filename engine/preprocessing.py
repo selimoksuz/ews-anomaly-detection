@@ -284,7 +284,7 @@ class FeaturePreprocessor:
                     f"Missing strategy for feature '{feature_name}' must be a string or mapping."
                 )
 
-            if strategy not in {"median", "mean", "min", "max", "constant"}:
+            if strategy not in {"median", "mean", "min", "max", "constant", "zero"}:
                 raise ValueError(
                     f"Unsupported missing strategy '{strategy}' for feature '{feature_name}'."
                 )
@@ -310,6 +310,8 @@ class FeaturePreprocessor:
         strategy = str(strategy_cfg["strategy"]).lower()
         if strategy == "constant":
             return float(strategy_cfg.get("value", 0.0))
+        if strategy == "zero":
+            return 0.0
         if not series.notnull().any():
             return 0.0
         if strategy == "median":

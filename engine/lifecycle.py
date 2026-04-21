@@ -179,7 +179,7 @@ class LifecycleManager:
                 robust_config = self._build_config_variant(preprocessing_enabled=True)
                 default_weights = get_ensemble_weights(self.config)
 
-                live_frame = self._load_live_frame(segment_value)
+                live_frame = self._load_live_frame(segment_value, fallback_to_latest=True)
                 evaluation_frames = [frame for name, frame in frames.items() if name in {"test", "oot"} and frame is not None and not frame.empty]
                 if not evaluation_frames:
                     raise ValueError("No non-empty evaluation frames found for preprocessing comparison.")
@@ -304,7 +304,7 @@ class LifecycleManager:
                 )
                 default_weights = get_ensemble_weights(self.config)
 
-                live_frame = self._load_live_frame(segment_value)
+                live_frame = self._load_live_frame(segment_value, fallback_to_latest=True)
                 evaluation_frames = [frame for name, frame in frames.items() if name in {"test", "oot"} and frame is not None and not frame.empty]
                 if not evaluation_frames:
                     raise ValueError("No non-empty evaluation frames found for feature selection comparison.")
@@ -443,7 +443,7 @@ class LifecycleManager:
 
                 calibration_window = self.calibration_cfg.get("source_window", "calibration")
                 oot_window = self.weight_cfg.get("validation_window", "oot")
-                live_frame = self._load_live_frame(segment_value)
+                live_frame = self._load_live_frame(segment_value, fallback_to_latest=True)
                 label_frame = self._load_label_frame(
                     self.weight_cfg.get("source_name", "outcomes"),
                     segment_value,
@@ -1552,13 +1552,37 @@ class LifecycleManager:
         }
         return variant
 
-    def _load_live_frame(self, segment_value: str) -> pd.DataFrame:
-        return self._load_live_frame_for_features(segment_value, feature_names=self.features or None)
+    def _load_live_frame(self, segment_value: str, *, fallback_to_latest: bool = False) -> pd.DataFrame:
+        return self._load_live_frame_for_features(
+            segment_value,
+            feature_names=self.features or None,
+            fallback_to_latest=fallback_to_latest,
+        )
 
-    def _load_live_frame_for_features(self, segment_value: str, feature_names: list[str] | None) -> pd.DataFrame:
-        frame = self._load_live_source_frame(segment_value)
+    def _load_live_frame_for_features(
+        self,
+        segment_value: str,
+        feature_names: list[str] | None,
+        *,
+        fallback_to_latest: bool = False,
+    ) -> pd.DataFrame:
+        frame = self._load_live_source_frame(segment_value, fallback_to_latest=fallback_to_latest)
         if frame.empty:
-            raise ValueError("No rows returned for live scoring comparison.")
+            snapshot_cfg = self.live_scoring_cfg.get("snapshot", {}) or {}
+            selector = str(snapshot_cfg.get("selector", "today")).strip().lower()
+            explicit_date = snapshot_cfg.get("explicit_date")
+            scope_fragments = [f"selector={selector}"]
+            if explicit_date:
+                scope_fragments.append(f"explicit_date={explicit_date}")
+            if snapshot_cfg.get("start_date") or snapshot_cfg.get("end_date"):
+                scope_fragments.append(
+                    f"range={snapshot_cfg.get('start_date')}..{snapshot_cfg.get('end_date')}"
+                )
+            scope = ", ".join(scope_fragments)
+            raise ValueError(
+                f"No rows returned for live scoring comparison ({scope}). "
+                "Source table may not contain a snapshot for the current scope."
+            )
         validated = self.data_loader.validate_data(frame, feature_names=feature_names)
         if feature_names:
             self.features = list(feature_names)
@@ -1573,6 +1597,7 @@ class LifecycleManager:
         snapshot_date=None,
         start_date=None,
         end_date=None,
+        fallback_to_latest: bool = False,
     ) -> pd.DataFrame:
         source_name = self.live_scoring_cfg.get("source_name", "input_features")
         snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})
@@ -1593,26 +1618,47 @@ class LifecycleManager:
             selector=selector,
         )
         if materialization_summary is not None and int(materialization_summary.get("scoped_rows", 0)) == 0:
-            return pd.DataFrame()
+            if not fallback_to_latest:
+                return pd.DataFrame()
+            logger.info(
+                "Live scope empty; fallback_to_latest=True so switching to latest snapshot for segment=%s",
+                segment_value,
+            )
+            return self._load_latest_snapshot(source_name, base_kwargs, segment_value)
 
         if explicit_date:
-            return self.source_loader.load_frame(
+            frame = self.source_loader.load_frame(
                 source_name,
                 snapshot_date=explicit_date,
                 **base_kwargs,
             )
-        if requested_start or requested_end:
-            return self.source_loader.load_frame(
+        elif requested_start or requested_end:
+            frame = self.source_loader.load_frame(
                 source_name,
                 start_date=requested_start,
                 end_date=requested_end,
                 **base_kwargs,
             )
-        if selector == "today":
-            return self.source_loader.load_frame(source_name, current_day=True, **base_kwargs)
-        if selector == "latest":
-            return self.source_loader.load_frame(source_name, latest_snapshot=True, **base_kwargs)
-        raise ValueError(f"Unsupported live_scoring.snapshot.selector: {selector}")
+        elif selector == "today":
+            frame = self.source_loader.load_frame(source_name, current_day=True, **base_kwargs)
+        elif selector == "latest":
+            frame = self.source_loader.load_frame(source_name, latest_snapshot=True, **base_kwargs)
+        else:
+            raise ValueError(f"Unsupported live_scoring.snapshot.selector: {selector}")
+
+        if frame.empty and fallback_to_latest and selector != "latest":
+            logger.info(
+                "Live scope empty under selector=%s; fallback_to_latest=True so trying latest snapshot.",
+                selector,
+            )
+            return self._load_latest_snapshot(source_name, base_kwargs, segment_value)
+        return frame
+
+    def _load_latest_snapshot(self, source_name: str, base_kwargs: dict, segment_value: str) -> pd.DataFrame:
+        materializer = getattr(self, "materializer", None)
+        if materializer is not None and materializer.enabled:
+            materializer.materialize_live(segment_value, latest_snapshot=True)
+        return self.source_loader.load_frame(source_name, latest_snapshot=True, **base_kwargs)
 
     def _materialize_development_inputs(self, config_variant: dict, segment_value: str) -> dict | None:
         materializer = NativeMaterializer(config_variant, self.secrets)
