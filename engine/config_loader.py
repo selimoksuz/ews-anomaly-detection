@@ -260,6 +260,47 @@ def get_label(config, feature_name):
     return feature_name
 
 
+def get_feature_metadata(config, feature_name: str) -> dict:
+    """Return configured metadata for a feature, inheriting from base feature when needed."""
+    normalized = str(feature_name).strip().lower()
+    base_name = normalized.split("__", 1)[0]
+    features = config.get("features", {}) or {}
+    base_metadata: dict = {}
+
+    for group in ("instant", "rolling_4w", "trend"):
+        for item in features.get(group, []):
+            if str(item.get("name", "")).strip().lower() == base_name:
+                base_metadata = dict(item)
+                break
+        if base_metadata:
+            break
+
+    for group in ("instant", "rolling_4w", "trend"):
+        for item in features.get(group, []):
+            if str(item.get("name", "")).strip().lower() == normalized:
+                resolved = dict(base_metadata)
+                resolved.update(dict(item))
+                return resolved
+    return dict(base_metadata)
+
+
+def get_directionality(config, feature_name: str) -> str | None:
+    metadata = get_feature_metadata(config, feature_name)
+    value = metadata.get("directionality")
+    if value is None:
+        return None
+    return str(value).strip().lower() or None
+
+
+def get_reasoning_hint(config, feature_name: str) -> str | None:
+    metadata = get_feature_metadata(config, feature_name)
+    value = metadata.get("reasoning_hint_tr")
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
 def get_ensemble_weights(config):
     """Return normalized ensemble weights from config."""
     return normalize_ensemble_weights(config["ensemble"]["weights"])

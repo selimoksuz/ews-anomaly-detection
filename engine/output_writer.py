@@ -108,6 +108,9 @@ class OutputWriter:
                         "ae_contribution_pct": detail.get("ae_katki_pct"),
                         "if_contribution_pct": detail.get("if_katki_pct"),
                         "md_contribution_pct": detail.get("md_katki_pct"),
+                        "directionality": detail.get("directionality"),
+                        "direction_hint": detail.get("yon"),
+                        "direction_comment": detail.get("yon_yorumu"),
                         "rank": int(detail.get("rank", rank)),
                         "is_top_reason": 1 if detail.get("is_top_reason", rank <= self.scoring_cfg.get("top_n_reasons", 3)) else 0,
                         "alert_band": row.get("alert_band"),
@@ -142,17 +145,24 @@ class OutputWriter:
 
     @staticmethod
     def _format_reason_block(detail: dict) -> str:
-        return (
-            f"{detail['label']}\n"
-            f"gerceklesen: {OutputWriter._display_value(detail.get('gerceklesen'))}\n"
-            f"musteri_gecmis_referansi: {OutputWriter._display_value(detail.get('musteri_gecmis_referansi'))}\n"
-            f"populasyon_referansi: {OutputWriter._display_value(detail.get('populasyon_referansi'))}\n"
-            f"ae_referansi: {OutputWriter._display_value(detail.get('ae_referansi', detail.get('beklenen')))}\n"
+        lines = [
+            f"{detail['label']}",
+            f"gerceklesen: {OutputWriter._display_value(detail.get('gerceklesen'))}",
+            f"musteri_gecmis_referansi: {OutputWriter._display_value(detail.get('musteri_gecmis_referansi'))}",
+            f"populasyon_referansi: {OutputWriter._display_value(detail.get('populasyon_referansi'))}",
+            f"ae_referansi: {OutputWriter._display_value(detail.get('ae_referansi', detail.get('beklenen')))}",
+        ]
+        if detail.get("yon"):
+            lines.append(f"yon: {detail.get('yon')}")
+        if detail.get("yon_yorumu"):
+            lines.append(f"yon_yorumu: {detail.get('yon_yorumu')}")
+        lines.append(
             f"ensemble_katki: %{OutputWriter._display_pct(detail.get('ensemble_katki_pct', detail.get('katki_pct')))} "
             f"(AE %{OutputWriter._display_pct(detail.get('ae_katki_pct'))}, "
             f"IF %{OutputWriter._display_pct(detail.get('if_katki_pct'))}, "
             f"MD %{OutputWriter._display_pct(detail.get('md_katki_pct'))})"
         )
+        return "\n".join(lines)
 
     @staticmethod
     def _display_value(value) -> str:

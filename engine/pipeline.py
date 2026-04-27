@@ -116,15 +116,21 @@ class EWSPipeline:
             if isinstance(row.get("detay"), dict):
                 for _, d in row["detay"].items():
                     parts.append(
-                        f"{d['label']}\n"
-                        f"gerceklesen: {self._display_value(d.get('gerceklesen'))}\n"
-                        f"musteri_gecmis_referansi: {self._display_value(d.get('musteri_gecmis_referansi'))}\n"
-                        f"populasyon_referansi: {self._display_value(d.get('populasyon_referansi'))}\n"
-                        f"ae_referansi: {self._display_value(d.get('ae_referansi', d.get('beklenen')))}\n"
-                        f"ensemble_katki: %{self._display_pct(d.get('ensemble_katki_pct', d.get('katki_pct')))} "
-                        f"(AE %{self._display_pct(d.get('ae_katki_pct'))}, "
-                        f"IF %{self._display_pct(d.get('if_katki_pct'))}, "
-                        f"MD %{self._display_pct(d.get('md_katki_pct'))})"
+                        "\n".join(
+                            [
+                                f"{d['label']}",
+                                f"gerceklesen: {self._display_value(d.get('gerceklesen'))}",
+                                f"musteri_gecmis_referansi: {self._display_value(d.get('musteri_gecmis_referansi'))}",
+                                f"populasyon_referansi: {self._display_value(d.get('populasyon_referansi'))}",
+                                f"ae_referansi: {self._display_value(d.get('ae_referansi', d.get('beklenen')))}",
+                                *([f"yon: {d.get('yon')}"] if d.get("yon") else []),
+                                *([f"yon_yorumu: {d.get('yon_yorumu')}"] if d.get("yon_yorumu") else []),
+                                f"ensemble_katki: %{self._display_pct(d.get('ensemble_katki_pct', d.get('katki_pct')))} "
+                                f"(AE %{self._display_pct(d.get('ae_katki_pct'))}, "
+                                f"IF %{self._display_pct(d.get('if_katki_pct'))}, "
+                                f"MD %{self._display_pct(d.get('md_katki_pct'))})",
+                            ]
+                        )
                     )
             reasons.append(parts)
         res["reasons"] = reasons

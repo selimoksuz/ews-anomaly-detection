@@ -25,6 +25,7 @@ class MonitoringManager:
         self.id_column = config["pipeline"]["id_column"]
         self.time_column = config["pipeline"]["time_column"]
         self.history_cfg = (config.get("monitoring", {}) or {}).get("history", {}) or {}
+        self.health_cfg = (config.get("monitoring", {}) or {}).get("health", {}) or {}
 
     def summarize_input(self, frame: pd.DataFrame, feature_names: list[str]) -> dict:
         if frame.empty:
@@ -188,6 +189,17 @@ class MonitoringManager:
                 quality_checks.to_csv(quality_checks_path, index=False, encoding="utf-8-sig")
                 written_files["quality_checks_path"] = str(quality_checks_path)
 
+        if payload.get("health"):
+            health_path = bundle_dir / "health.json"
+            self.write_json(health_path, payload["health"])
+            written_files["health_path"] = str(health_path)
+
+            health_checks = self._health_checks_frame(payload["health"])
+            if not health_checks.empty:
+                health_checks_path = bundle_dir / "health_checks.csv"
+                health_checks.to_csv(health_checks_path, index=False, encoding="utf-8-sig")
+                written_files["health_checks_path"] = str(health_checks_path)
+
         self._write_monitoring_log(segment=segment, run_id=run_id, payload=payload, written_files=written_files)
         return written_files
 
@@ -277,11 +289,172 @@ class MonitoringManager:
             f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} | INFO | monitoring | segment={segment} run_id={run_id}",
             f"written_files={json.dumps(written_files, ensure_ascii=False)}",
         ]
-        for section_name in ("input", "scores", "outcomes", "sampling", "quality"):
+        for section_name in ("input", "scores", "outcomes", "sampling", "quality", "health"):
             if section_name in payload and payload[section_name]:
                 lines.append(f"{section_name}_keys={list(payload[section_name].keys()) if isinstance(payload[section_name], dict) else section_name}")
         with open(log_path, "a", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
+
+    def evaluate_health(self, *, payload: Optional[dict] = None, extras: Optional[dict] = None) -> dict:
+        if not bool(self.health_cfg.get("enabled", False)):
+            return {"enabled": False, "overall_status": "SKIPPED", "checks": []}
+
+        payload = payload or {}
+        extras = extras or {}
+        checks_cfg = self.health_cfg.get("checks", []) or []
+        checks = []
+        counts = {"GREEN": 0, "YELLOW": 0, "RED": 0, "SKIPPED": 0}
+        for raw_rule in checks_cfg:
+            rule = dict(raw_rule)
+            source_name = str(rule.get("source", "payload")).strip().lower()
+            source_payload = extras if source_name == "extras" else payload
+            value = self._resolve_path(source_payload, str(rule.get("path", "")))
+            status, message = self._evaluate_health_rule(rule, value)
+            counts[status] = counts.get(status, 0) + 1
+            checks.append(
+                {
+                    "key": rule.get("key"),
+                    "source": source_name,
+                    "path": rule.get("path"),
+                    "rule": rule.get("rule"),
+                    "value": value,
+                    "status": status,
+                    "message": message,
+                }
+            )
+
+        if counts["RED"] > 0:
+            overall_status = "RED"
+        elif counts["YELLOW"] > 0:
+            overall_status = "YELLOW"
+        elif counts["GREEN"] > 0:
+            overall_status = "GREEN"
+        else:
+            overall_status = "SKIPPED"
+
+        return {
+            "enabled": True,
+            "overall_status": overall_status,
+            "counts": counts,
+            "checks": checks,
+        }
+
+    @staticmethod
+    def _resolve_path(payload: dict, path: str):
+        if not path:
+            return None
+        current = payload
+        for part in path.split("."):
+            if current is None:
+                return None
+            if isinstance(current, dict):
+                current = current.get(part)
+            else:
+                return None
+        return current
+
+    def _evaluate_health_rule(self, rule: dict, value) -> tuple[str, str]:
+        if value is None or (not isinstance(value, (dict, list, tuple, set)) and pd.isna(value)):
+            if bool(rule.get("skip_if_missing", False)):
+                return "SKIPPED", "missing_value"
+            return "YELLOW", "missing_value"
+
+        rule_type = str(rule.get("rule", "")).strip().lower()
+        if rule_type == "enum":
+            normalized = str(value).strip().lower()
+            green_values = {str(item).strip().lower() for item in rule.get("green", [])}
+            yellow_values = {str(item).strip().lower() for item in rule.get("yellow", [])}
+            red_values = {str(item).strip().lower() for item in rule.get("red", [])}
+            if normalized in red_values:
+                return "RED", f"enum={normalized}"
+            if normalized in yellow_values:
+                return "YELLOW", f"enum={normalized}"
+            if normalized in green_values:
+                return "GREEN", f"enum={normalized}"
+            return "YELLOW", f"enum_unmapped={normalized}"
+
+        numeric = self._as_float(value)
+        if numeric is None:
+            return "YELLOW", "non_numeric_value"
+
+        if rule_type == "upper_bound":
+            green_max = self._as_float(rule.get("green_max"))
+            yellow_max = self._as_float(rule.get("yellow_max"))
+            if green_max is not None and numeric <= green_max:
+                return "GREEN", f"value<={green_max}"
+            if yellow_max is not None and numeric <= yellow_max:
+                return "YELLOW", f"value<={yellow_max}"
+            return "RED", f"value>{yellow_max if yellow_max is not None else green_max}"
+
+        if rule_type == "lower_bound":
+            green_min = self._as_float(rule.get("green_min"))
+            yellow_min = self._as_float(rule.get("yellow_min"))
+            if green_min is not None and numeric >= green_min:
+                return "GREEN", f"value>={green_min}"
+            if yellow_min is not None and numeric >= yellow_min:
+                return "YELLOW", f"value>={yellow_min}"
+            return "RED", f"value<{yellow_min if yellow_min is not None else green_min}"
+
+        if rule_type == "range":
+            green_min = self._as_float(rule.get("green_min"))
+            green_max = self._as_float(rule.get("green_max"))
+            yellow_min = self._as_float(rule.get("yellow_min"))
+            yellow_max = self._as_float(rule.get("yellow_max"))
+            if self._within_range(numeric, lower=green_min, upper=green_max):
+                return "GREEN", f"{green_min}<={numeric}<={green_max}"
+            if self._within_range(numeric, lower=yellow_min, upper=yellow_max):
+                return "YELLOW", f"{yellow_min}<={numeric}<={yellow_max}"
+            return "RED", "outside_range"
+
+        if rule_type == "bounded":
+            green_min = self._as_float(rule.get("green_min"))
+            green_max = self._as_float(rule.get("green_max"))
+            yellow_min = self._as_float(rule.get("yellow_min"))
+            yellow_max = self._as_float(rule.get("yellow_max"))
+            if self._within_range(numeric, lower=green_min, upper=green_max):
+                return "GREEN", f"{green_min}<={numeric}<={green_max}"
+            if self._within_range(numeric, lower=yellow_min, upper=yellow_max):
+                return "YELLOW", f"{yellow_min}<={numeric}<={yellow_max}"
+            return "RED", "outside_bounds"
+
+        return "YELLOW", f"unsupported_rule={rule_type}"
+
+    @staticmethod
+    def _within_range(value: float, *, lower: float | None, upper: float | None) -> bool:
+        if lower is not None and value < lower:
+            return False
+        if upper is not None and value > upper:
+            return False
+        return True
+
+    @staticmethod
+    def _as_float(value) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _health_checks_frame(payload) -> pd.DataFrame:
+        checks = (payload or {}).get("checks") or []
+        if not checks:
+            return pd.DataFrame()
+        rows = []
+        for item in checks:
+            rows.append(
+                {
+                    "key": item.get("key"),
+                    "source": item.get("source"),
+                    "path": item.get("path"),
+                    "rule": item.get("rule"),
+                    "value": item.get("value"),
+                    "status": item.get("status"),
+                    "message": item.get("message"),
+                }
+            )
+        return pd.DataFrame(rows)
 
     # ---------------------------------------------------------------------
     # Monitor history (Oracle-backed run-level trend table)
@@ -368,6 +541,8 @@ class MonitoringManager:
         score_buckets_json = json.dumps(score_buckets, ensure_ascii=False) if score_buckets else None
 
         dominant = extras.get("dominant_reason") or {}
+        health = payload.get("health") or {}
+        health_counts = health.get("counts") or {}
 
         row = {
             "run_id": run_info.get("run_id"),
@@ -427,6 +602,11 @@ class MonitoringManager:
             "weight_md": _num(weights.get("mahalanobis") if weights else None),
             "dominant_reason_feature": dominant.get("feature"),
             "dominant_reason_share": _num(dominant.get("share")),
+            "health_overall": health.get("overall_status"),
+            "health_green_count": int(health_counts.get("GREEN", 0)),
+            "health_yellow_count": int(health_counts.get("YELLOW", 0)),
+            "health_red_count": int(health_counts.get("RED", 0)),
+            "health_skipped_count": int(health_counts.get("SKIPPED", 0)),
             "result_row_count": int(extras["result_row_count"]) if extras.get("result_row_count") is not None else None,
             "monitoring_path": run_info.get("monitoring_path"),
         }

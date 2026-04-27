@@ -16,13 +16,13 @@ class PreprocessingTests(unittest.TestCase):
         preprocessor = FeaturePreprocessor(config, features)
 
         frame = pd.DataFrame([{feature: 1.0 for feature in features}])
-        frame["bank_debt_to_ebitda"] = -5.0
+        frame["bank_debt_to_turnover"] = -5.0
         frame["ifrs9_behavioral_pd"] = 1.8
         transformed = preprocessor.fit_transform(frame)
         self.assertEqual(transformed.shape[1], len(features))
 
         actual = preprocessor.prepare_actual_values(frame)
-        debt_idx = features.index("bank_debt_to_ebitda")
+        debt_idx = features.index("bank_debt_to_turnover")
         pd_idx = features.index("ifrs9_behavioral_pd")
         self.assertEqual(actual[0, debt_idx], 0.0)
         self.assertEqual(actual[0, pd_idx], 1.0)

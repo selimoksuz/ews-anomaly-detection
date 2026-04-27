@@ -69,6 +69,26 @@ class OutputWriterTests(unittest.TestCase):
         self.assertEqual(summary["deleted_details"], 4)
         self.assertEqual(summary["inserted_results"], 2)
 
+    def test_format_reason_block_includes_direction_lines(self):
+        detail = {
+            "label": "Banka Borclulugu / Ciro",
+            "gerceklesen": 1.5,
+            "musteri_gecmis_referansi": 1.0,
+            "populasyon_referansi": 0.8,
+            "ae_referansi": 0.9,
+            "yon": "artmasi kotu, azalmasi iyi",
+            "yon_yorumu": "musteri gecmis referansina gore artmis ve kotulesme yonunde",
+            "ensemble_katki_pct": 12.4,
+            "ae_katki_pct": 6.1,
+            "if_katki_pct": 3.2,
+            "md_katki_pct": 3.1,
+        }
+
+        block = OutputWriter._format_reason_block(detail)
+
+        self.assertIn("yon: artmasi kotu, azalmasi iyi", block)
+        self.assertIn("yon_yorumu: musteri gecmis referansina gore artmis ve kotulesme yonunde", block)
+
 
 if __name__ == "__main__":
     unittest.main()

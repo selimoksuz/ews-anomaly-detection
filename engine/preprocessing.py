@@ -92,7 +92,9 @@ class FeaturePreprocessor:
         ]
 
         self.hard_bounds_rules = self._parse_hard_bounds_rules()
-        self.missing_feature_strategies = self._parse_missing_feature_strategies()
+        self.missing_feature_rules = self._parse_missing_feature_strategies()
+        self.missing_suffix_rules = self._parse_missing_suffix_strategies()
+        self.missing_feature_strategies = self._resolve_missing_strategies()
         self.fill_values_: dict[str, float] = {}
         self.winsor_bounds_: dict[str, tuple[float, float]] = {}
         self.scaler = self._build_scaler()
@@ -121,6 +123,9 @@ class FeaturePreprocessor:
             feature for feature in self.raw_feature_names if feature not in self.categorical_settings
         ]
         self.hard_bounds_rules = getattr(self, "hard_bounds_rules", {}) or {}
+        self.missing_feature_rules = getattr(self, "missing_feature_rules", {}) or {}
+        self.missing_suffix_rules = getattr(self, "missing_suffix_rules", {}) or {}
+        self.missing_feature_strategies = getattr(self, "missing_feature_strategies", None) or self._resolve_missing_strategies()
         self.fill_values_ = getattr(self, "fill_values_", {}) or {}
         self.winsor_bounds_ = getattr(self, "winsor_bounds_", {}) or {}
         self.output_feature_names = list(self.feature_names)
@@ -295,10 +300,66 @@ class FeaturePreprocessor:
             rules[feature_name] = config
         return rules
 
+    def _parse_missing_suffix_strategies(self) -> dict[str, dict[str, float | str]]:
+        rules = {}
+        suffix_strategies = self.missing_cfg.get("suffix_strategies", {}) or {}
+        for suffix, payload in suffix_strategies.items():
+            suffix_name = str(suffix).strip().lower()
+            if not suffix_name.startswith("__"):
+                raise ValueError(
+                    f"Missing suffix strategy '{suffix_name}' must start with '__'."
+                )
+            if isinstance(payload, str):
+                strategy = payload.strip().lower()
+                config = {"strategy": strategy}
+            elif isinstance(payload, dict):
+                strategy = str(payload.get("strategy", "")).strip().lower()
+                if not strategy:
+                    raise ValueError(f"Missing suffix strategy '{suffix_name}' must define 'strategy'.")
+                config = {"strategy": strategy}
+                if payload.get("value") is not None:
+                    config["value"] = float(payload.get("value"))
+            else:
+                raise ValueError(
+                    f"Missing suffix strategy for '{suffix_name}' must be a string or mapping."
+                )
+            if strategy not in {"median", "mean", "min", "max", "constant", "zero"}:
+                raise ValueError(
+                    f"Unsupported missing suffix strategy '{strategy}' for '{suffix_name}'."
+                )
+            if strategy == "constant" and "value" not in config:
+                raise ValueError(
+                    f"Missing suffix strategy 'constant' for '{suffix_name}' requires a numeric 'value'."
+                )
+            rules[suffix_name] = config
+        return rules
+
+    def _resolve_missing_strategies(self) -> dict[str, dict[str, float | str]]:
+        resolved = {}
+        for feature in self.raw_feature_names:
+            strategy = self._missing_strategy_for_feature(feature)
+            if strategy is not None:
+                resolved[feature] = dict(strategy)
+        return resolved
+
+    def _missing_strategy_for_feature(self, feature_name: str) -> dict[str, float | str] | None:
+        feature_name = str(feature_name).strip().lower()
+        exact = self.missing_feature_rules.get(feature_name)
+        if exact is not None:
+            return exact
+        matched_suffix = None
+        for suffix, strategy in self.missing_suffix_rules.items():
+            if feature_name.endswith(suffix):
+                if matched_suffix is None or len(suffix) > len(matched_suffix[0]):
+                    matched_suffix = (suffix, strategy)
+        if matched_suffix is not None:
+            return matched_suffix[1]
+        return None
+
     def _compute_fill_values(self, frame: pd.DataFrame) -> dict[str, float]:
         values = {}
         for feature in frame.columns:
-            strategy_cfg = self.missing_feature_strategies.get(
+            strategy_cfg = self._missing_strategy_for_feature(feature) or self.missing_feature_strategies.get(
                 feature,
                 {"strategy": self.missing_strategy},
             )

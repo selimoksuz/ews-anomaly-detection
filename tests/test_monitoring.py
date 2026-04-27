@@ -110,6 +110,37 @@ class MonitoringHistoryTests(unittest.TestCase):
         buckets_dict = json.loads(row["score_buckets"])
         self.assertIn("000_010", buckets_dict)
 
+    def test_health_evaluation_and_history_fields(self):
+        manager = MonitoringManager(load_config())
+        payload = {
+            "input": {"avg_feature_missing_ratio": 0.03},
+            "scores": {"band_share": {"KIRMIZI": 0.06}},
+            "quality": {
+                "materialization": {
+                    "native_scope": {"status": "pass"},
+                    "derived_scope": {"status": "warn"},
+                }
+            },
+        }
+        extras = {
+            "score_psi_vs_prev": 0.14,
+            "stability": {"oot": {"metrics": {"ensemble_score": {"ks_stat": 0.12, "mean_ratio": 1.10}}}},
+            "calibration": {"monotonic": True},
+        }
+        health = manager.evaluate_health(payload=payload, extras=extras)
+        payload["health"] = health
+        self.assertEqual(health["overall_status"], "YELLOW")
+        self.assertGreaterEqual(health["counts"]["YELLOW"], 1)
+
+        row = manager.build_history_row(
+            run_info={"run_id": "rid-health", "run_type": "score-live", "segment": "SEG_A", "status": "completed"},
+            payload=payload,
+            extras=extras,
+        )
+        self.assertEqual(row["health_overall"], "YELLOW")
+        self.assertGreaterEqual(row["health_yellow_count"], 1)
+        self.assertEqual(row["health_red_count"], 0)
+
     def test_build_history_row_flattens_payload_and_extras(self):
         manager = MonitoringManager(load_config())
 

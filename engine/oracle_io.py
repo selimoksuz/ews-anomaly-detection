@@ -483,6 +483,9 @@ class OracleConnector:
             "ae_contribution_pct",
             "if_contribution_pct",
             "md_contribution_pct",
+            "directionality",
+            "direction_hint",
+            "direction_comment",
         ):
             if optional in frame.columns and optional.upper() in available_columns:
                 ordered_columns.append(optional)
@@ -559,6 +562,9 @@ class OracleConnector:
             "ae_contribution_pct",
             "if_contribution_pct",
             "md_contribution_pct",
+            "directionality",
+            "direction_hint",
+            "direction_comment",
         ):
             if optional in frame.columns and optional.upper() in available_columns:
                 ordered_columns.append(optional)
@@ -818,6 +824,9 @@ class OracleConnector:
                 AE_CONTRIBUTION_PCT NUMBER(18,6),
                 IF_CONTRIBUTION_PCT NUMBER(18,6),
                 MD_CONTRIBUTION_PCT NUMBER(18,6),
+                DIRECTIONALITY VARCHAR2(64),
+                DIRECTION_HINT VARCHAR2(128),
+                DIRECTION_COMMENT VARCHAR2(500),
                 FEATURE_RANK NUMBER(4) NOT NULL,
                 CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
                 CONSTRAINT {primary_key} PRIMARY KEY ({self.id_column.upper()}, {self.time_column.upper()}, FEATURE_NAME)
@@ -842,6 +851,9 @@ class OracleConnector:
                 AE_CONTRIBUTION_PCT NUMBER(18,6),
                 IF_CONTRIBUTION_PCT NUMBER(18,6),
                 MD_CONTRIBUTION_PCT NUMBER(18,6),
+                DIRECTIONALITY VARCHAR2(64),
+                DIRECTION_HINT VARCHAR2(128),
+                DIRECTION_COMMENT VARCHAR2(500),
                 FEATURE_RANK NUMBER(4) NOT NULL,
                 IS_TOP_REASON NUMBER(1) DEFAULT 0 NOT NULL,
                 ALERT_BAND VARCHAR2(32),
@@ -921,6 +933,11 @@ class OracleConnector:
                 WEIGHT_MD              NUMBER(6,4),
                 DOMINANT_REASON_FEATURE VARCHAR2(128),
                 DOMINANT_REASON_SHARE  NUMBER(7,4),
+                HEALTH_OVERALL         VARCHAR2(16),
+                HEALTH_GREEN_COUNT     NUMBER,
+                HEALTH_YELLOW_COUNT    NUMBER,
+                HEALTH_RED_COUNT       NUMBER,
+                HEALTH_SKIPPED_COUNT   NUMBER,
                 RESULT_ROW_COUNT       NUMBER,
                 MONITORING_PATH        VARCHAR2(500),
                 CREATED_AT             TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
@@ -945,7 +962,9 @@ class OracleConnector:
         "CALIBRATION_ROWS", "CALIBRATION_MONOTONIC",
         "SUPERVISED_PRECISION", "SUPERVISED_RECALL", "SUPERVISED_F1", "SUPERVISED_LIFT",
         "WEIGHT_AE", "WEIGHT_IF", "WEIGHT_MD",
-        "DOMINANT_REASON_FEATURE", "DOMINANT_REASON_SHARE", "RESULT_ROW_COUNT",
+        "DOMINANT_REASON_FEATURE", "DOMINANT_REASON_SHARE",
+        "HEALTH_OVERALL", "HEALTH_GREEN_COUNT", "HEALTH_YELLOW_COUNT", "HEALTH_RED_COUNT", "HEALTH_SKIPPED_COUNT",
+        "RESULT_ROW_COUNT",
         "MONITORING_PATH",
     )
 
@@ -1032,7 +1051,30 @@ class OracleConnector:
                 "CALIBRATION_MONOTONIC": "NUMBER(1)",
                 "DOMINANT_REASON_FEATURE": "VARCHAR2(128)",
                 "DOMINANT_REASON_SHARE": "NUMBER(7,4)",
+                "HEALTH_OVERALL": "VARCHAR2(16)",
+                "HEALTH_GREEN_COUNT": "NUMBER",
+                "HEALTH_YELLOW_COUNT": "NUMBER",
+                "HEALTH_RED_COUNT": "NUMBER",
+                "HEALTH_SKIPPED_COUNT": "NUMBER",
                 "RESULT_ROW_COUNT": "NUMBER",
+            }
+            missing = [(name, ddl) for name, ddl in migration.items() if name not in available_columns]
+            if missing:
+                add_clause = ", ".join(f"{name} {ddl}" for name, ddl in missing)
+                cursor.execute(
+                    f"ALTER TABLE {self._qualified_table_name(table_key)} ADD ({add_clause})"
+                )
+                self.logger.info(
+                    "Added %d new columns to %s: %s",
+                    len(missing),
+                    self._qualified_table_name(table_key),
+                    ", ".join(name for name, _ in missing),
+                )
+        if table_key in {"details", "full_effects"}:
+            migration = {
+                "DIRECTIONALITY": "VARCHAR2(64)",
+                "DIRECTION_HINT": "VARCHAR2(128)",
+                "DIRECTION_COMMENT": "VARCHAR2(500)",
             }
             missing = [(name, ddl) for name, ddl in migration.items() if name not in available_columns]
             if missing:

@@ -203,14 +203,37 @@ def _print_summary(results):
     for _, row in results.head(5).iterrows():
         print(
             f"  {row['customer_id']} | {row['anomaly_score']} | "
-            f"{row['alert_band']} | flags: {row['uni_flag_count']}"
+            f"{row['alert_band']} | flags: {row.get('uni_flag_count', 0)}"
         )
-        for _, detail in row["detay"].items():
-            ico = "UP" if detail["degisim_pct"] > 0 else "DN"
+        detail_payload = row.get("detay")
+        if not isinstance(detail_payload, dict):
+            continue
+        for _, detail in detail_payload.items():
+            ae_ref = detail.get("ae_referansi")
+            actual = detail.get("gerceklesen")
+            contrib = detail.get("ensemble_katki_pct", detail.get("contribution_pct", 0))
             print(
-                f"    {detail['label']}: {detail['beklenen']}->{detail['gerceklesen']}"
-                f" ({ico}%{abs(detail['degisim_pct']):.0f})"
+                f"    {detail['label']}: actual={_fmt_number(actual)} | "
+                f"ae_ref={_fmt_number(ae_ref)} | katkı=%{_fmt_pct(contrib)}"
             )
+
+
+def _fmt_number(value):
+    if value is None:
+        return "NA"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _fmt_pct(value):
+    if value is None:
+        return "0"
+    try:
+        return f"{float(value):.1f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _looks_like_date(value: str) -> bool:

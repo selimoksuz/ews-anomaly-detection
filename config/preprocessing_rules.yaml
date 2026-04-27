@@ -1,12 +1,44 @@
 enabled: true
+
 missing:
   default_strategy: median
+  feature_strategies:
+    pos_volume_change:
+      strategy: constant
+      value: 0
+    business_loan_vs_inflation:
+      strategy: constant
+      value: 0
+    equity_change:
+      strategy: constant
+      value: 0
+    net_sales_change:
+      strategy: constant
+      value: 0
+    bank_asset_average_change:
+      strategy: constant
+      value: 0
+  suffix_strategies:
+    __delta_1:
+      strategy: constant
+      value: 0
+    __self_zscore_6:
+      strategy: constant
+      value: 0
+    __trend_slope_6:
+      strategy: constant
+      value: 0
+    __population_percentile:
+      strategy: constant
+      value: 0.5
+    __vs_population_median_delta:
+      strategy: constant
+      value: 0
+
 hard_bounds:
   enabled: true
   rules:
     - feature: bank_debt_to_turnover
-      lower: 0
-    - feature: bank_debt_to_ebitda
       lower: 0
     - feature: trade_receivables_to_turnover
       lower: 0
@@ -19,12 +51,15 @@ hard_bounds:
       lower: 0
     - feature: memzuc_limit_utilization_increase
       lower: 0
+
 winsorization:
   enabled: true
   lower_quantile: 0.01
   upper_quantile: 0.99
+
 log1p:
   enabled: false
   features: []
+
 scaler:
   type: robust

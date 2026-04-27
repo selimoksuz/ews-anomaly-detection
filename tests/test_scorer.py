@@ -78,6 +78,50 @@ class ScorerTests(unittest.TestCase):
         self.assertEqual(scored.loc[0, "run_id"], "run-1")
         self.assertEqual(scored.loc[0, "model_version"], "model-1")
 
+    def test_reason_contains_direction_metadata(self):
+        config = load_config()
+        features = get_feature_list(config)
+        row = {feature: 1.0 for feature in features}
+        row["bank_debt_to_turnover"] = 2.0
+        row["bank_debt_to_turnover__delta_1"] = 0.5
+        row["customer_id"] = "CUST_2"
+        row["snapshot_date"] = "2026-01-31"
+        row["segment"] = "TICARI_ORTA"
+        frame = pd.DataFrame([row])
+
+        scorer = AnomalyScorer(config, _StubModels(features))
+        scored = scorer.score(frame)
+        detail = scored.loc[0, "detay"]["bank_debt_to_turnover"]
+        reason_text = scored.loc[0, "reason_1"]
+
+        self.assertEqual(detail["yon"], "artmasi kotu, azalmasi iyi")
+        self.assertIn("yon: artmasi kotu, azalmasi iyi", reason_text)
+        self.assertIn("yon_yorumu: musteri gecmis referansina gore artmis ve kotulesme yonunde", reason_text)
+
+    def test_full_detail_population_percentile_contains_all_references(self):
+        config = load_config()
+        features = get_feature_list(config)
+        row = {feature: 0.0 for feature in features}
+        row["bank_debt_to_turnover"] = 0.8
+        row["bank_debt_to_turnover__delta_1"] = 0.1
+        row["bank_debt_to_turnover__population_percentile"] = 0.9
+        row["customer_id"] = "CUST_3"
+        row["snapshot_date"] = "2026-01-31"
+        row["segment"] = "TICARI_ORTA"
+        frame = pd.DataFrame([row])
+
+        scorer = AnomalyScorer(config, _StubModels(features))
+        scored = scorer.score(frame)
+        detail = scored.loc[0, "full_detay"]["bank_debt_to_turnover__population_percentile"]
+
+        self.assertEqual(detail["musteri_gecmis_referansi"], 0.5)
+        self.assertEqual(detail["populasyon_referansi"], 0.5)
+        self.assertEqual(detail["yon"], "artmasi kotu, azalmasi iyi")
+        self.assertEqual(
+            detail["yon_yorumu"],
+            "genel percentile referansina gore artmis ve kotulesme yonunde",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

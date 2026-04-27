@@ -83,12 +83,20 @@ class NativeMaterializer:
             for item in ((self.materialization_cfg.get("population_reference", {}) or {}).get("features", []) or [])
         ]
 
-    def build_derived_frame(self, native_frame: pd.DataFrame) -> pd.DataFrame:
+    @property
+    def cohort_filters(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in ((self.materialization_cfg.get("cohort", {}) or {}).get("filters", []) or [])]
+
+    def build_derived_frame(self, native_frame: pd.DataFrame, *, assume_filtered: bool = False) -> pd.DataFrame:
         """Build the final derived input frame from native atomic fields."""
         frame = native_frame.copy()
         frame.columns = [str(column).strip().lower() for column in frame.columns]
         if frame.empty:
             return frame
+        if not assume_filtered:
+            frame = self._apply_cohort_filters(frame)
+            if frame.empty:
+                return frame
 
         frame[self.time_column] = pd.to_datetime(frame[self.time_column], errors="raise")
         frame = frame.sort_values([self.id_column, self.time_column]).reset_index(drop=True)
@@ -181,15 +189,16 @@ class NativeMaterializer:
         if not self.enabled:
             return {"enabled": False, "persisted_rows": 0, "frame": pd.DataFrame()}
 
-        native_frame = self.source_loader.load_frame(
+        native_source = self.source_loader.load_frame(
             self.source_name,
             segment_column=self.segment_column,
             segment_value=None if segment_value == "ALL" else segment_value,
         )
+        native_frame = self._apply_cohort_filters(native_source)
         if native_frame.empty:
             derived_full = pd.DataFrame(columns=[self.id_column, self.time_column, self.segment_column])
         else:
-            derived_full = self.build_derived_frame(native_frame)
+            derived_full = self.build_derived_frame(native_frame, assume_filtered=True)
         scoped_native = self._filter_scope(
             native_frame,
             snapshot_date=snapshot_date,
@@ -247,6 +256,7 @@ class NativeMaterializer:
         return {
             "enabled": True,
             "segment": segment_value,
+            "native_source_rows": int(len(native_source)),
             "native_rows": int(len(native_frame)),
             "native_scope_rows": int(len(scoped_native)),
             "derived_rows": int(len(derived_full)),
@@ -427,7 +437,10 @@ class NativeMaterializer:
         }
 
     def _evaluate_feature(self, frame: pd.DataFrame, spec: dict[str, Any]) -> pd.Series:
-        method = str(spec.get("method", "")).strip().lower()
+        return self._evaluate_value(frame, spec).astype(float)
+
+    def _evaluate_value(self, frame: pd.DataFrame, spec: dict[str, Any]) -> pd.Series:
+        method = str((spec or {}).get("method", "")).strip().lower()
         if method == "ratio":
             numerator = self._evaluate_value(frame, spec.get("numerator", {}))
             denominator = self._evaluate_value(frame, spec.get("denominator", {}))
@@ -436,12 +449,12 @@ class NativeMaterializer:
             current = self._evaluate_value(frame, spec.get("current", {}))
             reference = self._evaluate_value(frame, spec.get("reference", {}))
             return safe_divide(current - reference, np.abs(reference))
+        if method == "difference":
+            left = self._evaluate_value(frame, spec.get("left", {}))
+            right = self._evaluate_value(frame, spec.get("right", {}))
+            return pd.to_numeric(left, errors="coerce") - pd.to_numeric(right, errors="coerce")
         if method == "passthrough":
-            return self._evaluate_value(frame, spec.get("source", {})).astype(float)
-        raise ValueError(f"Unsupported materialization base feature method: {method}")
-
-    def _evaluate_value(self, frame: pd.DataFrame, spec: dict[str, Any]) -> pd.Series:
-        method = str((spec or {}).get("method", "")).strip().lower()
+            return pd.to_numeric(self._evaluate_value(frame, spec.get("source", {})), errors="coerce")
         if method == "column":
             column_name = str(spec["column"]).strip().lower()
             return pd.to_numeric(frame[column_name], errors="coerce")
@@ -471,6 +484,48 @@ class NativeMaterializer:
         if method == "constant":
             return pd.Series(float(spec.get("value", 0.0)), index=frame.index, dtype=float)
         raise ValueError(f"Unsupported materialization value method: {method}")
+
+    def _apply_cohort_filters(self, frame: pd.DataFrame) -> pd.DataFrame:
+        if frame.empty or not self.cohort_filters:
+            return frame.copy()
+
+        working = frame.copy()
+        mask = pd.Series(True, index=working.index)
+        for rule in self.cohort_filters:
+            column = str(rule.get("column", "")).strip().lower()
+            operator = str(rule.get("operator", "equals")).strip().lower()
+            if not column:
+                continue
+            if column not in working.columns:
+                raise KeyError(f"Cohort filter column '{column}' is missing from native frame.")
+            series = working[column]
+            value = rule.get("value")
+            if operator in {"equals", "eq"}:
+                rule_mask = series.astype(str) == str(value) if series.dtype == object else series == value
+            elif operator in {"not_equals", "ne"}:
+                rule_mask = series.astype(str) != str(value) if series.dtype == object else series != value
+            elif operator in {"gte", "ge"}:
+                rule_mask = pd.to_numeric(series, errors="coerce") >= float(value)
+            elif operator in {"gt"}:
+                rule_mask = pd.to_numeric(series, errors="coerce") > float(value)
+            elif operator in {"lte", "le"}:
+                rule_mask = pd.to_numeric(series, errors="coerce") <= float(value)
+            elif operator in {"lt"}:
+                rule_mask = pd.to_numeric(series, errors="coerce") < float(value)
+            elif operator == "in":
+                values = value if isinstance(value, (list, tuple, set)) else [value]
+                rule_mask = series.isin(list(values))
+            elif operator == "not_in":
+                values = value if isinstance(value, (list, tuple, set)) else [value]
+                rule_mask = ~series.isin(list(values))
+            else:
+                raise ValueError(f"Unsupported cohort filter operator: {operator}")
+            mask &= rule_mask.fillna(False)
+        filtered = working.loc[mask].copy()
+        if not filtered.empty and self.time_column in filtered.columns:
+            filtered[self.time_column] = pd.to_datetime(filtered[self.time_column], errors="raise")
+            filtered = filtered.sort_values([self.id_column, self.time_column]).reset_index(drop=True)
+        return filtered
 
     def _annualization_factor(self, frame: pd.DataFrame) -> pd.Series:
         annualization_cfg = self.materialization_cfg.get("annualization", {}) or {}

@@ -662,11 +662,22 @@ class LifecycleManager:
                     end_date=end_date,
                 )
                 if frame.empty:
+                    snapshot_cfg = self.live_scoring_cfg.get("snapshot", {}) or {}
+                    selector = str(snapshot_cfg.get("selector", "today")).strip().lower()
+                    resolved_snapshot = (
+                        snapshot_date
+                        or snapshot_cfg.get("explicit_date")
+                        or (
+                            self._previous_month_end().date().isoformat()
+                            if selector == "previous_month_end" and start_date is None and end_date is None
+                            else None
+                        )
+                    )
                     requested_scope = {
-                        "snapshot_date": snapshot_date or self.live_scoring_cfg.get("snapshot", {}).get("explicit_date"),
-                        "start_date": start_date or self.live_scoring_cfg.get("snapshot", {}).get("start_date"),
-                        "end_date": end_date or self.live_scoring_cfg.get("snapshot", {}).get("end_date"),
-                        "selector": self.live_scoring_cfg.get("snapshot", {}).get("selector", "today"),
+                        "snapshot_date": resolved_snapshot,
+                        "start_date": start_date or snapshot_cfg.get("start_date"),
+                        "end_date": end_date or snapshot_cfg.get("end_date"),
+                        "selector": selector,
                     }
                     summary = {
                         "status": "skipped",
@@ -709,6 +720,22 @@ class LifecycleManager:
                         "live_input": live_quality,
                     },
                 }
+                live_monitor_extras = self._build_score_live_monitor_extras(
+                    run=run,
+                    payload=monitoring_payload,
+                    results_frame=results,
+                )
+                monitoring_payload["health"] = self.monitoring.evaluate_health(
+                    payload=monitoring_payload,
+                    extras={
+                        "weights": (champion.get("weighting") or {}).get("weights"),
+                        "calibration": {
+                            "rows": (champion.get("calibration") or {}).get("rows"),
+                            "monotonic": True if (champion.get("calibration") or {}).get("status") == "fitted" else None,
+                        },
+                        **live_monitor_extras,
+                    },
+                )
                 monitoring_summary = self.monitoring.write_bundle(
                     segment=segment_value,
                     run_id=run.run_id,
@@ -729,6 +756,7 @@ class LifecycleManager:
                     "calibration_version": champion.get("calibration", {}).get("version"),
                     "weight_version": champion.get("weighting", {}).get("weight_version"),
                     "quality": monitoring_payload["quality"],
+                    "health": monitoring_payload["health"],
                     "output": output_summary,
                     "monitoring_path": monitoring_summary["monitoring_path"],
                     "monitoring_dir": monitoring_summary["directory"],
@@ -748,6 +776,14 @@ class LifecycleManager:
                     monitoring_path=monitoring_summary.get("monitoring_path"),
                     results_frame=results,
                     result_row_count=int(len(results)),
+                    extras_payload={
+                        "weights": (champion.get("weighting") or {}).get("weights"),
+                        "calibration": {
+                            "rows": (champion.get("calibration") or {}).get("rows"),
+                            "monotonic": True if (champion.get("calibration") or {}).get("status") == "fitted" else None,
+                        },
+                        **live_monitor_extras,
+                    },
                 )
                 self.registry.finish_run(run, "completed", summary)
                 return summary
@@ -989,6 +1025,7 @@ class LifecycleManager:
                 monitoring_payload = {
                     "input": {},
                     "scores": {},
+                    "sampling": self.sampling_reports,
                     "quality": {
                         "materialization": (self.last_materialization_summary.get("development") or {}).get("quality"),
                     },
@@ -1032,14 +1069,27 @@ class LifecycleManager:
                 feature_selection_path = run.artifact_dir / "feature_selection.json"
                 with open(feature_selection_path, "w", encoding="utf-8") as handle:
                     json.dump(model.feature_selection_summary(), handle, indent=2, ensure_ascii=False)
+                calibration_info = {
+                    "rows": calibration_record.get("rows"),
+                    "monotonic": True if calibration_record.get("status") == "fitted" else None,
+                }
+                health_source_payload = {
+                    "input": (monitoring_payload.get("input") or {}).get("oot") or {},
+                    "scores": (monitoring_payload.get("scores") or {}).get("oot") or {},
+                    "quality": monitoring_payload.get("quality") or {},
+                }
+                monitoring_payload["health"] = self.monitoring.evaluate_health(
+                    payload=health_source_payload,
+                    extras={
+                        "stability": stability,
+                        "weights": default_weights,
+                        "calibration": calibration_info,
+                    },
+                )
                 monitoring_summary = self.monitoring.write_bundle(
                     segment=segment_value,
                     run_id=run.run_id,
-                    payload={
-                        "input": monitoring_payload["input"],
-                        "scores": monitoring_payload["scores"],
-                        "sampling": self.sampling_reports,
-                    },
+                    payload=monitoring_payload,
                 )
                 monitoring_path = Path(monitoring_summary["monitoring_path"])
                 sampling_path_value = monitoring_summary.get("sampling_path")
@@ -1085,6 +1135,7 @@ class LifecycleManager:
                     "windows": {name: self._window_boundaries(spec) for name, spec in windows.items()},
                     "sampling": self.sampling_reports,
                     "quality": monitoring_payload["quality"],
+                    "health": monitoring_payload["health"],
                     "calibration_status": calibration_record["status"],
                     "shadow_status": shadow_record["status"],
                     "preprocessing": model.preprocessing_summary(),
@@ -1095,16 +1146,13 @@ class LifecycleManager:
                 materialization_quality_payload = (
                     (self.last_materialization_summary.get("development") or {}).get("quality") or {}
                 )
-                calibration_info = {
-                    "rows": calibration_record.get("rows"),
-                    "monotonic": True if calibration_record.get("status") == "fitted" else None,
-                }
                 self._record_monitor_history(
                     run,
                     payload={
                         "input": dev_input_section,
                         "scores": {},
                         "quality": {"materialization": materialization_quality_payload},
+                        "health": monitoring_payload["health"],
                     },
                     stability=stability,
                     calibration=calibration_info,
@@ -1132,6 +1180,7 @@ class LifecycleManager:
         status: str = "completed",
         results_frame: Optional[pd.DataFrame] = None,
         result_row_count: Optional[int] = None,
+        extras_payload: Optional[dict] = None,
     ) -> None:
         """Persist a run-level summary row to the Oracle monitor history table."""
         if str((self.config.get("monitoring", {}) or {}).get("history", {}).get("backend", "oracle")).lower() != "oracle":
@@ -1161,6 +1210,8 @@ class LifecycleManager:
             "calibration": calibration,
             "result_row_count": result_row_count,
         }
+        if extras_payload:
+            extras.update(extras_payload)
 
         from engine.oracle_io import OracleConnector
         from engine.monitoring import MonitoringManager
@@ -1263,41 +1314,46 @@ class LifecycleManager:
         try:
             results_local = current_results.copy()
             results_local.columns = [str(c).lower() for c in results_local.columns]
-            if "reasons" in results_local.columns:
+            for detail_column in ("detay", "full_detay"):
                 top_features = []
-                for payload in results_local["reasons"].dropna():
-                    reason_list = list(payload.values()) if isinstance(payload, dict) else (payload or [])
-                    if not reason_list:
+                if detail_column not in results_local.columns:
+                    continue
+                for payload in results_local[detail_column].dropna():
+                    if not isinstance(payload, dict) or not payload:
                         continue
-                    first = reason_list[0]
-                    feature = (first or {}).get("feature") if isinstance(first, dict) else None
-                    if feature:
-                        top_features.append(str(feature))
+                    top_features.append(str(next(iter(payload.keys()))))
                 if not top_features:
-                    return None
+                    continue
                 series = pd.Series(top_features)
                 top_feature = series.value_counts().head(1)
                 if top_feature.empty:
-                    return None
+                    continue
                 feature_name = str(top_feature.index[0])
                 share = round(float(top_feature.iloc[0] / len(series)), 4)
                 return {"feature": feature_name, "share": share}
 
             details_table = ora._qualified_table_name("details")
+            current_snapshot = pd.to_datetime(current_results[self.time_column]).max()
             query = f"""
                 SELECT FEATURE_NAME, COUNT(*) AS cnt
                 FROM {details_table}
                 WHERE FEATURE_RANK = 1
+                  AND TRUNC({self.time_column.upper()}) = TRUNC(:snapshot_date)
                 GROUP BY FEATURE_NAME
                 ORDER BY cnt DESC
                 FETCH FIRST 1 ROWS ONLY
             """
-            frame = ora._read_query(query)
+            frame = ora._read_query(query, {"snapshot_date": current_snapshot.to_pydatetime()})
             if frame.empty:
                 return None
             frame.columns = [str(c).lower() for c in frame.columns]
-            total_query = f"SELECT COUNT(*) AS total FROM {details_table} WHERE FEATURE_RANK = 1"
-            total_frame = ora._read_query(total_query)
+            total_query = f"""
+                SELECT COUNT(*) AS total
+                FROM {details_table}
+                WHERE FEATURE_RANK = 1
+                  AND TRUNC({self.time_column.upper()}) = TRUNC(:snapshot_date)
+            """
+            total_frame = ora._read_query(total_query, {"snapshot_date": current_snapshot.to_pydatetime()})
             total_frame.columns = [str(c).lower() for c in total_frame.columns]
             total = int(total_frame["total"].iloc[0] or 0)
             if total <= 0:
@@ -1307,6 +1363,54 @@ class LifecycleManager:
         except Exception:  # noqa: BLE001
             logger.exception("Dominant reason lookup failed for segment=%s", segment)
             return None
+
+    def _build_score_live_monitor_extras(
+        self,
+        *,
+        run,
+        payload: dict,
+        results_frame: pd.DataFrame,
+    ) -> dict:
+        from engine.oracle_io import OracleConnector
+
+        extras: dict = {}
+        try:
+            with OracleConnector(self.config, self.secrets) as ora:
+                ora.setup_tables(drop_existing=False)
+                prev_row = ora.read_previous_monitor_row(
+                    segment=run.segment,
+                    run_type="score-live",
+                    before=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                )
+                current_buckets = ((payload or {}).get("scores") or {}).get("score_buckets") or {}
+                prev_buckets = {}
+                if prev_row and prev_row.get("score_buckets"):
+                    try:
+                        prev_buckets = json.loads(prev_row["score_buckets"])
+                    except Exception:  # noqa: BLE001
+                        prev_buckets = {}
+                if current_buckets and prev_buckets:
+                    extras["score_psi_vs_prev"] = MonitoringManager.compute_psi(current_buckets, prev_buckets)
+
+                persistence = self._compute_band_persistence(
+                    ora=ora,
+                    segment=run.segment,
+                    current_results=results_frame,
+                    prev_snapshot=prev_row.get("scope_snapshot") if prev_row else None,
+                )
+                if persistence is not None:
+                    extras["band_persistence_kirmizi"] = persistence
+
+                dominant = self._fetch_dominant_reason(
+                    ora=ora,
+                    segment=run.segment,
+                    current_results=results_frame,
+                )
+                if dominant:
+                    extras["dominant_reason"] = dominant
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to derive score-live monitoring extras for run_id=%s", run.run_id)
+        return extras
 
     def _resolve_segment(self, segment: Optional[str]) -> str:
         if segment:
@@ -1840,6 +1944,9 @@ class LifecycleManager:
         explicit_date = snapshot_date if snapshot_date is not None else snapshot_cfg.get("explicit_date")
         requested_start = start_date if start_date is not None else snapshot_cfg.get("start_date")
         requested_end = end_date if end_date is not None else snapshot_cfg.get("end_date")
+        resolved_snapshot = explicit_date
+        if resolved_snapshot is None and requested_start is None and requested_end is None and selector == "previous_month_end":
+            resolved_snapshot = self._previous_month_end()
         base_kwargs = {
             "segment_column": self.development_cfg.get("segment_column"),
             "segment_value": None if segment_value == "ALL" else segment_value,
@@ -1847,7 +1954,7 @@ class LifecycleManager:
 
         materialization_summary = self._materialize_live_inputs(
             segment_value,
-            snapshot_date=explicit_date,
+            snapshot_date=resolved_snapshot,
             start_date=requested_start,
             end_date=requested_end,
             selector=selector,
@@ -1861,10 +1968,10 @@ class LifecycleManager:
             )
             return self._load_latest_snapshot(source_name, base_kwargs, segment_value)
 
-        if explicit_date:
+        if resolved_snapshot is not None:
             frame = self.source_loader.load_frame(
                 source_name,
-                snapshot_date=explicit_date,
+                snapshot_date=resolved_snapshot,
                 **base_kwargs,
             )
         elif requested_start or requested_end:
@@ -1916,9 +2023,12 @@ class LifecycleManager:
         materializer = getattr(self, "materializer", None)
         if materializer is None or not materializer.enabled:
             return None
+        resolved_snapshot = snapshot_date
+        if resolved_snapshot is None and start_date is None and end_date is None and selector == "previous_month_end":
+            resolved_snapshot = self._previous_month_end()
         summary = materializer.materialize_live(
             segment_value,
-            snapshot_date=snapshot_date,
+            snapshot_date=resolved_snapshot,
             start_date=start_date,
             end_date=end_date,
             current_day=(snapshot_date is None and start_date is None and end_date is None and selector == "today"),
@@ -1926,6 +2036,10 @@ class LifecycleManager:
         )
         self.last_materialization_summary["live_scoring"] = summary
         return summary
+
+    @staticmethod
+    def _previous_month_end() -> pd.Timestamp:
+        return (pd.Timestamp.today().normalize() - pd.offsets.MonthEnd(1)).normalize()
 
     def _reset_live_explicit_date_after_success(self) -> None:
         snapshot_cfg = self.live_scoring_cfg.get("snapshot", {})

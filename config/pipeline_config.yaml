@@ -5,10 +5,11 @@ config_refs:
   preprocessing: preprocessing_rules.yaml
   materialization: materialization_rules.yaml
   quality: quality_rules.yaml
+  monitoring: monitoring_rules.yaml
 
 pipeline:
   name: ews_anomaly_detection
-  version: 1.0.0
+  version: 1.1.0
   id_column: customer_id
   time_column: snapshot_date
   split_column: split_flag
@@ -20,7 +21,7 @@ ensemble:
   weights:
     ae: 0.45
     if: 0.35
-    md: 0.2
+    md: 0.20
 
 alert_bands:
   normal:
@@ -73,7 +74,7 @@ development:
   source_name: input_features
   frequency: monthly
   segment_column: segment
-  segment_value: TICARI_ORTA_FAZ1
+  segment_value: TICARI_ORTA
   sampling:
     enabled: false
     windows:
@@ -88,7 +89,7 @@ development:
       max_tail_share_delta: 0.02
       max_missing_share_delta: 0.02
       max_feature_missing_delta: 0.01
-      max_feature_ks: 0.1
+      max_feature_ks: 0.10
       fallback_to_full_on_fail: true
   windows:
     mode: relative_periods
@@ -145,16 +146,10 @@ weight_optimization:
   prefer_balanced_within_tolerance: true
   auto_apply: true
 
-monitoring:
-  enabled: true
-  history:
-    backend: oracle
-    table_key: monitor_history
-
 live_scoring:
   source_name: input_features
   snapshot:
-    selector: today
+    selector: previous_month_end
     explicit_date: null
     start_date: null
     end_date: null

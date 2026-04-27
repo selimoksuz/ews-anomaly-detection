@@ -12,8 +12,10 @@ import pandas as pd
 from engine.calibration import ScoreCalibrator
 from engine.config_loader import (
     get_alert_bands,
+    get_directionality,
     get_ensemble_weights,
     get_label,
+    get_reasoning_hint,
     normalize_ensemble_weights,
     resolve_feature_list,
 )
@@ -97,6 +99,11 @@ class AnomalyScorer:
             time_column=time_col,
             base_feature_indices=base_feature_indices,
         )
+        feature_population_reference_map = self._build_feature_population_reference_map(
+            df,
+            actual_values,
+            time_column=time_col,
+        )
 
         z_abs = np.abs(X)
         uni_flag_count = (z_abs > self.z_threshold).sum(axis=1)
@@ -111,28 +118,20 @@ class AnomalyScorer:
             full_detail_payload = {}
             for rank, feature_index in enumerate(ordered_idx, 1):
                 feature_name = self.features[feature_index]
-                label = get_label(self.config, feature_name)
-                contribution_pct = unified_pct[row_index, feature_index]
-
-                actual = actual_values[row_index, feature_index]
-                expected = expected_values[row_index, feature_index]
-                pct_change = self._compute_pct_change(actual, expected)
-
-                detail_record = {
-                    "label": label,
-                    "gerceklesen": self._round_optional(actual, 2),
-                    "ae_referansi": self._round_optional(expected, 2),
-                    "expected_value": self._round_optional(expected, 6),
-                    "actual_value": self._round_optional(actual, 6),
-                    "delta_pct": self._round_optional(pct_change, 1),
-                    "contribution_pct": self._round_optional(contribution_pct, 1),
-                    "ensemble_katki_pct": self._round_optional(contribution_pct, 1),
-                    "ae_katki_pct": self._round_optional(ae_weighted[row_index, feature_index], 1),
-                    "if_katki_pct": self._round_optional(if_weighted[row_index, feature_index], 1),
-                    "md_katki_pct": self._round_optional(md_weighted[row_index, feature_index], 1),
-                    "rank": rank,
-                    "is_top_reason": rank <= self.top_n,
-                }
+                detail_record = self._build_feature_level_detail(
+                    row_index=row_index,
+                    feature_index=feature_index,
+                    feature_name=feature_name,
+                    feature_index_map=feature_index_map,
+                    actual_values=actual_values,
+                    expected_values=expected_values,
+                    feature_population_reference_map=feature_population_reference_map,
+                    ae_weighted=ae_weighted,
+                    if_weighted=if_weighted,
+                    md_weighted=md_weighted,
+                    unified_pct=unified_pct,
+                    rank=rank,
+                )
                 full_detail_payload[feature_name] = detail_record
 
             family_order = sorted(
@@ -339,6 +338,15 @@ class AnomalyScorer:
         ae_contribution = float(np.sum(ae_weighted[row_index, family_feature_indices]))
         if_contribution = float(np.sum(if_weighted[row_index, family_feature_indices]))
         md_contribution = float(np.sum(md_weighted[row_index, family_feature_indices]))
+        directionality = get_directionality(self.config, family_name)
+        direction_hint = get_reasoning_hint(self.config, family_name)
+        direction_comment = self._build_direction_comment(
+            actual=actual,
+            customer_history_reference=customer_history_reference,
+            ae_reference=ae_reference,
+            population_reference=population_reference,
+            directionality=directionality,
+        )
 
         return {
             "label": get_label(self.config, family_name),
@@ -354,23 +362,258 @@ class AnomalyScorer:
             "ae_katki_pct": self._round_optional(ae_contribution, 1),
             "if_katki_pct": self._round_optional(if_contribution, 1),
             "md_katki_pct": self._round_optional(md_contribution, 1),
+            "directionality": directionality,
+            "yon": direction_hint,
+            "yon_yorumu": direction_comment,
             "rank": rank,
             "is_top_reason": True,
         }
 
+    def _build_feature_population_reference_map(
+        self,
+        df: pd.DataFrame,
+        actual_values: np.ndarray,
+        *,
+        time_column: str,
+    ) -> dict[str, np.ndarray]:
+        reference_map: dict[str, np.ndarray] = {}
+        time_values = None
+        if time_column in df.columns:
+            time_values = pd.to_datetime(df[time_column], errors="coerce")
+
+        for feature_index, feature_name in enumerate(self.features):
+            if feature_name.endswith("__population_percentile"):
+                reference_map[feature_name] = np.full(len(actual_values), 0.5, dtype=float)
+                continue
+            if feature_name.endswith("__delta_1"):
+                reference_map[feature_name] = np.zeros(len(actual_values), dtype=float)
+                continue
+            if feature_name.endswith("__self_zscore_6"):
+                reference_map[feature_name] = np.zeros(len(actual_values), dtype=float)
+                continue
+            if feature_name.endswith("__trend_slope_6"):
+                reference_map[feature_name] = np.zeros(len(actual_values), dtype=float)
+                continue
+            if feature_name.endswith("__vs_population_median_delta"):
+                reference_map[feature_name] = np.zeros(len(actual_values), dtype=float)
+                continue
+
+            series = pd.Series(actual_values[:, feature_index])
+            if time_values is not None and not time_values.isna().all():
+                reference_map[feature_name] = series.groupby(time_values, sort=False).transform("median").to_numpy()
+            else:
+                fallback = np.nanmedian(actual_values[:, feature_index])
+                reference_map[feature_name] = np.full(len(actual_values), fallback, dtype=float)
+        return reference_map
+
+    def _build_feature_level_detail(
+        self,
+        *,
+        row_index: int,
+        feature_index: int,
+        feature_name: str,
+        feature_index_map: dict[str, int],
+        actual_values: np.ndarray,
+        expected_values: np.ndarray,
+        feature_population_reference_map: dict[str, np.ndarray],
+        ae_weighted: np.ndarray,
+        if_weighted: np.ndarray,
+        md_weighted: np.ndarray,
+        unified_pct: np.ndarray,
+        rank: int,
+    ) -> dict:
+        actual = actual_values[row_index, feature_index]
+        ae_reference = expected_values[row_index, feature_index]
+        customer_history_reference = self._feature_customer_history_reference(
+            row_index=row_index,
+            feature_name=feature_name,
+            feature_index_map=feature_index_map,
+            actual_values=actual_values,
+        )
+        population_reference = feature_population_reference_map.get(
+            feature_name,
+            np.full(len(actual_values), np.nan, dtype=float),
+        )[row_index]
+        directionality = get_directionality(self.config, feature_name)
+        direction_hint = get_reasoning_hint(self.config, feature_name)
+        direction_label, direction_value = self._feature_direction_reference(
+            feature_name=feature_name,
+            customer_history_reference=customer_history_reference,
+            population_reference=population_reference,
+            ae_reference=ae_reference,
+        )
+        direction_comment = self._compose_direction_comment(
+            actual=actual,
+            reference_label=direction_label,
+            reference_value=direction_value,
+            directionality=directionality,
+        )
+        contribution_pct = unified_pct[row_index, feature_index]
+
+        return {
+            "label": get_label(self.config, feature_name),
+            "gerceklesen": self._round_optional(actual, 2),
+            "musteri_gecmis_referansi": self._round_optional(customer_history_reference, 2),
+            "populasyon_referansi": self._round_optional(population_reference, 2),
+            "ae_referansi": self._round_optional(ae_reference, 2),
+            "expected_value": self._round_optional(ae_reference, 6),
+            "actual_value": self._round_optional(actual, 6),
+            "delta_pct": self._round_optional(self._compute_pct_change(actual, ae_reference), 1),
+            "contribution_pct": self._round_optional(contribution_pct, 1),
+            "ensemble_katki_pct": self._round_optional(contribution_pct, 1),
+            "ae_katki_pct": self._round_optional(ae_weighted[row_index, feature_index], 1),
+            "if_katki_pct": self._round_optional(if_weighted[row_index, feature_index], 1),
+            "md_katki_pct": self._round_optional(md_weighted[row_index, feature_index], 1),
+            "directionality": directionality,
+            "yon": direction_hint,
+            "yon_yorumu": direction_comment,
+            "rank": rank,
+            "is_top_reason": rank <= self.top_n,
+        }
+
+    def _feature_customer_history_reference(
+        self,
+        *,
+        row_index: int,
+        feature_name: str,
+        feature_index_map: dict[str, int],
+        actual_values: np.ndarray,
+    ) -> float:
+        normalized = str(feature_name).strip().lower()
+        actual = actual_values[row_index, feature_index_map[normalized]]
+
+        if normalized.endswith("__population_percentile"):
+            return 0.5
+        if normalized.endswith("__delta_1"):
+            return 0.0
+        if normalized.endswith("__self_zscore_6"):
+            return 0.0
+        if normalized.endswith("__trend_slope_6"):
+            return 0.0
+        if normalized.endswith("__vs_population_median_delta"):
+            return 0.0
+
+        family_name = self._base_feature_name(normalized)
+        delta_feature_name = f"{family_name}__delta_1"
+        delta_index = feature_index_map.get(delta_feature_name)
+        if delta_index is not None and not pd.isna(actual):
+            delta_value = actual_values[row_index, delta_index]
+            if not pd.isna(delta_value):
+                return float(actual - delta_value)
+        return np.nan
+
+    @staticmethod
+    def _direction_reference(
+        customer_history_reference,
+        ae_reference,
+        population_reference,
+    ) -> tuple[str | None, float | None]:
+        for label, value in (
+            ("musteri gecmis referansina", customer_history_reference),
+            ("ae referansina", ae_reference),
+            ("populasyon referansina", population_reference),
+        ):
+            if value is not None and not pd.isna(value):
+                return label, float(value)
+        return None, None
+
+    @staticmethod
+    def _compose_direction_comment(
+        *,
+        actual,
+        reference_label: str | None,
+        reference_value: float | None,
+        directionality: str | None,
+    ) -> str:
+        if actual is None or pd.isna(actual):
+            return "gerceklesen degeri olmadigi icin yon yorumu uretilemedi"
+
+        if reference_label is None or reference_value is None or pd.isna(reference_value):
+            return "referans deger olmadigi icin yon yorumu uretilemedi"
+
+        actual_value = float(actual)
+        delta = actual_value - float(reference_value)
+        if abs(delta) <= 1e-9:
+            return f"{reference_label} ile ayni seviyede"
+
+        movement = "artmis" if delta > 0 else "azalmis"
+        if directionality == "increase_is_risk":
+            outcome = "kotulesme yonunde" if delta > 0 else "iyilesme yonunde"
+        elif directionality == "decrease_is_risk":
+            outcome = "kotulesme yonunde" if delta < 0 else "iyilesme yonunde"
+        else:
+            outcome = "yon etkisi tanimsiz"
+        return f"{reference_label} gore {movement} ve {outcome}"
+
+    def _feature_direction_reference(
+        self,
+        *,
+        feature_name: str,
+        customer_history_reference,
+        population_reference,
+        ae_reference,
+    ) -> tuple[str | None, float | None]:
+        normalized = str(feature_name).strip().lower()
+        if normalized.endswith("__population_percentile"):
+            return "genel percentile referansina", 0.5
+        if normalized.endswith("__delta_1"):
+            return "notr degisim referansina", 0.0
+        if normalized.endswith("__self_zscore_6"):
+            return "notr self-z referansina", 0.0
+        if normalized.endswith("__trend_slope_6"):
+            return "notr trend referansina", 0.0
+        if normalized.endswith("__vs_population_median_delta"):
+            return "genel median referansina", 0.0
+        return self._direction_reference(
+            customer_history_reference=customer_history_reference,
+            ae_reference=ae_reference,
+            population_reference=population_reference,
+        )
+
+    @staticmethod
+    def _build_direction_comment(
+        *,
+        actual,
+        customer_history_reference,
+        ae_reference,
+        population_reference,
+        directionality: str | None,
+    ) -> str:
+        if actual is None or pd.isna(actual):
+            return "gerceklesen degeri olmadigi icin yon yorumu uretilemedi"
+
+        reference_label, reference_value = AnomalyScorer._direction_reference(
+            customer_history_reference=customer_history_reference,
+            ae_reference=ae_reference,
+            population_reference=population_reference,
+        )
+        return AnomalyScorer._compose_direction_comment(
+            actual=actual,
+            reference_label=reference_label,
+            reference_value=reference_value,
+            directionality=directionality,
+        )
+
     @staticmethod
     def _format_reason_block(detail: dict) -> str:
-        return (
-            f"{detail['label']}\n"
-            f"gerceklesen: {AnomalyScorer._display_value(detail.get('gerceklesen'))}\n"
-            f"musteri_gecmis_referansi: {AnomalyScorer._display_value(detail.get('musteri_gecmis_referansi'))}\n"
-            f"populasyon_referansi: {AnomalyScorer._display_value(detail.get('populasyon_referansi'))}\n"
-            f"ae_referansi: {AnomalyScorer._display_value(detail.get('ae_referansi'))}\n"
+        lines = [
+            f"{detail['label']}",
+            f"gerceklesen: {AnomalyScorer._display_value(detail.get('gerceklesen'))}",
+            f"musteri_gecmis_referansi: {AnomalyScorer._display_value(detail.get('musteri_gecmis_referansi'))}",
+            f"populasyon_referansi: {AnomalyScorer._display_value(detail.get('populasyon_referansi'))}",
+            f"ae_referansi: {AnomalyScorer._display_value(detail.get('ae_referansi'))}",
+        ]
+        if detail.get("yon"):
+            lines.append(f"yon: {detail.get('yon')}")
+        if detail.get("yon_yorumu"):
+            lines.append(f"yon_yorumu: {detail.get('yon_yorumu')}")
+        lines.append(
             f"ensemble_katki: %{AnomalyScorer._display_pct(detail.get('ensemble_katki_pct'))} "
             f"(AE %{AnomalyScorer._display_pct(detail.get('ae_katki_pct'))}, "
             f"IF %{AnomalyScorer._display_pct(detail.get('if_katki_pct'))}, "
             f"MD %{AnomalyScorer._display_pct(detail.get('md_katki_pct'))})"
         )
+        return "\n".join(lines)
 
     @staticmethod
     def _display_value(value) -> str:

@@ -9,7 +9,7 @@ Bu projede calisma zamaninda uretilen dosyalar tek bir kok altinda toplanir:
 - `runtime/runs/<run_id>`
   - `manifest.json`: ilgili run'in ana kaydi
   - `logs/`: run'a ait development, scoring, monitoring veya operations loglari
-  - `monitoring/`: run'a ait monitoring bundle dosyalari
+  - `monitoring/`: run'a ait monitoring bundle dosyalari (`monitoring.json`, `quality.json`, `health.json`, csv ozetleri)
 - `runtime/models`
   - gercekten artifact ureten run'larin tekrar kullanilabilir dosyalari
   - ornek: `model.pkl`, `calibration.json`, `stability.json`, `feature_selection.json`, `weights.json`, `evaluation.json`

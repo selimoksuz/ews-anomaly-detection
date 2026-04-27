@@ -1,0 +1,74 @@
+enabled: true
+
+history:
+  backend: oracle
+  table_key: monitor_history
+
+health:
+  enabled: true
+  checks:
+    - key: quality_native_scope
+      source: payload
+      path: quality.materialization.native_scope.status
+      rule: enum
+      green: [pass]
+      yellow: [warn, empty]
+      red: [fail]
+    - key: quality_derived_scope
+      source: payload
+      path: quality.materialization.derived_scope.status
+      rule: enum
+      green: [pass]
+      yellow: [warn, empty]
+      red: [fail]
+    - key: avg_missing_ratio
+      source: payload
+      path: input.avg_feature_missing_ratio
+      rule: upper_bound
+      green_max: 0.05
+      yellow_max: 0.10
+    - key: band_kirmizi
+      source: payload
+      path: scores.band_share.KIRMIZI
+      rule: range
+      green_min: 0.02
+      green_max: 0.12
+      yellow_min: 0.01
+      yellow_max: 0.18
+    - key: score_psi_vs_prev
+      source: extras
+      path: score_psi_vs_prev
+      rule: upper_bound
+      green_max: 0.10
+      yellow_max: 0.20
+      skip_if_missing: true
+    - key: stability_oot_ks
+      source: extras
+      path: stability.oot.metrics.ensemble_score.ks_stat
+      rule: upper_bound
+      green_max: 0.10
+      yellow_max: 0.20
+      skip_if_missing: true
+    - key: stability_oot_mean_ratio
+      source: extras
+      path: stability.oot.metrics.ensemble_score.mean_ratio
+      rule: bounded
+      green_min: 0.90
+      green_max: 1.15
+      yellow_min: 0.85
+      yellow_max: 1.20
+      skip_if_missing: true
+    - key: calibration_monotonic
+      source: extras
+      path: calibration.monotonic
+      rule: enum
+      green: [true, null]
+      red: [false]
+      skip_if_missing: true
+    - key: supervised_precision
+      source: extras
+      path: supervised.precision_at_top_percent
+      rule: lower_bound
+      green_min: 0.15
+      yellow_min: 0.08
+      skip_if_missing: true

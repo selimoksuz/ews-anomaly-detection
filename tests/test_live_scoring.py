@@ -65,6 +65,19 @@ class LiveScoringSelectionTests(unittest.TestCase):
         self.assertEqual(kwargs["snapshot_date"], "2026-04-08")
         self.assertNotIn("current_day", kwargs)
 
+    def test_previous_month_end_selector_resolves_snapshot_date(self):
+        manager = self._make_manager()
+        manager.live_scoring_cfg["snapshot"]["selector"] = "previous_month_end"
+        manager._previous_month_end = Mock(return_value=pd.Timestamp("2026-03-31"))
+        previous_frame = pd.DataFrame({"customer_id": ["C4"], "snapshot_date": [pd.Timestamp("2026-03-31")]})
+        manager.source_loader.load_frame.side_effect = [previous_frame]
+
+        frame = manager._load_live_source_frame("ALL")
+
+        self.assertEqual(len(frame), 1)
+        _, kwargs = manager.source_loader.load_frame.call_args
+        self.assertEqual(pd.Timestamp(kwargs["snapshot_date"]), pd.Timestamp("2026-03-31"))
+
     def test_successful_run_clears_explicit_date_from_config_file(self):
         manager = self._make_manager()
         manager.config = {

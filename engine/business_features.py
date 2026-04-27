@@ -1,4 +1,4 @@
-"""Business feature builders for the Ticari Orta Faz 1 demo."""
+"""Business feature builders and shared math helpers for Ticari Orta Faz 1."""
 
 from __future__ import annotations
 
@@ -12,12 +12,14 @@ FAZ1_BASE_FEATURES = [
     "bank_debt_to_ebitda",
     "trade_receivables_to_turnover",
     "profitability_to_turnover",
+    "business_loan_vs_inflation",
     "equity_change",
     "ifrs9_behavioral_pd",
     "kkb_commercial_score",
     "kkb_indebtedness_index",
     "net_sales_change",
     "memzuc_limit_utilization_increase",
+    "bank_asset_average_change",
 ]
 
 YEARLY_SEASONAL_LAG = 12
@@ -78,6 +80,13 @@ def build_ticari_orta_faz1_business_features(
     prior_pos = frame.groupby(id_column)["pos_monthly_volume"].shift(YEARLY_SEASONAL_LAG)
     prior_sales = pd.Series(annualized_sales).groupby(frame[id_column]).shift(YEARLY_SEASONAL_LAG)
     prior_equity = frame.groupby(id_column)["fs_equity"].shift(YEARLY_SEASONAL_LAG)
+    prior_business_loans = frame.groupby(id_column)["memzuc_business_loan_risk_0_24m"].shift(YEARLY_SEASONAL_LAG)
+    prior_bank_assets = frame.groupby(id_column)["bank_asset_average_balance"].shift(YEARLY_SEASONAL_LAG)
+
+    business_loan_growth = safe_divide(
+        frame["memzuc_business_loan_risk_0_24m"] - prior_business_loans,
+        prior_business_loans.abs(),
+    )
 
     derived = frame[[id_column, time_column, segment_column]].copy()
     derived["bank_debt_to_turnover"] = safe_divide(frame["memzuc_total_cash_risk_0_24m"], annualized_sales)
@@ -88,6 +97,7 @@ def build_ticari_orta_faz1_business_features(
     )
     derived["trade_receivables_to_turnover"] = safe_divide(total_trade_receivables, annualized_sales)
     derived["profitability_to_turnover"] = safe_divide(annualized_profit, annualized_sales)
+    derived["business_loan_vs_inflation"] = business_loan_growth - frame["inflation_yoy_rate"].astype(float)
     derived["equity_change"] = safe_divide(frame["fs_equity"] - prior_equity, prior_equity.abs())
     derived["ifrs9_behavioral_pd"] = frame["ifrs9_behavioral_pd"].astype(float)
     derived["kkb_commercial_score"] = frame["kkb_commercial_score"].astype(float)
@@ -97,5 +107,8 @@ def build_ticari_orta_faz1_business_features(
         frame["memzuc_total_risk"],
         frame["memzuc_total_limit"],
     )
-
+    derived["bank_asset_average_change"] = safe_divide(
+        frame["bank_asset_average_balance"] - prior_bank_assets,
+        prior_bank_assets.abs(),
+    )
     return derived
