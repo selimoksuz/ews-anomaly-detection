@@ -164,7 +164,7 @@ class MultivarAnomalyTests(unittest.TestCase):
         self.assertEqual(oracle_details.loc[0, "feature_name"], "pd_ratio")
         self.assertEqual(oracle_details.loc[0, "peer_support"], 82.0)
 
-    def test_generated_features_do_not_use_product_sum_or_difference_concepts(self):
+    def test_generated_features_do_not_use_product_sum_difference_or_financial_internal_ratios(self):
         frame = pd.DataFrame(
             [
                 {
@@ -202,9 +202,26 @@ class MultivarAnomalyTests(unittest.TestCase):
             "weighted_by_pd",
             "pd_gap",
             "total_risk_to_assets",
+            "l1y_trade_receivables_to_sales",
+            "l1y_notes_receivable_to_sales",
+            "q_trade_receivables_to_sales",
+            "q_notes_receivable_to_sales",
+            "l1y_profit_margin",
+            "q_profit_margin",
+            "q_ebitda_margin",
+            "q_to_l1y_sales_ratio",
+            "q_to_l1y_profit_ratio",
+            "q_to_l1y_equity_ratio",
+            "q_to_l1y_trade_receivables_ratio",
+            "q_to_l1y_notes_receivable_ratio",
+            "q_to_l1y_suspicious_receivables_ratio",
             "q_to_l1y_receivables_ratio",
             "l1y_receivables_to_assets",
             "q_receivables_to_assets",
+            "l1y_suspicious_receivables_to_sales",
+            "q_suspicious_receivables_to_sales",
+            "l1y_suspicious_to_trade_receivables",
+            "q_suspicious_to_trade_receivables",
             "suspicious_receivables_share",
             "pd_to_limit_utilization",
         ]
@@ -212,9 +229,10 @@ class MultivarAnomalyTests(unittest.TestCase):
         self.assertFalse(
             [column for column in generated if any(token in column for token in forbidden_names)]
         )
-        self.assertIn("l1y_trade_receivables_to_sales", features.columns)
-        self.assertIn("l1y_notes_receivable_to_sales", features.columns)
-        self.assertIn("q_to_l1y_trade_receivables_ratio", features.columns)
+        self.assertIn("l1y_debt_to_sales", features.columns)
+        self.assertIn("memzuc_debt_to_l1y_sales", features.columns)
+        self.assertIn("l1y_trade_receivables_to_assets", features.columns)
+        self.assertIn("internal_tkn_to_sales", features.columns)
 
 
 if __name__ == "__main__":

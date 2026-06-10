@@ -30,28 +30,41 @@ Bu kolonlar model feature'i degildir; veri anlamlandirma, donem, yukleme veya fi
 
 ## Feature Politikasi
 
-Yeni feature seti yalniz oran mantigi kullanir.
+Bu versiyonda finansal module kendi icinde rasyo uretilmez. Finansal kolonlar ayni anda doldugu icin bu tip oranlar musteriyi izleyen ekip tarafindan dogrudan fark edilebilir ve reason kalitesini dusurebilir.
+
+Finansal module kabul edilen kolonlar:
+
+| Grup | Kolon ornekleri |
+| --- | --- |
+| L1Y finansal | `fs_net_sales_cumulative_l1y`, `fs_trade_receivables_l1y`, `fs_notes_receivable_l1y`, `fs_net_profit_cumulative_l1y`, `equity_l1y`, `supheli_ticari_alacaklar_l1y` |
+| Ara donem finansal | `fs_net_sales_cumulative_q`, `fs_ebitda_cumulative_q`, `fs_net_profit_cumulative_q`, `fs_trade_receivables_q`, `fs_notes_receivable_q`, `fs_equity_q`, `supheli_alacaklar_q` |
 
 Kullanilmayan turev tipleri:
 
-| Tip | Durum |
-| --- | --- |
-| `A * B` carpim | kullanilmaz |
-| `A - B` cikarma | kullanilmaz |
-| `A + B` toplam | kullanilmaz |
-| cross/stress/weighted feature | kullanilmaz |
+| Tip | Ornek | Durum |
+| --- | --- | --- |
+| Finansal / finansal | `fs_net_profit_cumulative_l1y / fs_net_sales_cumulative_l1y` | kullanilmaz |
+| Q finansal / L1Y finansal | `fs_net_sales_cumulative_q / fs_net_sales_cumulative_l1y` | kullanilmaz |
+| Finansal alacak / finansal satis | `fs_trade_receivables_l1y / fs_net_sales_cumulative_l1y` | kullanilmaz |
+| Finansal supheli alacak / finansal alacak | `supheli_ticari_alacaklar_l1y / fs_trade_receivables_l1y` | kullanilmaz |
+| `A * B` carpim | `pd * debt` | kullanilmaz |
+| `A - B` cikarma | `pd_rating - pd_model` | kullanilmaz |
+| `A + B` toplam | `bank_risk + memzuc_risk` | kullanilmaz |
+| cross/stress/weighted feature | `cross_pd_debt_stress` | kullanilmaz |
 
 Izin verilen tipler:
 
 | Tip | Ornek |
 | --- | --- |
-| Ham degisken orani | `bank_total_risk / toplam_varlik_ttr` |
-| Finansal marj | `fs_net_profit_cumulative_l1y / fs_net_sales_cumulative_l1y` |
-| Q / L1Y ayni kalem orani | `fs_net_sales_cumulative_q / fs_net_sales_cumulative_l1y` |
+| Kredi risk / varlik | `bank_total_risk / toplam_varlik_ttr` |
+| Memzuc / banka kredi riski | `memzuc_total_risk / bank_total_risk` |
+| Kredi risk / finansal olcek | `bank_total_risk / fs_net_sales_cumulative_l1y` |
+| Finansal kalem / dis varlik normalizer | `fs_trade_receivables_l1y / toplam_varlik_ttr` |
+| Internal / finansal olcek | `gunceltkn_dgr / fs_net_sales_cumulative_l1y` |
 | PD orani | `irb_rating_pd / irb_model_pd` |
 | Peer-relative z-score | secilen oranin peer grubuna gore robust z-score'u |
 
-## Uretilen Oran Feature'lari
+## Uretilen Feature'lar
 
 | Feature | Tanim | Formul |
 | --- | --- | --- |
@@ -59,18 +72,8 @@ Izin verilen tipler:
 | `memzuc_st_mt_cash_share` | Memzuc KV/OV nakdi risk payi | `memzuc_st_mt_cash_risk / memzuc_total_risk` |
 | `bank_risk_to_assets` | Banka risk / varlik | `bank_total_risk / toplam_varlik_ttr` |
 | `memzuc_risk_to_assets` | Memzuc risk / varlik | `memzuc_total_risk / toplam_varlik_ttr` |
-| `l1y_trade_receivables_to_sales` | L1Y ticari alacak / satis | `fs_trade_receivables_l1y / fs_net_sales_cumulative_l1y` |
-| `l1y_notes_receivable_to_sales` | L1Y senetli alacak / satis | `fs_notes_receivable_l1y / fs_net_sales_cumulative_l1y` |
-| `q_trade_receivables_to_sales` | Ara donem ticari alacak / satis | `fs_trade_receivables_q / fs_net_sales_cumulative_q` |
-| `q_notes_receivable_to_sales` | Ara donem senetli alacak / satis | `fs_notes_receivable_q / fs_net_sales_cumulative_q` |
-| `l1y_profit_margin` | L1Y kar marji | `fs_net_profit_cumulative_l1y / fs_net_sales_cumulative_l1y` |
-| `q_profit_margin` | Ara donem kar marji | `fs_net_profit_cumulative_q / fs_net_sales_cumulative_q` |
-| `q_ebitda_margin` | Ara donem EBITDA marji | `fs_ebitda_cumulative_q / fs_net_sales_cumulative_q` |
 | `l1y_equity_to_assets` | L1Y ozkaynak / varlik | `equity_l1y / toplam_varlik_ttr` |
 | `q_equity_to_assets` | Ara donem ozkaynak / varlik | `fs_equity_q / toplam_varlik_ttr` |
-| `q_to_l1y_sales_ratio` | Ara donem satis / L1Y satis | `fs_net_sales_cumulative_q / fs_net_sales_cumulative_l1y` |
-| `q_to_l1y_profit_ratio` | Ara donem kar / L1Y kar | `fs_net_profit_cumulative_q / abs(fs_net_profit_cumulative_l1y)` |
-| `q_to_l1y_equity_ratio` | Ara donem ozkaynak / L1Y ozkaynak | `fs_equity_q / equity_l1y` |
 | `l1y_debt_to_sales` | Banka risk / L1Y satis | `bank_total_risk / fs_net_sales_cumulative_l1y` |
 | `q_debt_to_sales` | Banka risk / ara donem satis | `bank_total_risk / fs_net_sales_cumulative_q` |
 | `memzuc_debt_to_l1y_sales` | Memzuc risk / L1Y satis | `memzuc_total_risk / fs_net_sales_cumulative_l1y` |
@@ -81,13 +84,6 @@ Izin verilen tipler:
 | `l1y_notes_receivable_to_assets` | L1Y senetli alacak / varlik | `fs_notes_receivable_l1y / toplam_varlik_ttr` |
 | `q_trade_receivables_to_assets` | Ara donem ticari alacak / varlik | `fs_trade_receivables_q / toplam_varlik_ttr` |
 | `q_notes_receivable_to_assets` | Ara donem senetli alacak / varlik | `fs_notes_receivable_q / toplam_varlik_ttr` |
-| `l1y_suspicious_receivables_to_sales` | L1Y supheli alacak / satis | `supheli_ticari_alacaklar_l1y / fs_net_sales_cumulative_l1y` |
-| `q_suspicious_receivables_to_sales` | Ara donem supheli alacak / satis | `supheli_alacaklar_q / fs_net_sales_cumulative_q` |
-| `l1y_suspicious_to_trade_receivables` | L1Y supheli alacak / ticari alacak | `supheli_ticari_alacaklar_l1y / fs_trade_receivables_l1y` |
-| `q_suspicious_to_trade_receivables` | Ara donem supheli alacak / ticari alacak | `supheli_alacaklar_q / fs_trade_receivables_q` |
-| `q_to_l1y_trade_receivables_ratio` | Ara donem ticari alacak / L1Y ticari alacak | `fs_trade_receivables_q / fs_trade_receivables_l1y` |
-| `q_to_l1y_notes_receivable_ratio` | Ara donem senetli alacak / L1Y senetli alacak | `fs_notes_receivable_q / fs_notes_receivable_l1y` |
-| `q_to_l1y_suspicious_receivables_ratio` | Ara donem supheli alacak / L1Y supheli alacak | `supheli_alacaklar_q / supheli_ticari_alacaklar_l1y` |
 | `pd_ratio` | IRB rating PD / model PD | `irb_rating_pd / irb_model_pd` |
 | `pd_to_rating_group` | PD / rating grup | `irb_rating_pd / rating_group` |
 | `internal_tkn_to_assets` | TKN / varlik | `gunceltkn_dgr / toplam_varlik_ttr` |

@@ -250,17 +250,8 @@ FEATURE_LABELS = {
     "memzuc_st_mt_cash_share": "Memzuc KV/OV nakdi risk payi",
     "bank_risk_to_assets": "Banka risk / varlik",
     "memzuc_risk_to_assets": "Memzuc risk / varlik",
-    "l1y_trade_receivables_to_sales": "L1Y ticari alacak / satis",
-    "l1y_notes_receivable_to_sales": "L1Y senetli alacak / satis",
-    "q_trade_receivables_to_sales": "Ara donem ticari alacak / satis",
-    "q_notes_receivable_to_sales": "Ara donem senetli alacak / satis",
-    "l1y_profit_margin": "L1Y kar marji",
-    "q_profit_margin": "Ara donem kar marji",
     "l1y_equity_to_assets": "L1Y ozkaynak / varlik",
     "q_equity_to_assets": "Ara donem ozkaynak / varlik",
-    "q_to_l1y_sales_ratio": "Ara donem satis / L1Y satis",
-    "q_to_l1y_profit_ratio": "Ara donem kar / L1Y kar",
-    "q_ebitda_margin": "Ara donem EBITDA marji",
     "l1y_debt_to_sales": "Banka risk / L1Y satis",
     "q_debt_to_sales": "Banka risk / ara donem satis",
     "memzuc_debt_to_l1y_sales": "Memzuc risk / L1Y satis",
@@ -271,14 +262,6 @@ FEATURE_LABELS = {
     "l1y_notes_receivable_to_assets": "L1Y senetli alacak / varlik",
     "q_trade_receivables_to_assets": "Ara donem ticari alacak / varlik",
     "q_notes_receivable_to_assets": "Ara donem senetli alacak / varlik",
-    "l1y_suspicious_receivables_to_sales": "L1Y supheli alacak / satis",
-    "q_suspicious_receivables_to_sales": "Ara donem supheli alacak / satis",
-    "l1y_suspicious_to_trade_receivables": "L1Y supheli alacak / ticari alacak",
-    "q_suspicious_to_trade_receivables": "Ara donem supheli alacak / ticari alacak",
-    "q_to_l1y_equity_ratio": "Ara donem ozkaynak / L1Y ozkaynak",
-    "q_to_l1y_trade_receivables_ratio": "Ara donem ticari alacak / L1Y ticari alacak",
-    "q_to_l1y_notes_receivable_ratio": "Ara donem senetli alacak / L1Y senetli alacak",
-    "q_to_l1y_suspicious_receivables_ratio": "Ara donem supheli alacak / L1Y supheli alacak",
     "pd_ratio": "IRB rating PD / model PD",
     "pd_to_rating_group": "PD / rating grup",
     "internal_tkn_to_assets": "TKN / varlik",
@@ -922,46 +905,8 @@ def build_feature_frame(frame: pd.DataFrame, source_columns: Iterable[str]) -> p
     result["memzuc_st_mt_cash_share"] = safe_divide(result.get("memzuc_st_mt_cash_risk"), result.get("memzuc_total_risk"))
     result["bank_risk_to_assets"] = safe_divide(result.get("bank_total_risk"), result.get("toplam_varlik_ttr"))
     result["memzuc_risk_to_assets"] = safe_divide(result.get("memzuc_total_risk"), result.get("toplam_varlik_ttr"))
-    result["l1y_trade_receivables_to_sales"] = safe_divide(
-        result.get("fs_trade_receivables_l1y"),
-        result.get("fs_net_sales_cumulative_l1y"),
-    )
-    result["l1y_notes_receivable_to_sales"] = safe_divide(
-        result.get("fs_notes_receivable_l1y"),
-        result.get("fs_net_sales_cumulative_l1y"),
-    )
-    result["q_trade_receivables_to_sales"] = safe_divide(
-        result.get("fs_trade_receivables_q"),
-        result.get("fs_net_sales_cumulative_q"),
-    )
-    result["q_notes_receivable_to_sales"] = safe_divide(
-        result.get("fs_notes_receivable_q"),
-        result.get("fs_net_sales_cumulative_q"),
-    )
-    result["l1y_profit_margin"] = safe_divide(
-        result.get("fs_net_profit_cumulative_l1y"),
-        result.get("fs_net_sales_cumulative_l1y"),
-    )
-    result["q_profit_margin"] = safe_divide(
-        result.get("fs_net_profit_cumulative_q"),
-        result.get("fs_net_sales_cumulative_q"),
-    )
     result["l1y_equity_to_assets"] = safe_divide(result.get("equity_l1y"), result.get("toplam_varlik_ttr"))
     result["q_equity_to_assets"] = safe_divide(result.get("fs_equity_q"), result.get("toplam_varlik_ttr"))
-    result["q_to_l1y_sales_ratio"] = safe_divide(
-        result.get("fs_net_sales_cumulative_q"),
-        result.get("fs_net_sales_cumulative_l1y"),
-    )
-    result["q_to_l1y_profit_ratio"] = safe_divide(
-        result.get("fs_net_profit_cumulative_q"),
-        result.get("fs_net_profit_cumulative_l1y").abs()
-        if "fs_net_profit_cumulative_l1y" in result
-        else None,
-    )
-    result["q_ebitda_margin"] = safe_divide(
-        result.get("fs_ebitda_cumulative_q"),
-        result.get("fs_net_sales_cumulative_q"),
-    )
     result["l1y_debt_to_sales"] = safe_divide(result.get("bank_total_risk"), result.get("fs_net_sales_cumulative_l1y"))
     result["q_debt_to_sales"] = safe_divide(result.get("bank_total_risk"), result.get("fs_net_sales_cumulative_q"))
     result["memzuc_debt_to_l1y_sales"] = safe_divide(result.get("memzuc_total_risk"), result.get("fs_net_sales_cumulative_l1y"))
@@ -972,35 +917,6 @@ def build_feature_frame(frame: pd.DataFrame, source_columns: Iterable[str]) -> p
     result["l1y_notes_receivable_to_assets"] = safe_divide(result.get("fs_notes_receivable_l1y"), result.get("toplam_varlik_ttr"))
     result["q_trade_receivables_to_assets"] = safe_divide(result.get("fs_trade_receivables_q"), result.get("toplam_varlik_ttr"))
     result["q_notes_receivable_to_assets"] = safe_divide(result.get("fs_notes_receivable_q"), result.get("toplam_varlik_ttr"))
-    result["l1y_suspicious_receivables_to_sales"] = safe_divide(
-        result.get("supheli_ticari_alacaklar_l1y"),
-        result.get("fs_net_sales_cumulative_l1y"),
-    )
-    result["q_suspicious_receivables_to_sales"] = safe_divide(
-        result.get("supheli_alacaklar_q"),
-        result.get("fs_net_sales_cumulative_q"),
-    )
-    result["l1y_suspicious_to_trade_receivables"] = safe_divide(
-        result.get("supheli_ticari_alacaklar_l1y"),
-        result.get("fs_trade_receivables_l1y"),
-    )
-    result["q_suspicious_to_trade_receivables"] = safe_divide(
-        result.get("supheli_alacaklar_q"),
-        result.get("fs_trade_receivables_q"),
-    )
-    result["q_to_l1y_equity_ratio"] = safe_divide(result.get("fs_equity_q"), result.get("equity_l1y"))
-    result["q_to_l1y_trade_receivables_ratio"] = safe_divide(
-        result.get("fs_trade_receivables_q"),
-        result.get("fs_trade_receivables_l1y"),
-    )
-    result["q_to_l1y_notes_receivable_ratio"] = safe_divide(
-        result.get("fs_notes_receivable_q"),
-        result.get("fs_notes_receivable_l1y"),
-    )
-    result["q_to_l1y_suspicious_receivables_ratio"] = safe_divide(
-        result.get("supheli_alacaklar_q"),
-        result.get("supheli_ticari_alacaklar_l1y"),
-    )
     result["pd_ratio"] = safe_divide(result.get("irb_rating_pd"), result.get("irb_model_pd"))
     result["pd_to_rating_group"] = safe_divide(result.get("irb_rating_pd"), result.get("rating_group"))
     result["internal_tkn_to_assets"] = safe_divide(result.get("gunceltkn_dgr"), result.get("toplam_varlik_ttr"))
@@ -1456,7 +1372,7 @@ def write_outputs(
             feature: feature_label(feature)
             for feature in selected_features
         },
-        "feature_policy": "ratio_only_no_product_sum_or_difference",
+        "feature_policy": "cross_module_ratios_only_no_financial_to_financial_ratios",
         "model_feature_count": int(model_feature_count),
         "peer_feature_count": int(peer_feature_count),
         "peer_min_support": int(PEER_MIN_SUPPORT),
