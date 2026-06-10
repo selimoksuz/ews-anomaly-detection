@@ -8,6 +8,7 @@ import pandas as pd
 from engine.multivar_anomaly import (
     EXCLUDED_FEATURE_COLUMNS,
     assign_operational_bands,
+    build_feature_frame,
     operational_band_thresholds,
     prepare_multivar_oracle_details,
     prepare_multivar_oracle_results,
@@ -99,8 +100,8 @@ class MultivarAnomalyTests(unittest.TestCase):
 
     def test_oracle_output_frames_are_prepared_without_connection(self):
         reason_detail = {
-            "feature": "cross_pd_debt_stress",
-            "label": "PD borc stresi",
+            "feature": "pd_ratio",
+            "label": "IRB rating PD / model PD",
             "is_missing_reason": False,
             "actual": 1.25,
             "customer_previous_reference": 0.75,
@@ -160,8 +161,60 @@ class MultivarAnomalyTests(unittest.TestCase):
         self.assertEqual(oracle_results.loc[0, "source_table_key"], "multivar_input")
         self.assertEqual(oracle_results.loc[0, "model_feature_count"], 46)
         self.assertEqual(len(oracle_details), 1)
-        self.assertEqual(oracle_details.loc[0, "feature_name"], "cross_pd_debt_stress")
+        self.assertEqual(oracle_details.loc[0, "feature_name"], "pd_ratio")
         self.assertEqual(oracle_details.loc[0, "peer_support"], 82.0)
+
+    def test_generated_features_do_not_use_product_sum_or_difference_concepts(self):
+        frame = pd.DataFrame(
+            [
+                {
+                    "cohort_dt": "2025-03-31",
+                    "mono_id": "C_001",
+                    "bank_total_risk": 1000,
+                    "toplam_varlik_ttr": 10000,
+                    "memzuc_total_risk": 900,
+                    "memzuc_total_limit": 3000,
+                    "memzuc_st_mt_cash_risk": 500,
+                    "fs_net_sales_cumulative_l1y": 5000,
+                    "fs_trade_receivables_l1y": 400,
+                    "fs_notes_receivable_l1y": 20,
+                    "supheli_ticari_alacaklar_l1y": 5,
+                    "equity_l1y": 2000,
+                    "fs_net_profit_cumulative_l1y": 300,
+                    "fs_net_sales_cumulative_q": 4500,
+                    "fs_trade_receivables_q": 380,
+                    "fs_notes_receivable_q": 15,
+                    "supheli_alacaklar_q": 4,
+                    "fs_net_profit_cumulative_q": 250,
+                    "fs_ebitda_cumulative_q": 600,
+                    "fs_equity_q": 1900,
+                    "irb_rating_pd": 0.01,
+                    "irb_model_pd": 0.02,
+                    "rating_group": 3,
+                    "gunceltkn_dgr": 700,
+                    "gunceltbe_dgr": 15,
+                }
+            ]
+        )
+        features = build_feature_frame(frame, [column for column in frame.columns if column not in {"cohort_dt", "mono_id"}])
+        forbidden_names = [
+            "cross_",
+            "weighted_by_pd",
+            "pd_gap",
+            "total_risk_to_assets",
+            "q_to_l1y_receivables_ratio",
+            "l1y_receivables_to_assets",
+            "q_receivables_to_assets",
+            "suspicious_receivables_share",
+            "pd_to_limit_utilization",
+        ]
+        generated = [column for column in features.columns if column not in {"cohort_dt", "mono_id"}]
+        self.assertFalse(
+            [column for column in generated if any(token in column for token in forbidden_names)]
+        )
+        self.assertIn("l1y_trade_receivables_to_sales", features.columns)
+        self.assertIn("l1y_notes_receivable_to_sales", features.columns)
+        self.assertIn("q_to_l1y_trade_receivables_ratio", features.columns)
 
 
 if __name__ == "__main__":
