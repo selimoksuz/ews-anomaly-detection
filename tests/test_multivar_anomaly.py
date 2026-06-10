@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,8 @@ from engine.multivar_anomaly import (
     EXCLUDED_FEATURE_COLUMNS,
     assign_operational_bands,
     operational_band_thresholds,
+    prepare_multivar_oracle_details,
+    prepare_multivar_oracle_results,
     run_multivar_anomaly,
 )
 
@@ -93,6 +96,72 @@ class MultivarAnomalyTests(unittest.TestCase):
         self.assertGreaterEqual(thresholds["kirmizi"], 97.5)
         self.assertGreaterEqual(thresholds["turuncu"], 95.0)
         self.assertGreaterEqual(thresholds["sari"], 90.0)
+
+    def test_oracle_output_frames_are_prepared_without_connection(self):
+        reason_detail = {
+            "feature": "cross_pd_debt_stress",
+            "label": "PD borc stresi",
+            "is_missing_reason": False,
+            "actual": 1.25,
+            "customer_previous_reference": 0.75,
+            "peer_reference": 0.4,
+            "peer_z": 4.2,
+            "peer_support": 82,
+            "train_reference": 0.35,
+            "reference_used": "peer medyan",
+            "contribution_pct": 31.5,
+            "component_contributions": {"raw_pct": 0.0, "peer_pct": 31.5, "missing_pct": 0.0},
+            "direction_comment": "risk artisi",
+            "previous_comment": "musteri onceki aya gore artmis",
+            "financial_term_detail": "L1Y finansal donem degisti",
+        }
+        results = pd.DataFrame(
+            [
+                {
+                    "mono_id": "C_001",
+                    "cohort_dt": "2025-12-31",
+                    "musteri_segment": "4001",
+                    "rating_group": 3,
+                    "cst_sector": "S",
+                    "cst_nace_code": "N",
+                    "cst_nace_code_id": 100,
+                    "financial_term_l1y": "2024-12-31",
+                    "financial_term_q": "2025-09-30",
+                    "annualization_q": 1.333,
+                    "ref_donem_id": 202512,
+                    "yukleme_zmn": "2026-01-01 08:00:00",
+                    "anomaly_score": 98.1,
+                    "alert_band": "KIRMIZI",
+                    "alert_type": "CREDIT_RISK",
+                    "review_queue": "URGENT_FINANCIAL_REVIEW",
+                    "if_score": 97.2,
+                    "residual_score": 99.0,
+                    "confidence": 91.0,
+                    "coverage_ratio": 0.95,
+                    "data_gap_score": 5.0,
+                    "missing_feature_count": 2,
+                    "rank_in_run": 1,
+                    "reason_details": json.dumps([reason_detail]),
+                    "reason_1": "PD borc stresi: peer'e gore sapma yuksek",
+                }
+            ]
+        )
+
+        oracle_results = prepare_multivar_oracle_results(
+            results,
+            run_id="run_1",
+            source_table_key="multivar_input",
+            model_feature_count=46,
+            peer_feature_count=46,
+        )
+        oracle_details = prepare_multivar_oracle_details(results, run_id="run_1")
+
+        self.assertEqual(len(oracle_results), 1)
+        self.assertEqual(oracle_results.loc[0, "source_table_key"], "multivar_input")
+        self.assertEqual(oracle_results.loc[0, "model_feature_count"], 46)
+        self.assertEqual(len(oracle_details), 1)
+        self.assertEqual(oracle_details.loc[0, "feature_name"], "cross_pd_debt_stress")
+        self.assertEqual(oracle_details.loc[0, "peer_support"], 82.0)
 
 
 if __name__ == "__main__":

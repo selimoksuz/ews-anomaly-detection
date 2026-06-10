@@ -167,6 +167,13 @@ shadow_scoring:
   log1p_enabled: false
   scaler_type: standard
 
+multivar_anomaly:
+  outputs:
+    backend: oracle
+    oracle:
+      results_table_key: multivar_results
+      details_table_key: multivar_details
+
 batch_execution:
   bootstrap_if_missing_champion: true
   bootstrap_promote: true
@@ -207,6 +214,8 @@ oracle:
     native_features: EWS_TO_FAZ1_NATIVE
     input_features: EWS_TO_FAZ1_INPUT
     multivar_input: EWS_ANOMALY_MULTIVAR_INPUT
+    multivar_results: EWS_ANOMALY_MULTIVAR_RESULTS
+    multivar_details: EWS_ANOMALY_MULTIVAR_DETAILS
     training: EWS_TO_FAZ1_TRAINING
     scoring: EWS_TO_FAZ1_SCORING
     outcomes: EWS_TO_FAZ1_OUTCOMES

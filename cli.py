@@ -324,6 +324,16 @@ def json_like_summary(result):
         f"scores_path: {result['scores_path']}",
         f"top_path: {result['top_path']}",
     ]
+    oracle_output = result.get("oracle_output") or {}
+    if oracle_output:
+        lines.extend(
+            [
+                f"oracle_results_table: {oracle_output['results_table']}",
+                f"oracle_details_table: {oracle_output['details_table']}",
+                f"oracle_inserted_results: {oracle_output['inserted_results']}",
+                f"oracle_inserted_details: {oracle_output['inserted_details']}",
+            ]
+        )
     return "\n".join(lines)
 
 

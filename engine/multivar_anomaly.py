@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 ID_COLUMN = "mono_id"
 TIME_COLUMN = "cohort_dt"
 DEFAULT_MULTIVAR_TABLE_KEY = "multivar_input"
+DEFAULT_MULTIVAR_RESULTS_TABLE_KEY = "multivar_results"
+DEFAULT_MULTIVAR_DETAILS_TABLE_KEY = "multivar_details"
 
 EXCLUDED_FEATURE_COLUMNS = {
     "financial_term_l1y",
@@ -163,6 +165,64 @@ MULTIVAR_BASE_COLUMNS = [
     "gunceltbe_dgr",
     "kkbguncelsorgu_no",
     "yukleme_zmn",
+]
+
+MULTIVAR_RESULT_REASON_COLUMNS = ["reason_1", "reason_2", "reason_3"]
+
+MULTIVAR_RESULT_COLUMNS = [
+    "run_id",
+    TIME_COLUMN,
+    ID_COLUMN,
+    "musteri_segment",
+    "rating_group",
+    "cst_sector",
+    "cst_nace_code",
+    "cst_nace_code_id",
+    "financial_term_l1y",
+    "financial_term_q",
+    "annualization_q",
+    "ref_donem_id",
+    "yukleme_zmn",
+    "anomaly_score",
+    "alert_band",
+    "alert_type",
+    "review_queue",
+    "if_score",
+    "residual_score",
+    "confidence",
+    "coverage_ratio",
+    "data_gap_score",
+    "missing_feature_count",
+    "rank_in_run",
+    *MULTIVAR_RESULT_REASON_COLUMNS,
+    "source_table_key",
+    "model_feature_count",
+    "peer_feature_count",
+]
+
+MULTIVAR_DETAIL_COLUMNS = [
+    "run_id",
+    TIME_COLUMN,
+    ID_COLUMN,
+    "feature_rank",
+    "feature_name",
+    "feature_label",
+    "is_missing_reason",
+    "actual_value",
+    "customer_previous_reference",
+    "peer_reference",
+    "peer_z",
+    "peer_support",
+    "train_reference",
+    "reference_used",
+    "contribution_pct",
+    "raw_contribution_pct",
+    "peer_contribution_pct",
+    "missing_contribution_pct",
+    "direction_comment",
+    "previous_comment",
+    "financial_term_detail",
+    "reason_text",
 ]
 
 FEATURE_LABELS = {
@@ -312,6 +372,8 @@ def run_multivar_anomaly(
     *,
     source: str = "auto",
     table_key: str = DEFAULT_MULTIVAR_TABLE_KEY,
+    results_table_key: str = DEFAULT_MULTIVAR_RESULTS_TABLE_KEY,
+    details_table_key: str = DEFAULT_MULTIVAR_DETAILS_TABLE_KEY,
     output_dir: str | Path | None = None,
     scoring_month: str | None = None,
     max_train_rows: int = 150_000,
@@ -320,6 +382,7 @@ def run_multivar_anomaly(
     random_state: int = 42,
     top_n_reasons: int = 3,
     n_estimators: int = 150,
+    persist_oracle_outputs: bool | None = None,
 ) -> dict:
     """Train on prior months and score one monthly cohort from CSV or Oracle."""
 
@@ -465,11 +528,25 @@ def run_multivar_anomaly(
         model_feature_count=len(model_features),
         peer_feature_count=score_peer.model_features.shape[1],
     )
+    if persist_oracle_outputs is None:
+        persist_oracle_outputs = source == "oracle"
+    oracle_output = None
+    if persist_oracle_outputs:
+        oracle_output = write_multivar_outputs_to_oracle(
+            results=results,
+            scoring_month=selected_month,
+            source_table_key=table_key,
+            results_table_key=results_table_key,
+            details_table_key=details_table_key,
+            model_feature_count=len(model_features),
+            peer_feature_count=score_peer.model_features.shape[1],
+        )
 
     summary = {
         "source": source,
         "input_path": str(input_path) if input_path is not None else None,
         "oracle_table_key": table_key if source == "oracle" else None,
+        "oracle_output": oracle_output,
         "scoring_month": selected_month.strftime("%Y-%m-%d"),
         "scored_rows": int(len(results)),
         "train_rows": int(len(train_df)),
@@ -1417,6 +1494,387 @@ def write_outputs(
     )
 
 
+def write_multivar_outputs_to_oracle(
+    *,
+    results: pd.DataFrame,
+    scoring_month: pd.Timestamp,
+    source_table_key: str,
+    results_table_key: str = DEFAULT_MULTIVAR_RESULTS_TABLE_KEY,
+    details_table_key: str = DEFAULT_MULTIVAR_DETAILS_TABLE_KEY,
+    model_feature_count: int,
+    peer_feature_count: int,
+    batch_size: int = 1000,
+) -> dict:
+    """Persist final multivar scores and top reason details into Oracle."""
+
+    config = load_config()
+    oracle_output_cfg = (
+        (config.get("multivar_anomaly", {}) or {})
+        .get("outputs", {})
+        .get("oracle", {})
+    )
+    results_table_key = oracle_output_cfg.get("results_table_key", results_table_key)
+    details_table_key = oracle_output_cfg.get("details_table_key", details_table_key)
+
+    run_id = f"multivar_{scoring_month.strftime('%Y%m%d')}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    result_frame = prepare_multivar_oracle_results(
+        results,
+        run_id=run_id,
+        source_table_key=source_table_key,
+        model_feature_count=model_feature_count,
+        peer_feature_count=peer_feature_count,
+    )
+    detail_frame = prepare_multivar_oracle_details(results, run_id=run_id)
+
+    secrets = load_secrets()
+    with OracleConnector(config, secrets) as ora:
+        ensure_multivar_output_tables(
+            ora,
+            results_table_key=results_table_key,
+            details_table_key=details_table_key,
+        )
+        deleted = delete_multivar_output_month(
+            ora,
+            scoring_month=scoring_month,
+            results_table_key=results_table_key,
+            details_table_key=details_table_key,
+        )
+        inserted_results = insert_multivar_output_frame(
+            ora,
+            results_table_key,
+            result_frame,
+            batch_size=batch_size,
+        )
+        inserted_details = insert_multivar_output_frame(
+            ora,
+            details_table_key,
+            detail_frame,
+            batch_size=batch_size,
+        )
+
+        return {
+            "backend": "oracle",
+            "run_id": run_id,
+            "results_table_key": results_table_key,
+            "details_table_key": details_table_key,
+            "results_table": ora._qualified_table_name(results_table_key),
+            "details_table": ora._qualified_table_name(details_table_key),
+            "deleted_results": int(deleted["results"]),
+            "deleted_details": int(deleted["details"]),
+            "inserted_results": int(inserted_results),
+            "inserted_details": int(inserted_details),
+        }
+
+
+def ensure_multivar_output_tables(
+    ora: OracleConnector,
+    *,
+    results_table_key: str,
+    details_table_key: str,
+) -> None:
+    ddls = {
+        results_table_key: multivar_results_table_ddl(ora, results_table_key),
+        details_table_key: multivar_details_table_ddl(ora, details_table_key),
+    }
+    with ora.connection.cursor() as cursor:
+        for table_key, ddl in ddls.items():
+            if ora._table_exists(table_key):
+                continue
+            cursor.execute(ddl)
+            ora.logger.info("Created %s", ora._qualified_table_name(table_key))
+    ora.connection.commit()
+
+
+def delete_multivar_output_month(
+    ora: OracleConnector,
+    *,
+    scoring_month: pd.Timestamp,
+    results_table_key: str,
+    details_table_key: str,
+) -> dict[str, int]:
+    deleted = {"results": 0, "details": 0}
+    params = {"scoring_month": pd.Timestamp(scoring_month).to_pydatetime()}
+    with ora.connection.cursor() as cursor:
+        for label, table_key in (("details", details_table_key), ("results", results_table_key)):
+            cursor.execute(
+                f"""
+                DELETE FROM {ora._qualified_table_name(table_key)}
+                WHERE TRUNC({TIME_COLUMN.upper()}) = TRUNC(:scoring_month)
+                """,
+                params,
+            )
+            deleted[label] = int(cursor.rowcount or 0)
+    ora.connection.commit()
+    return deleted
+
+
+def insert_multivar_output_frame(
+    ora: OracleConnector,
+    table_key: str,
+    frame: pd.DataFrame,
+    *,
+    batch_size: int,
+) -> int:
+    if frame.empty:
+        return 0
+    columns = list(frame.columns)
+    sql = f"""
+        INSERT INTO {ora._qualified_table_name(table_key)} (
+            {", ".join(column.upper() for column in columns)}
+        ) VALUES (
+            {", ".join(f":{index}" for index in range(1, len(columns) + 1))}
+        )
+    """
+    rows = [
+        ora._coerce_scalar_sequence(row)
+        for row in frame[columns].itertuples(index=False, name=None)
+    ]
+    return ora._executemany(sql, rows, batch_size=batch_size)
+
+
+def prepare_multivar_oracle_results(
+    results: pd.DataFrame,
+    *,
+    run_id: str,
+    source_table_key: str,
+    model_feature_count: int,
+    peer_feature_count: int,
+) -> pd.DataFrame:
+    frame = normalize_columns(results)
+    out = pd.DataFrame(index=frame.index)
+    out["run_id"] = run_id
+    out[TIME_COLUMN] = parse_dates(frame[TIME_COLUMN])
+    out[ID_COLUMN] = frame[ID_COLUMN].astype(str)
+    out["musteri_segment"] = frame.get("musteri_segment")
+    out["rating_group"] = to_numeric_or_none(frame.get("rating_group"))
+    out["cst_sector"] = frame.get("cst_sector")
+    out["cst_nace_code"] = frame.get("cst_nace_code")
+    out["cst_nace_code_id"] = to_numeric_or_none(frame.get("cst_nace_code_id"))
+    out["financial_term_l1y"] = parse_dates_or_none(frame.get("financial_term_l1y"))
+    out["financial_term_q"] = parse_dates_or_none(frame.get("financial_term_q"))
+    out["annualization_q"] = to_numeric_or_none(frame.get("annualization_q"))
+    out["ref_donem_id"] = to_numeric_or_none(frame.get("ref_donem_id"))
+    out["yukleme_zmn"] = parse_dates_or_none(frame.get("yukleme_zmn"))
+    for column in (
+        "anomaly_score",
+        "if_score",
+        "residual_score",
+        "confidence",
+        "coverage_ratio",
+        "data_gap_score",
+        "missing_feature_count",
+        "rank_in_run",
+    ):
+        out[column] = to_numeric_or_none(frame.get(column))
+    for column in ("alert_band", "alert_type", "review_queue"):
+        out[column] = frame.get(column)
+    for column in MULTIVAR_RESULT_REASON_COLUMNS:
+        out[column] = frame[column] if column in frame.columns else None
+    out["source_table_key"] = source_table_key
+    out["model_feature_count"] = int(model_feature_count)
+    out["peer_feature_count"] = int(peer_feature_count)
+
+    for column, limit in (
+        ("run_id", 64),
+        (ID_COLUMN, 128),
+        ("musteri_segment", 64),
+        ("cst_sector", 500),
+        ("cst_nace_code", 500),
+        ("alert_band", 32),
+        ("alert_type", 64),
+        ("review_queue", 64),
+        ("source_table_key", 64),
+        ("reason_1", 1000),
+        ("reason_2", 1000),
+        ("reason_3", 1000),
+    ):
+        out[column] = out[column].map(lambda value, max_len=limit: text_or_none(value, max_len))
+    return out[MULTIVAR_RESULT_COLUMNS]
+
+
+def prepare_multivar_oracle_details(results: pd.DataFrame, *, run_id: str) -> pd.DataFrame:
+    frame = normalize_columns(results)
+    rows = []
+    for _, row in frame.iterrows():
+        details = parse_reason_details(row.get("reason_details"))
+        scoring_date = parse_single_date(row.get(TIME_COLUMN))
+        mono_id = text_or_none(row.get(ID_COLUMN), 128)
+        for rank, detail in enumerate(details, start=1):
+            components = detail.get("component_contributions") or {}
+            rows.append(
+                {
+                    "run_id": text_or_none(run_id, 64),
+                    TIME_COLUMN: scoring_date,
+                    ID_COLUMN: mono_id,
+                    "feature_rank": rank,
+                    "feature_name": text_or_none(detail.get("feature"), 128),
+                    "feature_label": text_or_none(detail.get("label"), 256),
+                    "is_missing_reason": 1 if detail.get("is_missing_reason") else 0,
+                    "actual_value": number_or_none(detail.get("actual")),
+                    "customer_previous_reference": number_or_none(detail.get("customer_previous_reference")),
+                    "peer_reference": number_or_none(detail.get("peer_reference")),
+                    "peer_z": number_or_none(detail.get("peer_z")),
+                    "peer_support": number_or_none(detail.get("peer_support")),
+                    "train_reference": number_or_none(detail.get("train_reference")),
+                    "reference_used": text_or_none(detail.get("reference_used"), 64),
+                    "contribution_pct": number_or_none(detail.get("contribution_pct")),
+                    "raw_contribution_pct": number_or_none(components.get("raw_pct")),
+                    "peer_contribution_pct": number_or_none(components.get("peer_pct")),
+                    "missing_contribution_pct": number_or_none(components.get("missing_pct")),
+                    "direction_comment": text_or_none(detail.get("direction_comment"), 1000),
+                    "previous_comment": text_or_none(detail.get("previous_comment"), 1000),
+                    "financial_term_detail": text_or_none(detail.get("financial_term_detail"), 1000),
+                    "reason_text": text_or_none(row.get(f"reason_{rank}"), 2000),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=MULTIVAR_DETAIL_COLUMNS)
+    return pd.DataFrame(rows, columns=MULTIVAR_DETAIL_COLUMNS)
+
+
+def parse_reason_details(value) -> list[dict]:
+    if is_nullish(value):
+        return []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+    return []
+
+
+def multivar_results_table_ddl(ora: OracleConnector, table_key: str) -> str:
+    pk_name = f"PK_{ora._table_name(table_key)}"[:30]
+    return f"""
+        CREATE TABLE {ora._qualified_table_name(table_key)} (
+            RUN_ID VARCHAR2(64) NOT NULL,
+            {TIME_COLUMN.upper()} DATE NOT NULL,
+            {ID_COLUMN.upper()} VARCHAR2(128) NOT NULL,
+            MUSTERI_SEGMENT VARCHAR2(64),
+            RATING_GROUP NUMBER(10,4),
+            CST_SECTOR VARCHAR2(500),
+            CST_NACE_CODE VARCHAR2(500),
+            CST_NACE_CODE_ID NUMBER(18,4),
+            FINANCIAL_TERM_L1Y DATE,
+            FINANCIAL_TERM_Q DATE,
+            ANNUALIZATION_Q NUMBER(18,6),
+            REF_DONEM_ID NUMBER(12),
+            YUKLEME_ZMN TIMESTAMP,
+            ANOMALY_SCORE NUMBER(6,2) NOT NULL,
+            ALERT_BAND VARCHAR2(32) NOT NULL,
+            ALERT_TYPE VARCHAR2(64),
+            REVIEW_QUEUE VARCHAR2(64),
+            IF_SCORE NUMBER(6,2),
+            RESIDUAL_SCORE NUMBER(6,2),
+            CONFIDENCE NUMBER(6,2),
+            COVERAGE_RATIO NUMBER(10,6),
+            DATA_GAP_SCORE NUMBER(6,2),
+            MISSING_FEATURE_COUNT NUMBER(8),
+            RANK_IN_RUN NUMBER(10),
+            REASON_1 VARCHAR2(1000),
+            REASON_2 VARCHAR2(1000),
+            REASON_3 VARCHAR2(1000),
+            SOURCE_TABLE_KEY VARCHAR2(64),
+            MODEL_FEATURE_COUNT NUMBER(10),
+            PEER_FEATURE_COUNT NUMBER(10),
+            CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+            CONSTRAINT {pk_name} PRIMARY KEY ({TIME_COLUMN.upper()}, {ID_COLUMN.upper()})
+        )
+    """
+
+
+def multivar_details_table_ddl(ora: OracleConnector, table_key: str) -> str:
+    pk_name = f"PK_{ora._table_name(table_key)}"[:30]
+    return f"""
+        CREATE TABLE {ora._qualified_table_name(table_key)} (
+            RUN_ID VARCHAR2(64) NOT NULL,
+            {TIME_COLUMN.upper()} DATE NOT NULL,
+            {ID_COLUMN.upper()} VARCHAR2(128) NOT NULL,
+            FEATURE_RANK NUMBER(4) NOT NULL,
+            FEATURE_NAME VARCHAR2(128) NOT NULL,
+            FEATURE_LABEL VARCHAR2(256),
+            IS_MISSING_REASON NUMBER(1),
+            ACTUAL_VALUE NUMBER(24,8),
+            CUSTOMER_PREVIOUS_REFERENCE NUMBER(24,8),
+            PEER_REFERENCE NUMBER(24,8),
+            PEER_Z NUMBER(18,6),
+            PEER_SUPPORT NUMBER(10),
+            TRAIN_REFERENCE NUMBER(24,8),
+            REFERENCE_USED VARCHAR2(64),
+            CONTRIBUTION_PCT NUMBER(10,4),
+            RAW_CONTRIBUTION_PCT NUMBER(10,4),
+            PEER_CONTRIBUTION_PCT NUMBER(10,4),
+            MISSING_CONTRIBUTION_PCT NUMBER(10,4),
+            DIRECTION_COMMENT VARCHAR2(1000),
+            PREVIOUS_COMMENT VARCHAR2(1000),
+            FINANCIAL_TERM_DETAIL VARCHAR2(1000),
+            REASON_TEXT VARCHAR2(2000),
+            CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+            CONSTRAINT {pk_name} PRIMARY KEY ({TIME_COLUMN.upper()}, {ID_COLUMN.upper()}, FEATURE_RANK)
+        )
+    """
+
+
+def to_numeric_or_none(values) -> pd.Series:
+    if values is None:
+        return pd.Series(dtype="float64")
+    return pd.to_numeric(values, errors="coerce")
+
+
+def parse_dates_or_none(values) -> pd.Series:
+    if values is None:
+        return pd.Series(dtype="datetime64[ns]")
+    return parse_mixed_date_series(values)
+
+
+def parse_single_date(value):
+    if is_nullish(value):
+        return None
+    parsed = parse_mixed_date_series(pd.Series([value])).iloc[0]
+    return None if pd.isna(parsed) else parsed
+
+
+def number_or_none(value):
+    if is_nullish(value):
+        return None
+    parsed = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return None if pd.isna(parsed) else float(parsed)
+
+
+def text_or_none(value, max_len: int):
+    if is_nullish(value):
+        return None
+    return str(value)[:max_len]
+
+
+def is_nullish(value) -> bool:
+    if value is None:
+        return True
+    try:
+        result = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(result, (np.ndarray, pd.Series, list)):
+        return False
+    return bool(result)
+
+
+def parse_mixed_date_series(values) -> pd.Series:
+    series = pd.Series(values, copy=False)
+    text = series.astype("string").str.strip()
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    iso_mask = text.str.match(r"^\d{4}-\d{2}-\d{2}", na=False)
+    if iso_mask.any():
+        parsed.loc[iso_mask] = pd.to_datetime(text.loc[iso_mask], errors="coerce")
+    other_mask = ~iso_mask
+    if other_mask.any():
+        parsed.loc[other_mask] = pd.to_datetime(text.loc[other_mask], errors="coerce", dayfirst=True)
+    return parsed.dt.normalize()
+
+
 def normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     result.columns = [str(column).strip().lower() for column in result.columns]
@@ -1424,7 +1882,7 @@ def normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def parse_dates(series: pd.Series) -> pd.Series:
-    return pd.to_datetime(series, dayfirst=True, errors="coerce").dt.normalize()
+    return parse_mixed_date_series(series)
 
 
 def coerce_numeric(series: pd.Series | None) -> pd.Series:
