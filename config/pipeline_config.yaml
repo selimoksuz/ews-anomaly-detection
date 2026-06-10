@@ -59,6 +59,10 @@ sources:
     backend: oracle
     oracle:
       table: input_features
+  multivar_input:
+    backend: oracle
+    oracle:
+      table: multivar_input
   outcomes:
     backend: oracle
     oracle:
@@ -202,6 +206,7 @@ oracle:
   tables:
     native_features: EWS_TO_FAZ1_NATIVE
     input_features: EWS_TO_FAZ1_INPUT
+    multivar_input: EWS_ANOMALY_MULTIVAR_INPUT
     training: EWS_TO_FAZ1_TRAINING
     scoring: EWS_TO_FAZ1_SCORING
     outcomes: EWS_TO_FAZ1_OUTCOMES

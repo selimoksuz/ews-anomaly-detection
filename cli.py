@@ -15,6 +15,8 @@ Usage:
     python cli.py score-live [segment] [snapshot_date]
     python cli.py score-live [segment] [start_date] [end_date]
     python cli.py run-batch [segment]
+    python cli.py load-multivar-oracle [input_path] [replace|append] [delete-local]
+    python cli.py run-multivar-anomaly [oracle|input_path|-] [scoring_month|-] [max_train_rows] [max_score_rows|-]
     python cli.py compare-preprocessing [segment]
     python cli.py compare-feature-selection [segment]
     python cli.py compare-sampling [segment]
@@ -30,9 +32,7 @@ from datetime import datetime
 from pathlib import Path
 
 from engine.config_loader import load_config, resolve_project_path
-from engine.lifecycle import LifecycleManager
-from engine.pipeline import EWSPipeline
-from engine.ticari_orta_faz1_demo import prepare_ticari_orta_faz1_demo, run_ticari_orta_faz1_demo
+from engine.multivar_anomaly import load_multivar_csv_to_oracle, run_multivar_anomaly
 
 
 def setup_logging(log_dir="logs", level="INFO", enable_file=True):
@@ -50,39 +50,53 @@ def setup_logging(log_dir="logs", level="INFO", enable_file=True):
 
 
 def cmd_setup(*_):
+    from engine.pipeline import EWSPipeline
+
     pipe = EWSPipeline()
     pipe.setup()
 
 def cmd_train(*_):
+    from engine.pipeline import EWSPipeline
+
     pipe = EWSPipeline()
     pipe.train()
 
 
 def cmd_score(*_):
+    from engine.pipeline import EWSPipeline
+
     pipe = EWSPipeline()
     results = pipe.score()
     _print_summary(results)
 
 
 def cmd_run(*_):
+    from engine.pipeline import EWSPipeline
+
     pipe = EWSPipeline()
     results = pipe.run()
     _print_summary(results)
 
 
 def cmd_develop(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     result = manager.develop(segment=args[0] if args else None)
     print(result["model_version"])
 
 
 def cmd_retrain(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     result = manager.retrain(segment=args[0] if args else None)
     print(result["model_version"])
 
 
 def cmd_tune_weights(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     segment = args[0] if args else None
     model_version = args[1] if len(args) > 1 and args[1] != "-" else None
@@ -94,6 +108,8 @@ def cmd_tune_weights(*args):
 
 
 def cmd_evaluate_outcomes(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     segment = args[0] if args else None
     model_version = args[1] if len(args) > 1 else None
@@ -102,6 +118,8 @@ def cmd_evaluate_outcomes(*args):
 
 
 def cmd_compare(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     segment = args[0] if args else None
     challenger_version = args[1] if len(args) > 1 else None
@@ -110,6 +128,8 @@ def cmd_compare(*args):
 
 
 def cmd_promote(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     segment = args[0] if args else None
     model_version = args[1] if len(args) > 1 else None
@@ -118,6 +138,8 @@ def cmd_promote(*args):
 
 
 def cmd_score_live(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     segment = None
     snapshot_date = None
@@ -147,46 +169,91 @@ def cmd_score_live(*args):
 
 
 def cmd_run_batch(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     result = manager.run_batch(segment=args[0] if args else None)
     print(result)
 
 
+def cmd_run_multivar_anomaly(*args):
+    input_arg = args[0] if args else "oracle"
+    source = "oracle" if input_arg in {"oracle", "-"} else "csv"
+    input_path = None if source == "oracle" else input_arg
+    scoring_month = args[1] if len(args) > 1 and args[1] != "-" else None
+    max_train_rows = int(args[2]) if len(args) > 2 and args[2] != "-" else 150_000
+    max_score_rows = int(args[3]) if len(args) > 3 and args[3] != "-" else None
+    result = run_multivar_anomaly(
+        input_path=input_path,
+        source=source,
+        scoring_month=scoring_month,
+        max_train_rows=max_train_rows,
+        max_score_rows=max_score_rows,
+    )
+    print(json_like_summary(result))
+
+
+def cmd_load_multivar_oracle(*args):
+    input_path = args[0] if args else "anomaly_multivar.csv"
+    replace = not (len(args) > 1 and args[1].strip().lower() in {"append", "0", "false", "no"})
+    delete_local = len(args) > 2 and args[2].strip().lower() in {"delete-local", "delete", "1", "true", "yes"}
+    result = load_multivar_csv_to_oracle(
+        input_path=input_path,
+        replace=replace,
+        delete_local=delete_local,
+    )
+    print(json_like_summary(result))
+
+
 def cmd_compare_preprocessing(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     result = manager.compare_preprocessing(segment=args[0] if args else None)
     print(result["comparison_path"])
 
 
 def cmd_compare_feature_selection(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     result = manager.compare_feature_selection(segment=args[0] if args else None)
     print(result["comparison_path"])
 
 
 def cmd_compare_sampling(*args):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     result = manager.compare_sampling(segment=args[0] if args else None)
     print(result["comparison_path"])
 
 
 def cmd_prepare_ticari_orta_faz1_demo(*args):
+    from engine.ticari_orta_faz1_demo import prepare_ticari_orta_faz1_demo
+
     result = prepare_ticari_orta_faz1_demo(segment=args[0] if args else None)
     print(result)
 
 
 def cmd_run_ticari_orta_faz1_demo(*args):
+    from engine.ticari_orta_faz1_demo import run_ticari_orta_faz1_demo
+
     result = run_ticari_orta_faz1_demo(segment=args[0] if args else None)
     print(result)
 
 
 def cmd_reset_runtime(*_):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     result = manager.reset_runtime()
     print(result)
 
 
 def cmd_cleanup(*_):
+    from engine.lifecycle import LifecycleManager
+
     manager = LifecycleManager()
     result = manager.cleanup()
     print(result)
@@ -236,6 +303,30 @@ def _fmt_pct(value):
         return str(value)
 
 
+def json_like_summary(result):
+    if "inserted_rows" in result:
+        return "\n".join(
+            [
+                f"oracle_table: {result['oracle_table']}",
+                f"inserted_rows: {result['inserted_rows']}",
+                f"oracle_rows: {result['oracle_rows']}",
+                f"deleted_local: {result['deleted_local']}",
+            ]
+        )
+    lines = [
+        f"scoring_month: {result['scoring_month']}",
+        f"scored_rows: {result['scored_rows']}",
+        f"train_rows: {result['train_rows']}",
+        f"selected_feature_count: {result['selected_feature_count']}",
+        f"alert_counts: {result['alert_counts']}",
+        f"alert_type_counts: {result.get('alert_type_counts')}",
+        f"review_queue_counts: {result.get('review_queue_counts')}",
+        f"scores_path: {result['scores_path']}",
+        f"top_path: {result['top_path']}",
+    ]
+    return "\n".join(lines)
+
+
 def _looks_like_date(value: str) -> bool:
     text = str(value).strip()
     if len(text) != 10:
@@ -260,6 +351,8 @@ COMMANDS = {
     "promote": cmd_promote,
     "score-live": cmd_score_live,
     "run-batch": cmd_run_batch,
+    "load-multivar-oracle": cmd_load_multivar_oracle,
+    "run-multivar-anomaly": cmd_run_multivar_anomaly,
     "compare-preprocessing": cmd_compare_preprocessing,
     "compare-feature-selection": cmd_compare_feature_selection,
     "compare-sampling": cmd_compare_sampling,
