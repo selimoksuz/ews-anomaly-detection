@@ -22,7 +22,7 @@ multivar_anomaly:
   source_name: multivar_input
   time_column: cohort_dt
   id_column: mono_id
-  default_train_rows: 150000
+  default_train_rows: null
   outputs:
     backend: oracle
     oracle:

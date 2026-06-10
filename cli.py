@@ -2,7 +2,7 @@
 
 Usage:
     python cli.py load-multivar-oracle [input_path] [replace|append] [delete-local]
-    python cli.py run-multivar-anomaly [oracle|input_path|-] [scoring_month|-] [max_train_rows] [max_score_rows|-]
+    python cli.py run-multivar-anomaly [oracle|input_path|-] [scoring_month|-] [max_train_rows|all|-] [max_score_rows|-]
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def cmd_run_multivar_anomaly(*args):
     source = "oracle" if input_arg in {"oracle", "-"} else "csv"
     input_path = None if source == "oracle" else input_arg
     scoring_month = args[1] if len(args) > 1 and args[1] != "-" else None
-    max_train_rows = int(args[2]) if len(args) > 2 and args[2] != "-" else 150_000
+    max_train_rows = parse_optional_limit(args[2]) if len(args) > 2 else None
     max_score_rows = int(args[3]) if len(args) > 3 and args[3] != "-" else None
     result = run_multivar_anomaly(
         input_path=input_path,
@@ -44,6 +44,13 @@ def cmd_run_multivar_anomaly(*args):
         max_score_rows=max_score_rows,
     )
     print(json_like_summary(result))
+
+
+def parse_optional_limit(value):
+    normalized = str(value).strip().lower()
+    if normalized in {"", "-", "all", "none", "null", "0"}:
+        return None
+    return int(normalized)
 
 
 def cmd_load_multivar_oracle(*args):
@@ -72,6 +79,7 @@ def json_like_summary(result):
         f"scoring_month: {result['scoring_month']}",
         f"scored_rows: {result['scored_rows']}",
         f"train_rows: {result['train_rows']}",
+        f"calibration_rows: {result.get('calibration_rows')}",
         f"selected_feature_count: {result['selected_feature_count']}",
         f"alert_counts: {result['alert_counts']}",
         f"alert_type_counts: {result.get('alert_type_counts')}",

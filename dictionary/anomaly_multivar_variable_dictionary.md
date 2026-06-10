@@ -10,6 +10,8 @@ Bu sozluk `anomaly_multivar` aylik musteri anomali akisi icindir.
 | Zaman | `cohort_dt` |
 | Frekans | aylik |
 | Skorlanan ay | varsayilan en guncel `cohort_dt` |
+| Train kapsamı | skorlanan ay oncesindeki tum prior kayitlar; cap yalniz CLI/config ile sayi verilirse uygulanir |
+| Skor kalibrasyonu | train cok buyukse deterministik kalibrasyon orneklemi kullanilir; model fit ve peer istatistikleri tum train kapsamindan gelir |
 | Kaynak tablo | `ZT_VAR2.EWS_ANOMALY_MULTIVAR_INPUT` |
 | Skor tablo | `ZT_VAR2.EWS_ANOMALY_MULTIVAR_RESULTS` |
 | Reason tablo | `ZT_VAR2.EWS_ANOMALY_MULTIVAR_DETAILS` |
@@ -31,6 +33,8 @@ Bu kolonlar model feature'i degildir; veri anlamlandirma, donem, yukleme veya fi
 ## Feature Politikasi
 
 Bu versiyonda finansal module kendi icinde rasyo uretilmez. Finansal kolonlar ayni anda doldugu icin bu tip oranlar musteriyi izleyen ekip tarafindan dogrudan fark edilebilir ve reason kalitesini dusurebilir.
+
+Tum oranlarda paydanin pozitif ve anlamli buyuklukte olmasi beklenir. Payda sifir, negatif veya ilgili paydanin tipik seviyesine gore cok kucukse oran uretilmez; bu durum finansal bozulma reason'i yerine missing/veri kalitesi sinyali olarak ele alinir. Mutlak orani `1000` uzerine tasiyan kayitlar da is kararinda yorumlanabilir olmadigi icin model feature'ina alinmaz.
 
 Finansal module kabul edilen kolonlar:
 
@@ -97,6 +101,8 @@ Izin verilen tipler:
 Model ham oranlari dogrudan degil, peer grubuna gore olusturulan robust z-score hallerini kullanir:
 
 `<feature>__peer_z`
+
+Reason secimi model katkisini baz alir, ancak erken uyari incelemesi icin risk artisi veya missing/veri kalitesi sinyalleri ilk siraya alinir. Risk azalisi olan anomaliler ancak yeterli risk-artisi reason yoksa ilk uc reason'a girer.
 
 Peer hiyerarsisi:
 

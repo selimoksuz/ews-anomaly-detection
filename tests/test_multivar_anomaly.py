@@ -9,10 +9,14 @@ from engine.multivar_anomaly import (
     EXCLUDED_FEATURE_COLUMNS,
     assign_operational_bands,
     build_feature_frame,
+    calibration_sample,
+    is_riskier,
     operational_band_thresholds,
     prepare_multivar_oracle_details,
     prepare_multivar_oracle_results,
+    rank_reason_details_for_review,
     run_multivar_anomaly,
+    safe_divide,
 )
 
 
@@ -233,6 +237,90 @@ class MultivarAnomalyTests(unittest.TestCase):
         self.assertIn("memzuc_debt_to_l1y_sales", features.columns)
         self.assertIn("l1y_trade_receivables_to_assets", features.columns)
         self.assertIn("internal_tkn_to_sales", features.columns)
+
+    def test_safe_divide_removes_near_zero_and_extreme_ratio_artifacts(self):
+        ratios = safe_divide(
+            pd.Series([1000.0, 1000.0, 1000.0]),
+            pd.Series([0.01, 0.5, 10000.0]),
+        )
+
+        self.assertTrue(pd.isna(ratios.iloc[0]))
+        self.assertTrue(pd.isna(ratios.iloc[1]))
+        self.assertAlmostEqual(ratios.iloc[2], 0.1)
+
+    def test_generated_ratios_ignore_bad_denominator_quality(self):
+        frame = pd.DataFrame(
+            [
+                {
+                    "cohort_dt": "2025-03-31",
+                    "mono_id": "C_BAD",
+                    "bank_total_risk": 1000,
+                    "toplam_varlik_ttr": 0.01,
+                    "memzuc_total_risk": 900,
+                    "memzuc_total_limit": 3000,
+                    "memzuc_st_mt_cash_risk": 500,
+                    "fs_net_sales_cumulative_l1y": 0.01,
+                    "fs_notes_receivable_l1y": 20,
+                    "irb_rating_pd": 0.01,
+                    "irb_model_pd": 0.02,
+                    "rating_group": 3,
+                    "gunceltkn_dgr": 700,
+                    "gunceltbe_dgr": 15,
+                },
+                {
+                    "cohort_dt": "2025-03-31",
+                    "mono_id": "C_OK",
+                    "bank_total_risk": 1000,
+                    "toplam_varlik_ttr": 10000,
+                    "memzuc_total_risk": 900,
+                    "memzuc_total_limit": 3000,
+                    "memzuc_st_mt_cash_risk": 500,
+                    "fs_net_sales_cumulative_l1y": 5000,
+                    "fs_notes_receivable_l1y": 20,
+                    "irb_rating_pd": 0.01,
+                    "irb_model_pd": 0.02,
+                    "rating_group": 3,
+                    "gunceltkn_dgr": 700,
+                    "gunceltbe_dgr": 15,
+                },
+            ]
+        )
+        features = build_feature_frame(frame, [column for column in frame.columns if column not in {"cohort_dt", "mono_id"}])
+
+        self.assertTrue(pd.isna(features.loc[0, "bank_risk_to_assets"]))
+        self.assertTrue(pd.isna(features.loc[0, "l1y_debt_to_sales"]))
+        self.assertTrue(pd.isna(features.loc[0, "l1y_notes_receivable_to_assets"]))
+        self.assertAlmostEqual(features.loc[1, "bank_risk_to_assets"], 0.1)
+        self.assertAlmostEqual(features.loc[1, "l1y_debt_to_sales"], 0.2)
+
+    def test_risk_direction_requires_known_business_direction(self):
+        self.assertTrue(is_riskier("memzuc_st_mt_cash_share", 0.9, 0.5))
+        self.assertFalse(is_riskier("memzuc_st_mt_cash_share", 0.2, 0.5))
+        self.assertFalse(is_riskier("unknown_behavior_ratio", 2.0, 1.0))
+
+    def test_reason_ranking_prioritizes_risk_increase_for_review(self):
+        details = [
+            {"feature": "q_equity_to_assets", "direction_comment": "peer medyan gore artmis; risk azalisi", "contribution_pct": 40.0},
+            {"feature": "pd_to_rating_group", "direction_comment": "peer medyan gore artmis; risk artisi", "contribution_pct": 10.0},
+            {"feature": "l1y_debt_to_sales", "is_missing_reason": True, "direction_comment": "deger missing oldugu icin yon yorumu yok", "contribution_pct": 5.0},
+        ]
+
+        ranked = rank_reason_details_for_review(details)
+
+        self.assertEqual(ranked[0]["feature"], "pd_to_rating_group")
+        self.assertEqual(ranked[1]["feature"], "l1y_debt_to_sales")
+        self.assertEqual(ranked[2]["feature"], "q_equity_to_assets")
+
+    def test_calibration_sample_is_bounded_and_deterministic(self):
+        matrix = pd.DataFrame({"a": range(100), "b": range(100, 200)}).to_numpy()
+
+        first = calibration_sample(matrix, max_calibration_rows=10, random_state=42)
+        second = calibration_sample(matrix, max_calibration_rows=10, random_state=42)
+        full = calibration_sample(matrix, max_calibration_rows=None, random_state=42)
+
+        self.assertEqual(len(first), 10)
+        self.assertTrue((first == second).all())
+        self.assertEqual(len(full), 100)
 
 
 if __name__ == "__main__":

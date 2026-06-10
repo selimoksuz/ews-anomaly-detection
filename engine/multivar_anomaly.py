@@ -64,6 +64,12 @@ OPERATIONAL_BAND_POLICY = {
     "red_floor": 97.5,
 }
 
+DENOMINATOR_MIN_MEDIAN_SHARE = 1e-4
+DENOMINATOR_ABS_FLOOR = 1e-9
+RATIO_ABS_MAX = 1_000.0
+DEFAULT_MAX_CALIBRATION_ROWS = 300_000
+REASON_CANDIDATE_MULTIPLIER = 2
+
 DERIVED_INPUT_COLUMNS = {
     "bank_total_risk",
     "toplam_varlik_ttr",
@@ -279,6 +285,10 @@ INCREASE_IS_RISK_TOKENS = (
     "alacak",
     "receivable",
     "debt",
+    "tkn",
+    "tbe",
+    "cash_share",
+    "st_mt_cash_share",
 )
 DECREASE_IS_RISK_TOKENS = (
     "profit",
@@ -346,12 +356,13 @@ def run_multivar_anomaly(
     details_table_key: str = DEFAULT_MULTIVAR_DETAILS_TABLE_KEY,
     output_dir: str | Path | None = None,
     scoring_month: str | None = None,
-    max_train_rows: int = 150_000,
+    max_train_rows: int | None = None,
     max_score_rows: int | None = None,
     chunk_size: int = 250_000,
     random_state: int = 42,
     top_n_reasons: int = 3,
     n_estimators: int = 150,
+    max_calibration_rows: int | None = DEFAULT_MAX_CALIBRATION_ROWS,
     persist_oracle_outputs: bool | None = None,
 ) -> dict:
     """Train on prior months and score one monthly cohort from CSV or Oracle."""
@@ -402,10 +413,17 @@ def run_multivar_anomaly(
             random_state=random_state,
             keep_columns=_keep_columns(sample_frame.columns, numeric_source_columns),
         )
+    logger.info(
+        "Loaded multivar windows: train_rows=%s, score_rows=%s, prior_context_rows=%s",
+        len(train_df),
+        len(score_df),
+        len(prior_df),
+    )
 
     train_features = build_feature_frame(train_df, numeric_source_columns)
     score_features = build_feature_frame(score_df, numeric_source_columns)
     prior_features = build_feature_frame(prior_df, numeric_source_columns) if not prior_df.empty else pd.DataFrame()
+    logger.info("Built multivar feature frames.")
 
     selected_features = select_model_features(train_features, score_features)
     if not selected_features:
@@ -413,6 +431,7 @@ def run_multivar_anomaly(
 
     train_peer = build_peer_artifacts(train_df, train_features, selected_features)
     score_peer = build_peer_artifacts(score_df, score_features, selected_features)
+    logger.info("Built peer artifacts for %s selected features.", len(selected_features))
     train_model = train_peer.model_features.copy()
     score_model = score_peer.model_features.copy()
     missing_features = detect_missing_features(train_features, score_features, selected_features)
@@ -421,6 +440,13 @@ def run_multivar_anomaly(
     preprocessor = fit_preprocessor(train_model, model_features)
     x_train = preprocessor.transform(train_model)
     x_score = preprocessor.transform(score_model)
+    x_calibration = calibration_sample(x_train, max_calibration_rows=max_calibration_rows, random_state=random_state)
+    logger.info(
+        "Prepared model matrices: train_rows=%s, calibration_rows=%s, score_rows=%s.",
+        len(x_train),
+        len(x_calibration),
+        len(x_score),
+    )
 
     iso = IsolationForest(
         n_estimators=n_estimators,
@@ -428,12 +454,14 @@ def run_multivar_anomaly(
         random_state=random_state,
         n_jobs=-1,
     )
+    logger.info("Fitting IsolationForest.")
     iso.fit(x_train)
 
-    train_if_raw = -iso.decision_function(x_train)
+    train_if_raw = -iso.decision_function(x_calibration)
     score_if_raw = -iso.decision_function(x_score)
-    train_residual_raw = row_top_mean(np.abs(x_train), top_k=3)
+    train_residual_raw = row_top_mean(np.abs(x_calibration), top_k=3)
     score_residual_raw = row_top_mean(np.abs(x_score), top_k=3)
+    logger.info("Calculated anomaly scores.")
 
     if_score = empirical_percentile(train_if_raw, score_if_raw)
     residual_score = empirical_percentile(train_residual_raw, score_residual_raw)
@@ -461,6 +489,7 @@ def run_multivar_anomaly(
     confidence = np.clip((0.65 * coverage_ratio + 0.35 * agreement) * 100.0, 0, 100)
 
     feature_severity = pd.DataFrame(np.abs(x_score), columns=model_features, index=score_features.index)
+    logger.info("Building result rows and reason details.")
     results = build_results(
         score_df=score_df,
         score_features=score_features,
@@ -482,6 +511,7 @@ def run_multivar_anomaly(
         band_thresholds=band_thresholds,
         top_n_reasons=top_n_reasons,
     )
+    logger.info("Built result rows.")
 
     artifacts = write_outputs(
         results=results,
@@ -492,6 +522,7 @@ def run_multivar_anomaly(
         numeric_source_columns=numeric_source_columns,
         month_profile=month_profile,
         train_rows=len(train_df),
+        calibration_rows=len(x_calibration),
         prior_rows=prior_rows,
         input_path=input_path or Path(f"oracle:{table_key}"),
         band_thresholds=band_thresholds,
@@ -520,6 +551,7 @@ def run_multivar_anomaly(
         "scoring_month": selected_month.strftime("%Y-%m-%d"),
         "scored_rows": int(len(results)),
         "train_rows": int(len(train_df)),
+        "calibration_rows": int(len(x_calibration)),
         "prior_rows_available": int(prior_rows),
         "selected_feature_count": int(len(selected_features)),
         "model_feature_count": int(len(model_features)),
@@ -662,7 +694,7 @@ def load_windows_oracle(
     table_key: str,
     selected_month: pd.Timestamp,
     prior_rows: int,
-    max_train_rows: int,
+    max_train_rows: int | None,
     max_score_rows: int | None,
     chunk_size: int,
     random_state: int,
@@ -671,7 +703,7 @@ def load_windows_oracle(
     train_parts = []
     score_parts = []
     latest_prior_by_id = pd.DataFrame()
-    train_frac = min(1.0, float(max_train_rows) / float(max(prior_rows, 1)))
+    train_frac = 1.0 if max_train_rows is None else min(1.0, float(max_train_rows) / float(max(prior_rows, 1)))
     rng = np.random.default_rng(random_state)
 
     for chunk in iter_multivar_oracle_chunks(table_key=table_key, columns=keep_columns, chunk_size=chunk_size):
@@ -698,7 +730,7 @@ def load_windows_oracle(
         raise ValueError(f"No scoring rows found for {selected_month.date()}.")
 
     train_df = pd.concat(train_parts, ignore_index=True)
-    if len(train_df) > max_train_rows:
+    if max_train_rows is not None and len(train_df) > max_train_rows:
         train_df = train_df.sample(n=max_train_rows, random_state=random_state).reset_index(drop=True)
     score_df = pd.concat(score_parts, ignore_index=True)
     if max_score_rows is not None and len(score_df) > max_score_rows:
@@ -813,7 +845,7 @@ def load_windows(
     *,
     selected_month: pd.Timestamp,
     prior_rows: int,
-    max_train_rows: int,
+    max_train_rows: int | None,
     max_score_rows: int | None,
     chunk_size: int,
     random_state: int,
@@ -822,7 +854,7 @@ def load_windows(
     train_parts = []
     score_parts = []
     latest_prior_by_id = pd.DataFrame()
-    train_frac = min(1.0, float(max_train_rows) / float(max(prior_rows, 1)))
+    train_frac = 1.0 if max_train_rows is None else min(1.0, float(max_train_rows) / float(max(prior_rows, 1)))
     rng = np.random.default_rng(random_state)
 
     for chunk in pd.read_csv(
@@ -857,7 +889,7 @@ def load_windows(
         raise ValueError(f"No scoring rows found for {selected_month.date()}.")
 
     train_df = pd.concat(train_parts, ignore_index=True)
-    if len(train_df) > max_train_rows:
+    if max_train_rows is not None and len(train_df) > max_train_rows:
         train_df = train_df.sample(n=max_train_rows, random_state=random_state).reset_index(drop=True)
     score_df = pd.concat(score_parts, ignore_index=True)
     if max_score_rows is not None and len(score_df) > max_score_rows:
@@ -1229,6 +1261,20 @@ def fit_preprocessor(frame: pd.DataFrame, features: list[str]) -> RobustPreproce
     )
 
 
+def calibration_sample(
+    matrix: np.ndarray,
+    *,
+    max_calibration_rows: int | None,
+    random_state: int,
+) -> np.ndarray:
+    if max_calibration_rows is None or len(matrix) <= max_calibration_rows:
+        return matrix
+    rng = np.random.default_rng(random_state)
+    positions = rng.choice(len(matrix), size=int(max_calibration_rows), replace=False)
+    positions.sort()
+    return matrix[positions]
+
+
 def build_results(
     *,
     score_df: pd.DataFrame,
@@ -1268,24 +1314,35 @@ def build_results(
     alert_types = []
     alert_band_values = result["alert_band"].tolist()
     for row_position, row_index in enumerate(score_features.index):
+        if row_position and row_position % 10_000 == 0:
+            logger.info("Built reasons for %s/%s score rows.", row_position, len(score_features))
+        score_feature_row = score_features.iloc[row_position]
+        score_context_row = score_df.iloc[row_position]
+        row_id = str(score_feature_row[ID_COLUMN])
+        prior_feature_row = lookup_prior_context(prior_reference, row_id)
+        prior_context_row = lookup_prior_context(prior_context, row_id)
         severity = feature_severity.loc[row_index]
         total = float(severity.sum()) or 1.0
-        row_reasons = []
-        row_details = []
+        candidate_details = []
         family_severity = aggregate_family_severity(severity, selected_features)
+        max_reason_candidates = max(top_n_reasons, top_n_reasons * REASON_CANDIDATE_MULTIPLIER)
 
-        for base_feature, family_value in family_severity.items():
+        for candidate_position, (base_feature, family_value) in enumerate(family_severity.items()):
+            if candidate_position >= max_reason_candidates:
+                break
             contribution = float(family_value) / total * 100.0
+            actual_value = score_feature_row[base_feature]
+            prior_value = (
+                prior_feature_row.get(base_feature, np.nan)
+                if prior_feature_row is not None
+                else np.nan
+            )
             detail = build_reason_detail(
-                row_id=str(score_features.iloc[row_position][ID_COLUMN]),
+                row_id=row_id,
                 base_feature=base_feature,
-                is_missing_reason=False,
-                actual=score_features.iloc[row_position][base_feature],
-                prior_reference=lookup_prior_reference(
-                    prior_reference,
-                    str(score_features.iloc[row_position][ID_COLUMN]),
-                    base_feature,
-                ),
+                is_missing_reason=pd.isna(actual_value),
+                actual=actual_value,
+                prior_reference=prior_value,
                 peer_reference=peer_reference.get(base_feature, np.nan),
                 peer_median=peer_artifacts.median.loc[row_index, base_feature],
                 peer_support=peer_artifacts.support.loc[row_index, base_feature],
@@ -1293,16 +1350,12 @@ def build_results(
                 train_reference=train_reference.get(base_feature, np.nan),
                 contribution_pct=contribution,
                 component_contributions=component_contribution_pct(severity, base_feature, total),
-                current_context=score_df.iloc[row_position],
-                prior_context=lookup_prior_context(
-                    prior_context,
-                    str(score_features.iloc[row_position][ID_COLUMN]),
-                ),
+                current_context=score_context_row,
+                prior_context=prior_context_row,
             )
-            row_details.append(detail)
-            row_reasons.append(format_reason(detail))
-            if len(row_reasons) >= top_n_reasons:
-                break
+            candidate_details.append(detail)
+        row_details = rank_reason_details_for_review(candidate_details)[:top_n_reasons]
+        row_reasons = [format_reason(detail) for detail in row_details]
         reasons.append(row_reasons)
         detail_payloads.append(row_details)
         alert_types.append(
@@ -1341,6 +1394,7 @@ def write_outputs(
     numeric_source_columns: list[str],
     month_profile: dict,
     train_rows: int,
+    calibration_rows: int,
     prior_rows: int,
     input_path: Path,
     band_thresholds: dict[str, float],
@@ -1365,6 +1419,7 @@ def write_outputs(
         "scoring_month": scoring_month.strftime("%Y-%m-%d"),
         "total_rows": int(month_profile["total_rows"]),
         "train_rows": int(train_rows),
+        "calibration_rows": int(calibration_rows),
         "prior_rows_available": int(prior_rows),
         "numeric_source_columns": numeric_source_columns,
         "selected_features": selected_features,
@@ -1372,7 +1427,10 @@ def write_outputs(
             feature: feature_label(feature)
             for feature in selected_features
         },
-        "feature_policy": "cross_module_ratios_only_no_financial_to_financial_ratios",
+        "feature_policy": (
+            "cross_module_ratios_only_no_financial_to_financial_ratios_"
+            "positive_denominator_floor_and_extreme_ratio_guardrail"
+        ),
         "model_feature_count": int(model_feature_count),
         "peer_feature_count": int(peer_feature_count),
         "peer_min_support": int(PEER_MIN_SUPPORT),
@@ -1830,8 +1888,19 @@ def safe_divide(numerator, denominator) -> pd.Series:
         den = pd.to_numeric(denominator, errors="coerce").astype(float)
     else:
         den = pd.Series(float(denominator), index=index, dtype=float)
-    values = num / den.replace(0.0, np.nan)
-    return values.replace([np.inf, -np.inf], np.nan).astype(float)
+    positive_den = den.where(den > 0).dropna()
+    if positive_den.empty:
+        denominator_floor = DENOMINATOR_ABS_FLOOR
+    else:
+        denominator_floor = max(
+            float(positive_den.median()) * DENOMINATOR_MIN_MEDIAN_SHARE,
+            DENOMINATOR_ABS_FLOOR,
+        )
+    valid_denominator = den > denominator_floor
+    values = num / den.where(valid_denominator)
+    values = values.replace([np.inf, -np.inf], np.nan)
+    values = values.where(values.abs() <= RATIO_ABS_MAX)
+    return values.astype(float)
 
 
 def signed_log1p(frame: pd.DataFrame) -> pd.DataFrame:
@@ -1909,6 +1978,22 @@ def aggregate_family_severity(severity: pd.Series, selected_features: list[str])
         for feature, value in sorted(totals.items(), key=lambda item: item[1], reverse=True)
         if value > 0
     }
+
+
+def rank_reason_details_for_review(details: list[dict]) -> list[dict]:
+    def priority(detail: dict) -> tuple[int, float]:
+        direction = str(detail.get("direction_comment") or "")
+        if detail.get("is_missing_reason"):
+            bucket = 0
+        elif "risk artisi" in direction:
+            bucket = 0
+        elif "risk azalisi" in direction:
+            bucket = 2
+        else:
+            bucket = 1
+        return bucket, -float(detail.get("contribution_pct") or 0.0)
+
+    return sorted(details, key=priority)
 
 
 def component_contribution_pct(severity: pd.Series, base_feature: str, total: float) -> dict[str, float]:
@@ -2110,7 +2195,7 @@ def is_riskier(feature: str, actual, reference) -> bool:
         return delta > 0
     if any(token in lower for token in DECREASE_IS_RISK_TOKENS):
         return delta < 0
-    return abs(delta) > 0
+    return False
 
 
 def classify_alert_type(
@@ -2206,7 +2291,21 @@ def format_number(value) -> str:
         return "NA"
     if isinstance(value, str):
         return value
-    return f"{float(value):.2f}"
+    number = float(value)
+    abs_number = abs(number)
+    if abs_number == 0:
+        return "0"
+    if abs_number >= 1000:
+        return f"{number:.0f}"
+    if abs_number >= 10:
+        return f"{number:.2f}".rstrip("0").rstrip(".")
+    if abs_number >= 1:
+        return f"{number:.3f}".rstrip("0").rstrip(".")
+    if abs_number >= 0.01:
+        return f"{number:.4f}".rstrip("0").rstrip(".")
+    if abs_number >= 0.0001:
+        return f"{number:.6f}".rstrip("0").rstrip(".")
+    return f"{number:.2e}"
 
 
 def update_latest_by_id(current: pd.DataFrame, candidate: pd.DataFrame) -> pd.DataFrame:
