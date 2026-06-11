@@ -89,12 +89,13 @@ Izin verilen tipler:
 | `q_trade_receivables_to_assets` | Ara donem ticari alacak / varlik | `fs_trade_receivables_q / toplam_varlik_ttr` |
 | `q_notes_receivable_to_assets` | Ara donem senetli alacak / varlik | `fs_notes_receivable_q / toplam_varlik_ttr` |
 | `pd_ratio` | IRB rating PD / model PD | `irb_rating_pd / irb_model_pd` |
-| `pd_to_rating_group` | PD / rating grup | `irb_rating_pd / rating_group` |
 | `internal_tkn_to_assets` | TKN / varlik | `gunceltkn_dgr / toplam_varlik_ttr` |
 | `internal_tbe_to_assets` | TBE / varlik | `gunceltbe_dgr / toplam_varlik_ttr` |
 | `internal_tkn_to_sales` | TKN / L1Y satis | `gunceltkn_dgr / fs_net_sales_cumulative_l1y` |
 | `internal_tbe_to_sales` | TBE / L1Y satis | `gunceltbe_dgr / fs_net_sales_cumulative_l1y` |
 | `internal_tkn_tbe_ratio` | TKN / TBE | `gunceltkn_dgr / gunceltbe_dgr` |
+
+Not: `pd_to_rating_group` uretilmez. PD ve rating grup ayni risk bilgisinin farkli sayisal gosterimleri oldugu icin model feature'i veya reason kaynagi olarak birbirine oranlanmaz.
 
 ## Modelde Kullanilan Nihai Deger
 
@@ -112,3 +113,36 @@ Peer hiyerarsisi:
 4. `cohort_dt + musteri_segment + size_bucket`
 5. `cohort_dt + musteri_segment`
 6. `cohort_dt`
+
+PD ile baslayan feature'larda rating_group peer kirilimi kullanilmaz. Bu durumda hiyerarsi `cohort_dt + musteri_segment + sektor + size_bucket` seviyesinden baslar.
+
+## Peer Temsil Kabiliyeti
+
+Her reason icin peer kalitesi ayrica uretilir:
+
+| Alan | Tanim |
+| --- | --- |
+| `peer_level` | Kullanilan peer fallback seviyesi |
+| `peer_support` | O feature icin peer medyanini olusturan musteri sayisi |
+| `peer_representativeness_score` | Peer seviyesinin darligi ve support sayisindan 0-100 arasi temsil skoru |
+| `peer_quality` | `GUCLU`, `KABUL_EDILEBILIR`, `ZAYIF` |
+
+Kurumsal yorum:
+
+| Sinif | Yorum |
+| --- | --- |
+| `GUCLU` | Dar segment/rating/sektor/size seviyesinde yeterli support var; reason karar icin guclu kabul edilir |
+| `KABUL_EDILEBILIR` | Peer anlamli ancak izleme ekibi feature ve support ile birlikte okumali |
+| `ZAYIF` | Peer fazla genis veya support zayif; reason tek basina karar nedeni olmamali |
+
+Run summary icinde hem tum skor-feature peer karsilastirmalari hem de final reason detaylari icin peer kalite dagilimi, support quantile'lari ve kurumsal peer assessment yazilir.
+
+Peer anlamlilik testi run summary icinde `meaningfulness_test` olarak PASS/WARN/FAIL uretir. Test kriterleri:
+
+| Kriter | Esik |
+| --- | --- |
+| Kabul edilebilir veya guclu peer orani | >= %95 |
+| Zayif peer orani | <= %5 |
+| P10 peer support | >= 50 |
+| Medyan peer support | >= 100 |
+| Dar peer seviyesi orani | >= %75 |

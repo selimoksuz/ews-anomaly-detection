@@ -87,6 +87,15 @@ def json_like_summary(result):
         f"scores_path: {result['scores_path']}",
         f"top_path: {result['top_path']}",
     ]
+    peer_diag = result.get("reason_peer_representativeness_diagnostics") or result.get("peer_representativeness_diagnostics") or {}
+    if peer_diag:
+        lines.extend(
+            [
+                f"peer_corporate_assessment: {peer_diag.get('corporate_assessment')}",
+                f"peer_meaningfulness_test: {(peer_diag.get('meaningfulness_test') or {}).get('result')}",
+                f"peer_quality_pct: {peer_diag.get('quality_pct')}",
+            ]
+        )
     oracle_output = result.get("oracle_output") or {}
     if oracle_output:
         lines.extend(

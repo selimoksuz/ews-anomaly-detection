@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +70,40 @@ DENOMINATOR_ABS_FLOOR = 1e-9
 RATIO_ABS_MAX = 1_000.0
 DEFAULT_MAX_CALIBRATION_ROWS = 300_000
 REASON_CANDIDATE_MULTIPLIER = 2
+
+PEER_LEVEL_SCORE = {
+    "AY_SEGMENT_RATING_SEKTOR_SIZE": 1.00,
+    "AY_SEGMENT_SEKTOR_SIZE": 0.92,
+    "AY_SEGMENT_RATING_SIZE": 0.92,
+    "AY_SEGMENT_SEKTOR": 0.84,
+    "AY_SEGMENT_SIZE": 0.78,
+    "AY_SEGMENT": 0.68,
+    "AY": 0.48,
+    "GLOBAL_FEATURE": 0.25,
+}
+MEANINGFUL_PEER_LEVELS = {
+    "AY_SEGMENT_RATING_SEKTOR_SIZE",
+    "AY_SEGMENT_SEKTOR_SIZE",
+    "AY_SEGMENT_RATING_SIZE",
+    "AY_SEGMENT_SEKTOR",
+    "AY_SEGMENT_SIZE",
+}
+PEER_MEANINGFULNESS_THRESHOLDS = {
+    "min_acceptable_or_strong_pct": 95.0,
+    "max_weak_peer_pct": 5.0,
+    "min_p10_support": 50.0,
+    "min_median_support": 100.0,
+    "min_narrow_peer_pct": 75.0,
+}
+FORBIDDEN_DERIVED_FEATURES = {
+    "pd_to_rating_group",
+}
+
+MULTIVAR_DETAIL_EXTRA_COLUMNS = {
+    "PEER_LEVEL": "VARCHAR2(64)",
+    "PEER_REPRESENTATIVENESS_SCORE": "NUMBER(6,2)",
+    "PEER_QUALITY": "VARCHAR2(32)",
+}
 
 DERIVED_INPUT_COLUMNS = {
     "bank_total_risk",
@@ -216,6 +251,9 @@ MULTIVAR_DETAIL_COLUMNS = [
     "peer_reference",
     "peer_z",
     "peer_support",
+    "peer_level",
+    "peer_representativeness_score",
+    "peer_quality",
     "train_reference",
     "reference_used",
     "contribution_pct",
@@ -269,7 +307,6 @@ FEATURE_LABELS = {
     "q_trade_receivables_to_assets": "Ara donem ticari alacak / varlik",
     "q_notes_receivable_to_assets": "Ara donem senetli alacak / varlik",
     "pd_ratio": "IRB rating PD / model PD",
-    "pd_to_rating_group": "PD / rating grup",
     "internal_tkn_to_assets": "TKN / varlik",
     "internal_tbe_to_assets": "TBE / varlik",
     "internal_tkn_to_sales": "TKN / L1Y satis",
@@ -344,6 +381,9 @@ class PeerArtifacts:
     median: pd.DataFrame
     support: pd.DataFrame
     zscore: pd.DataFrame
+    level: pd.DataFrame
+    representativeness_score: pd.DataFrame
+    quality: pd.DataFrame
     peer_key: pd.Series
 
 
@@ -512,6 +552,8 @@ def run_multivar_anomaly(
         top_n_reasons=top_n_reasons,
     )
     logger.info("Built result rows.")
+    peer_representativeness_diagnostics = summarize_peer_representativeness(score_peer, selected_features)
+    reason_peer_representativeness_diagnostics = summarize_reason_peer_representativeness(results)
 
     artifacts = write_outputs(
         results=results,
@@ -528,6 +570,8 @@ def run_multivar_anomaly(
         band_thresholds=band_thresholds,
         model_feature_count=len(model_features),
         peer_feature_count=score_peer.model_features.shape[1],
+        peer_representativeness_diagnostics=peer_representativeness_diagnostics,
+        reason_peer_representativeness_diagnostics=reason_peer_representativeness_diagnostics,
     )
     if persist_oracle_outputs is None:
         persist_oracle_outputs = source == "oracle"
@@ -556,6 +600,8 @@ def run_multivar_anomaly(
         "selected_feature_count": int(len(selected_features)),
         "model_feature_count": int(len(model_features)),
         "peer_feature_count": int(score_peer.model_features.shape[1]),
+        "peer_representativeness_diagnostics": peer_representativeness_diagnostics,
+        "reason_peer_representativeness_diagnostics": reason_peer_representativeness_diagnostics,
         "missing_indicator_count": 0,
         "missing_tracked_feature_count": int(len(missing_features)),
         "alert_counts": results["alert_band"].value_counts().to_dict(),
@@ -950,12 +996,12 @@ def build_feature_frame(frame: pd.DataFrame, source_columns: Iterable[str]) -> p
     result["q_trade_receivables_to_assets"] = safe_divide(result.get("fs_trade_receivables_q"), result.get("toplam_varlik_ttr"))
     result["q_notes_receivable_to_assets"] = safe_divide(result.get("fs_notes_receivable_q"), result.get("toplam_varlik_ttr"))
     result["pd_ratio"] = safe_divide(result.get("irb_rating_pd"), result.get("irb_model_pd"))
-    result["pd_to_rating_group"] = safe_divide(result.get("irb_rating_pd"), result.get("rating_group"))
     result["internal_tkn_to_assets"] = safe_divide(result.get("gunceltkn_dgr"), result.get("toplam_varlik_ttr"))
     result["internal_tbe_to_assets"] = safe_divide(result.get("gunceltbe_dgr"), result.get("toplam_varlik_ttr"))
     result["internal_tkn_to_sales"] = safe_divide(result.get("gunceltkn_dgr"), result.get("fs_net_sales_cumulative_l1y"))
     result["internal_tbe_to_sales"] = safe_divide(result.get("gunceltbe_dgr"), result.get("fs_net_sales_cumulative_l1y"))
     result["internal_tkn_tbe_ratio"] = safe_divide(result.get("gunceltkn_dgr"), result.get("gunceltbe_dgr"))
+    result = result.drop(columns=[column for column in FORBIDDEN_DERIVED_FEATURES if column in result.columns])
     return result.replace([np.inf, -np.inf], np.nan)
 
 
@@ -971,9 +1017,13 @@ def build_peer_artifacts(
     peer_median = pd.DataFrame(index=feature_frame.index)
     peer_support = pd.DataFrame(index=feature_frame.index)
     peer_zscore = pd.DataFrame(index=feature_frame.index)
+    peer_level = pd.DataFrame(index=feature_frame.index)
+    peer_representativeness = pd.DataFrame(index=feature_frame.index)
+    peer_quality = pd.DataFrame(index=feature_frame.index)
 
     for feature in selected_features:
-        display_median, transformed_median, support, scale = peer_reference_for_feature(
+        display_median, transformed_median, support, scale, level = peer_reference_for_feature(
+            feature,
             context,
             pd.to_numeric(feature_frame[feature], errors="coerce"),
             min_support=min_support,
@@ -981,9 +1031,14 @@ def build_peer_artifacts(
         actual = pd.to_numeric(feature_frame[feature], errors="coerce")
         transformed_actual = peer_transform_values(actual)
         zscore = ((transformed_actual - transformed_median) / scale.replace(0.0, np.nan)).clip(-PEER_Z_CLIP, PEER_Z_CLIP)
+        representativeness = peer_representativeness_score(level, support)
+        quality = peer_quality_label(level, support, representativeness)
         peer_median[feature] = display_median
         peer_support[feature] = support.fillna(0).astype(int)
         peer_zscore[feature] = zscore
+        peer_level[feature] = level
+        peer_representativeness[feature] = representativeness
+        peer_quality[feature] = quality
         peer_model[f"{feature}{PEER_FEATURE_SUFFIX}"] = zscore
 
     return PeerArtifacts(
@@ -991,6 +1046,9 @@ def build_peer_artifacts(
         median=peer_median,
         support=peer_support,
         zscore=peer_zscore,
+        level=peer_level,
+        representativeness_score=peer_representativeness,
+        quality=peer_quality,
         peer_key=context["peer_key"],
     )
 
@@ -1033,27 +1091,22 @@ def build_peer_context(raw_frame: pd.DataFrame, feature_frame: pd.DataFrame) -> 
 
 
 def peer_reference_for_feature(
+    feature: str,
     context: pd.DataFrame,
     values: pd.Series,
     *,
     min_support: int,
-) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     values = pd.to_numeric(values, errors="coerce").astype(float)
     transformed_values = peer_transform_values(values)
     result_median = pd.Series(np.nan, index=values.index, dtype=float)
     result_transformed_median = pd.Series(np.nan, index=values.index, dtype=float)
     result_support = pd.Series(0, index=values.index, dtype=float)
     result_scale = pd.Series(np.nan, index=values.index, dtype=float)
-    hierarchy = [
-        [TIME_COLUMN, "peer_segment", "peer_rating", "peer_sector", "peer_size"],
-        [TIME_COLUMN, "peer_segment", "peer_rating", "peer_size"],
-        [TIME_COLUMN, "peer_segment", "peer_sector"],
-        [TIME_COLUMN, "peer_segment", "peer_size"],
-        [TIME_COLUMN, "peer_segment"],
-        [TIME_COLUMN],
-    ]
+    result_level = pd.Series(pd.NA, index=values.index, dtype="string")
+    hierarchy = peer_hierarchy_for_feature(feature)
     global_scale = robust_scale(transformed_values)
-    for keys in hierarchy:
+    for level_label, keys in hierarchy:
         median, transformed_median, support, scale = grouped_median_support_scale(
             context,
             values,
@@ -1066,6 +1119,7 @@ def peer_reference_for_feature(
         result_transformed_median.loc[eligible] = transformed_median.loc[eligible]
         result_support.loc[eligible] = support.loc[eligible]
         result_scale.loc[eligible] = scale.loc[eligible]
+        result_level.loc[eligible] = level_label
 
     fallback_median = values.median(skipna=True)
     fallback_transformed_median = transformed_values.median(skipna=True)
@@ -1075,7 +1129,27 @@ def peer_reference_for_feature(
     )
     result_support = result_support.fillna(int(values.notna().sum()))
     result_scale = result_scale.fillna(global_scale).replace(0.0, global_scale)
-    return result_median, result_transformed_median, result_support, result_scale
+    result_level = result_level.fillna("GLOBAL_FEATURE").astype(str)
+    return result_median, result_transformed_median, result_support, result_scale, result_level
+
+
+def peer_hierarchy_for_feature(feature: str) -> list[tuple[str, list[str]]]:
+    if str(feature).startswith("pd_"):
+        return [
+            ("AY_SEGMENT_SEKTOR_SIZE", [TIME_COLUMN, "peer_segment", "peer_sector", "peer_size"]),
+            ("AY_SEGMENT_SIZE", [TIME_COLUMN, "peer_segment", "peer_size"]),
+            ("AY_SEGMENT_SEKTOR", [TIME_COLUMN, "peer_segment", "peer_sector"]),
+            ("AY_SEGMENT", [TIME_COLUMN, "peer_segment"]),
+            ("AY", [TIME_COLUMN]),
+        ]
+    return [
+        ("AY_SEGMENT_RATING_SEKTOR_SIZE", [TIME_COLUMN, "peer_segment", "peer_rating", "peer_sector", "peer_size"]),
+        ("AY_SEGMENT_RATING_SIZE", [TIME_COLUMN, "peer_segment", "peer_rating", "peer_size"]),
+        ("AY_SEGMENT_SEKTOR", [TIME_COLUMN, "peer_segment", "peer_sector"]),
+        ("AY_SEGMENT_SIZE", [TIME_COLUMN, "peer_segment", "peer_size"]),
+        ("AY_SEGMENT", [TIME_COLUMN, "peer_segment"]),
+        ("AY", [TIME_COLUMN]),
+    ]
 
 
 def grouped_median_support_scale(
@@ -1103,6 +1177,38 @@ def grouped_median_support_scale(
 def peer_transform_values(values: pd.Series) -> pd.Series:
     values = pd.to_numeric(values, errors="coerce").astype(float)
     return np.sign(values) * np.log1p(np.abs(values))
+
+
+def peer_support_score(support) -> pd.Series:
+    values = pd.to_numeric(support, errors="coerce").fillna(0.0)
+    score = pd.Series(0.2, index=values.index, dtype=float)
+    score.loc[values.ge(50)] = 0.60
+    score.loc[values.ge(100)] = 0.75
+    score.loc[values.ge(200)] = 0.90
+    score.loc[values.ge(500)] = 1.00
+    return score
+
+
+def peer_representativeness_score(level: pd.Series, support: pd.Series) -> pd.Series:
+    level_score = level.map(lambda value: PEER_LEVEL_SCORE.get(str(value), 0.25)).astype(float)
+    support_component = peer_support_score(support)
+    return (100.0 * (0.65 * level_score + 0.35 * support_component)).round(1)
+
+
+def peer_quality_label(level: pd.Series, support: pd.Series, score: pd.Series) -> pd.Series:
+    level_text = level.astype(str)
+    support_values = pd.to_numeric(support, errors="coerce").fillna(0.0)
+    score_values = pd.to_numeric(score, errors="coerce").fillna(0.0)
+    quality = pd.Series("KABUL_EDILEBILIR", index=level.index, dtype=object)
+    weak = support_values.lt(50) | score_values.lt(60.0) | level_text.isin(["AY", "GLOBAL_FEATURE"])
+    strong = (
+        support_values.ge(100)
+        & score_values.ge(80.0)
+        & ~level_text.isin(["AY", "GLOBAL_FEATURE", "AY_SEGMENT"])
+    )
+    quality.loc[weak] = "ZAYIF"
+    quality.loc[strong] = "GUCLU"
+    return quality
 
 
 def robust_scale(values: pd.Series) -> float:
@@ -1174,6 +1280,7 @@ def select_model_features(
         for column in train_features.columns
         if column not in {ID_COLUMN, TIME_COLUMN}
         and column not in RAW_MODEL_EXCLUDE_COLUMNS
+        and column not in FORBIDDEN_DERIVED_FEATURES
         and column.startswith(DERIVED_FEATURE_PREFIXES)
     ]
     selected = []
@@ -1346,6 +1453,9 @@ def build_results(
                 peer_reference=peer_reference.get(base_feature, np.nan),
                 peer_median=peer_artifacts.median.loc[row_index, base_feature],
                 peer_support=peer_artifacts.support.loc[row_index, base_feature],
+                peer_level=peer_artifacts.level.loc[row_index, base_feature],
+                peer_representativeness_score=peer_artifacts.representativeness_score.loc[row_index, base_feature],
+                peer_quality=peer_artifacts.quality.loc[row_index, base_feature],
                 peer_z=peer_artifacts.zscore.loc[row_index, base_feature],
                 train_reference=train_reference.get(base_feature, np.nan),
                 contribution_pct=contribution,
@@ -1400,6 +1510,8 @@ def write_outputs(
     band_thresholds: dict[str, float],
     model_feature_count: int,
     peer_feature_count: int,
+    peer_representativeness_diagnostics: dict,
+    reason_peer_representativeness_diagnostics: dict,
 ) -> MultivarRunArtifacts:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     month_label = scoring_month.strftime("%Y%m%d")
@@ -1433,6 +1545,8 @@ def write_outputs(
         ),
         "model_feature_count": int(model_feature_count),
         "peer_feature_count": int(peer_feature_count),
+        "peer_representativeness_diagnostics": peer_representativeness_diagnostics,
+        "reason_peer_representativeness_diagnostics": reason_peer_representativeness_diagnostics,
         "peer_min_support": int(PEER_MIN_SUPPORT),
         "missing_indicator_base_features": missing_features,
         "operational_band_policy": OPERATIONAL_BAND_POLICY,
@@ -1547,6 +1661,25 @@ def ensure_multivar_output_tables(
                 continue
             cursor.execute(ddl)
             ora.logger.info("Created %s", ora._qualified_table_name(table_key))
+    ora.connection.commit()
+    ensure_multivar_detail_columns(ora, details_table_key)
+
+
+def ensure_multivar_detail_columns(ora: OracleConnector, details_table_key: str) -> None:
+    existing = ora._table_columns(details_table_key)
+    missing = {
+        column: ddl
+        for column, ddl in MULTIVAR_DETAIL_EXTRA_COLUMNS.items()
+        if column not in existing
+    }
+    if not missing:
+        return
+    with ora.connection.cursor() as cursor:
+        for column, ddl in missing.items():
+            cursor.execute(
+                f"ALTER TABLE {ora._qualified_table_name(details_table_key)} ADD ({column} {ddl})"
+            )
+            ora.logger.info("Added %s.%s", ora._qualified_table_name(details_table_key), column)
     ora.connection.commit()
 
 
@@ -1680,6 +1813,9 @@ def prepare_multivar_oracle_details(results: pd.DataFrame, *, run_id: str) -> pd
                     "peer_reference": number_or_none(detail.get("peer_reference")),
                     "peer_z": number_or_none(detail.get("peer_z")),
                     "peer_support": number_or_none(detail.get("peer_support")),
+                    "peer_level": text_or_none(detail.get("peer_level"), 64),
+                    "peer_representativeness_score": number_or_none(detail.get("peer_representativeness_score")),
+                    "peer_quality": text_or_none(detail.get("peer_quality"), 32),
                     "train_reference": number_or_none(detail.get("train_reference")),
                     "reference_used": text_or_none(detail.get("reference_used"), 64),
                     "contribution_pct": number_or_none(detail.get("contribution_pct")),
@@ -1767,6 +1903,9 @@ def multivar_details_table_ddl(ora: OracleConnector, table_key: str) -> str:
             PEER_REFERENCE NUMBER(24,8),
             PEER_Z NUMBER(18,6),
             PEER_SUPPORT NUMBER(10),
+            PEER_LEVEL VARCHAR2(64),
+            PEER_REPRESENTATIVENESS_SCORE NUMBER(6,2),
+            PEER_QUALITY VARCHAR2(32),
             TRAIN_REFERENCE NUMBER(24,8),
             REFERENCE_USED VARCHAR2(64),
             CONTRIBUTION_PCT NUMBER(10,4),
@@ -1996,6 +2135,173 @@ def rank_reason_details_for_review(details: list[dict]) -> list[dict]:
     return sorted(details, key=priority)
 
 
+def summarize_peer_representativeness(peer_artifacts: PeerArtifacts, selected_features: list[str]) -> dict:
+    quality_counts: Counter = Counter()
+    level_counts: Counter = Counter()
+    support_values = []
+    score_values = []
+    total = 0
+    for feature in selected_features:
+        quality_series = peer_artifacts.quality[feature].astype(str)
+        level_series = peer_artifacts.level[feature].astype(str)
+        support_series = pd.to_numeric(peer_artifacts.support[feature], errors="coerce").dropna()
+        score_series = pd.to_numeric(peer_artifacts.representativeness_score[feature], errors="coerce").dropna()
+        quality_counts.update(quality_series.tolist())
+        level_counts.update(level_series.tolist())
+        support_values.extend(support_series.tolist())
+        score_values.extend(score_series.tolist())
+        total += int(len(quality_series))
+    return peer_diagnostic_payload(
+        total=total,
+        quality_counts=quality_counts,
+        level_counts=level_counts,
+        support_values=support_values,
+        score_values=score_values,
+    )
+
+
+def summarize_reason_peer_representativeness(results: pd.DataFrame) -> dict:
+    quality_counts: Counter = Counter()
+    level_counts: Counter = Counter()
+    support_values = []
+    score_values = []
+    total = 0
+    for details in results["reason_details"].map(parse_reason_details):
+        for detail in details:
+            quality_counts.update([str(detail.get("peer_quality") or "ZAYIF")])
+            level_counts.update([str(detail.get("peer_level") or "UNKNOWN")])
+            if detail.get("peer_support") is not None:
+                support_values.append(float(detail.get("peer_support") or 0.0))
+            if detail.get("peer_representativeness_score") is not None:
+                score_values.append(float(detail.get("peer_representativeness_score") or 0.0))
+            total += 1
+    return peer_diagnostic_payload(
+        total=total,
+        quality_counts=quality_counts,
+        level_counts=level_counts,
+        support_values=support_values,
+        score_values=score_values,
+    )
+
+
+def peer_diagnostic_payload(
+    *,
+    total: int,
+    quality_counts: Counter,
+    level_counts: Counter,
+    support_values: list[float],
+    score_values: list[float],
+) -> dict:
+    weak_count = int(quality_counts.get("ZAYIF", 0))
+    acceptable_count = int(quality_counts.get("KABUL_EDILEBILIR", 0))
+    strong_count = int(quality_counts.get("GUCLU", 0))
+    weak_pct = round(weak_count / total * 100.0, 2) if total else 0.0
+    strong_pct = round(strong_count / total * 100.0, 2) if total else 0.0
+    acceptable_pct = round(acceptable_count / total * 100.0, 2) if total else 0.0
+    acceptable_or_strong_pct = round(strong_pct + acceptable_pct, 2)
+    level_total = int(sum(level_counts.values()))
+    narrow_peer_count = int(sum(level_counts.get(level, 0) for level in MEANINGFUL_PEER_LEVELS))
+    narrow_peer_pct = round(narrow_peer_count / level_total * 100.0, 2) if level_total else 0.0
+    support_series = pd.Series(support_values, dtype=float)
+    score_series = pd.Series(score_values, dtype=float)
+    support_summary = quantile_summary(support_series)
+    score_summary = quantile_summary(score_series)
+    meaningfulness_test = peer_meaningfulness_test(
+        acceptable_or_strong_pct=acceptable_or_strong_pct,
+        weak_peer_pct=weak_pct,
+        support_summary=support_summary,
+        narrow_peer_pct=narrow_peer_pct,
+    )
+    return {
+        "total_peer_comparisons": int(total),
+        "quality_counts": dict(sorted(quality_counts.items())),
+        "quality_pct": {
+            "GUCLU": strong_pct,
+            "KABUL_EDILEBILIR": acceptable_pct,
+            "ZAYIF": weak_pct,
+        },
+        "level_counts": dict(sorted(level_counts.items())),
+        "support_quantiles": support_summary,
+        "representativeness_score_quantiles": score_summary,
+        "acceptable_or_strong_pct": acceptable_or_strong_pct,
+        "narrow_peer_count": narrow_peer_count,
+        "narrow_peer_pct": narrow_peer_pct,
+        "weak_peer_count": weak_count,
+        "weak_peer_pct": weak_pct,
+        "meaningfulness_test": meaningfulness_test,
+        "corporate_assessment": corporate_peer_assessment(meaningfulness_test["result"]),
+    }
+
+
+def quantile_summary(values: pd.Series) -> dict:
+    values = pd.to_numeric(values, errors="coerce").dropna()
+    if values.empty:
+        return {}
+    return {
+        "p10": round(float(values.quantile(0.10)), 2),
+        "p25": round(float(values.quantile(0.25)), 2),
+        "p50": round(float(values.quantile(0.50)), 2),
+        "p75": round(float(values.quantile(0.75)), 2),
+        "p90": round(float(values.quantile(0.90)), 2),
+        "min": round(float(values.min()), 2),
+        "max": round(float(values.max()), 2),
+    }
+
+
+def peer_meaningfulness_test(
+    *,
+    acceptable_or_strong_pct: float,
+    weak_peer_pct: float,
+    support_summary: dict,
+    narrow_peer_pct: float,
+) -> dict:
+    thresholds = PEER_MEANINGFULNESS_THRESHOLDS
+    p10_support = float(support_summary.get("p10", 0.0) or 0.0)
+    median_support = float(support_summary.get("p50", 0.0) or 0.0)
+    checks = {
+        "acceptable_or_strong_pct": {
+            "actual": acceptable_or_strong_pct,
+            "minimum": thresholds["min_acceptable_or_strong_pct"],
+            "passed": acceptable_or_strong_pct >= thresholds["min_acceptable_or_strong_pct"],
+        },
+        "weak_peer_pct": {
+            "actual": weak_peer_pct,
+            "maximum": thresholds["max_weak_peer_pct"],
+            "passed": weak_peer_pct <= thresholds["max_weak_peer_pct"],
+        },
+        "p10_support": {
+            "actual": p10_support,
+            "minimum": thresholds["min_p10_support"],
+            "passed": p10_support >= thresholds["min_p10_support"],
+        },
+        "median_support": {
+            "actual": median_support,
+            "minimum": thresholds["min_median_support"],
+            "passed": median_support >= thresholds["min_median_support"],
+        },
+        "narrow_peer_pct": {
+            "actual": narrow_peer_pct,
+            "minimum": thresholds["min_narrow_peer_pct"],
+            "passed": narrow_peer_pct >= thresholds["min_narrow_peer_pct"],
+        },
+    }
+    if all(item["passed"] for item in checks.values()):
+        result = "PASS"
+    elif weak_peer_pct <= 15.0 and acceptable_or_strong_pct >= 85.0 and p10_support >= PEER_MIN_SUPPORT:
+        result = "WARN"
+    else:
+        result = "FAIL"
+    return {"result": result, "thresholds": thresholds, "checks": checks}
+
+
+def corporate_peer_assessment(test_result: str) -> str:
+    if test_result == "PASS":
+        return "PEER_SET_KURUMSAL_OLARAK_GUCLU"
+    if test_result == "WARN":
+        return "PEER_SET_KABUL_EDILEBILIR_EK_KONTROL_GEREKIR"
+    return "PEER_SET_ZAYIF_SEGMENTASYON_VE_FALLBACK_GOZDEN_GECIRILMELI"
+
+
 def component_contribution_pct(severity: pd.Series, base_feature: str, total: float) -> dict[str, float]:
     raw = float(severity.get(base_feature, 0.0))
     peer = float(severity.get(f"{base_feature}{PEER_FEATURE_SUFFIX}", 0.0))
@@ -2026,6 +2332,9 @@ def build_reason_detail(
     peer_reference,
     peer_median,
     peer_support,
+    peer_level,
+    peer_representativeness_score,
+    peer_quality,
     peer_z,
     train_reference,
     contribution_pct: float,
@@ -2061,6 +2370,9 @@ def build_reason_detail(
         "peer_reference": round_optional(peer_median if pd.notna(peer_median) else peer_reference, 6),
         "peer_z": round_optional(peer_z, 4),
         "peer_support": int(peer_support) if pd.notna(peer_support) else 0,
+        "peer_level": str(peer_level) if peer_level is not None and not pd.isna(peer_level) else "UNKNOWN",
+        "peer_representativeness_score": round_optional(peer_representativeness_score, 2),
+        "peer_quality": str(peer_quality) if peer_quality is not None and not pd.isna(peer_quality) else "ZAYIF",
         "train_reference": round_optional(train_reference, 6),
         "reference_used": reference_label,
         "contribution_pct": round(float(contribution_pct), 2),
@@ -2085,6 +2397,7 @@ def format_reason(detail: dict) -> str:
             f"peer={format_number(detail['peer_reference'])}",
             f"peer_z={format_number(detail.get('peer_z'))}",
             f"peer_support={detail.get('peer_support', 0)}",
+            f"peer_temsil={detail.get('peer_quality') or 'ZAYIF'}",
             f"katki=%{detail['contribution_pct']:.1f}",
             detail["direction_comment"],
         ]
