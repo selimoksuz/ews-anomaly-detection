@@ -77,17 +77,12 @@ Izin verilen tipler:
 | `bank_risk_to_assets` | Banka risk / varlik | `bank_total_risk / toplam_varlik_ttr` |
 | `memzuc_risk_to_assets` | Memzuc risk / varlik | `memzuc_total_risk / toplam_varlik_ttr` |
 | `l1y_equity_to_assets` | L1Y ozkaynak / varlik | `equity_l1y / toplam_varlik_ttr` |
-| `q_equity_to_assets` | Ara donem ozkaynak / varlik | `fs_equity_q / toplam_varlik_ttr` |
 | `l1y_debt_to_sales` | Banka risk / L1Y satis | `bank_total_risk / fs_net_sales_cumulative_l1y` |
-| `q_debt_to_sales` | Banka risk / ara donem satis | `bank_total_risk / fs_net_sales_cumulative_q` |
 | `memzuc_debt_to_l1y_sales` | Memzuc risk / L1Y satis | `memzuc_total_risk / fs_net_sales_cumulative_l1y` |
-| `memzuc_debt_to_q_sales` | Memzuc risk / ara donem satis | `memzuc_total_risk / fs_net_sales_cumulative_q` |
 | `memzuc_to_bank_risk_ratio` | Memzuc risk / banka risk | `memzuc_total_risk / bank_total_risk` |
 | `bank_to_memzuc_risk_ratio` | Banka risk / memzuc risk | `bank_total_risk / memzuc_total_risk` |
 | `l1y_trade_receivables_to_assets` | L1Y ticari alacak / varlik | `fs_trade_receivables_l1y / toplam_varlik_ttr` |
 | `l1y_notes_receivable_to_assets` | L1Y senetli alacak / varlik | `fs_notes_receivable_l1y / toplam_varlik_ttr` |
-| `q_trade_receivables_to_assets` | Ara donem ticari alacak / varlik | `fs_trade_receivables_q / toplam_varlik_ttr` |
-| `q_notes_receivable_to_assets` | Ara donem senetli alacak / varlik | `fs_notes_receivable_q / toplam_varlik_ttr` |
 | `pd_ratio` | IRB rating PD / model PD | `irb_rating_pd / irb_model_pd` |
 | `internal_tkn_to_assets` | TKN / varlik | `gunceltkn_dgr / toplam_varlik_ttr` |
 | `internal_tbe_to_assets` | TBE / varlik | `gunceltbe_dgr / toplam_varlik_ttr` |
@@ -96,6 +91,8 @@ Izin verilen tipler:
 | `internal_tkn_tbe_ratio` | TKN / TBE | `gunceltkn_dgr / gunceltbe_dgr` |
 
 Not: `pd_to_rating_group` uretilmez. PD ve rating grup ayni risk bilgisinin farkli sayisal gosterimleri oldugu icin model feature'i veya reason kaynagi olarak birbirine oranlanmaz.
+
+Not: Ara donem Q bazli feature'lar (`q_equity_to_assets`, `q_debt_to_sales`, `memzuc_debt_to_q_sales`, `q_trade_receivables_to_assets`, `q_notes_receivable_to_assets`) simdilik model disinda tutulur.
 
 ## Modelde Kullanilan Nihai Deger
 

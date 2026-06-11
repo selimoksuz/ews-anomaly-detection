@@ -97,6 +97,11 @@ PEER_MEANINGFULNESS_THRESHOLDS = {
 }
 FORBIDDEN_DERIVED_FEATURES = {
     "pd_to_rating_group",
+    "q_equity_to_assets",
+    "q_debt_to_sales",
+    "memzuc_debt_to_q_sales",
+    "q_trade_receivables_to_assets",
+    "q_notes_receivable_to_assets",
 }
 
 MULTIVAR_DETAIL_EXTRA_COLUMNS = {
@@ -1541,6 +1546,7 @@ def write_outputs(
         },
         "feature_policy": (
             "cross_module_ratios_only_no_financial_to_financial_ratios_"
+            "no_interim_q_features_"
             "positive_denominator_floor_and_extreme_ratio_guardrail"
         ),
         "model_feature_count": int(model_feature_count),

@@ -220,6 +220,11 @@ class MultivarAnomalyTests(unittest.TestCase):
             "l1y_notes_receivable_to_sales",
             "q_trade_receivables_to_sales",
             "q_notes_receivable_to_sales",
+            "q_equity_to_assets",
+            "q_debt_to_sales",
+            "memzuc_debt_to_q_sales",
+            "q_trade_receivables_to_assets",
+            "q_notes_receivable_to_assets",
             "l1y_profit_margin",
             "q_profit_margin",
             "q_ebitda_margin",
@@ -245,6 +250,11 @@ class MultivarAnomalyTests(unittest.TestCase):
             [column for column in generated if any(token in column for token in forbidden_names)]
         )
         self.assertNotIn("pd_to_rating_group", features.columns)
+        self.assertNotIn("q_equity_to_assets", features.columns)
+        self.assertNotIn("q_debt_to_sales", features.columns)
+        self.assertNotIn("memzuc_debt_to_q_sales", features.columns)
+        self.assertNotIn("q_trade_receivables_to_assets", features.columns)
+        self.assertNotIn("q_notes_receivable_to_assets", features.columns)
         self.assertIn("l1y_debt_to_sales", features.columns)
         self.assertIn("memzuc_debt_to_l1y_sales", features.columns)
         self.assertIn("l1y_trade_receivables_to_assets", features.columns)
@@ -312,7 +322,7 @@ class MultivarAnomalyTests(unittest.TestCase):
 
     def test_reason_ranking_prioritizes_risk_increase_for_review(self):
         details = [
-            {"feature": "q_equity_to_assets", "direction_comment": "peer medyan gore artmis; risk azalisi", "contribution_pct": 40.0},
+            {"feature": "l1y_equity_to_assets", "direction_comment": "peer medyan gore artmis; risk azalisi", "contribution_pct": 40.0},
             {"feature": "pd_ratio", "direction_comment": "peer medyan gore artmis; risk artisi", "contribution_pct": 10.0},
             {"feature": "l1y_debt_to_sales", "is_missing_reason": True, "direction_comment": "deger missing oldugu icin yon yorumu yok", "contribution_pct": 5.0},
         ]
@@ -321,7 +331,7 @@ class MultivarAnomalyTests(unittest.TestCase):
 
         self.assertEqual(ranked[0]["feature"], "pd_ratio")
         self.assertEqual(ranked[1]["feature"], "l1y_debt_to_sales")
-        self.assertEqual(ranked[2]["feature"], "q_equity_to_assets")
+        self.assertEqual(ranked[2]["feature"], "l1y_equity_to_assets")
 
     def test_calibration_sample_is_bounded_and_deterministic(self):
         matrix = pd.DataFrame({"a": range(100), "b": range(100, 200)}).to_numpy()
