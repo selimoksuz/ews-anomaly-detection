@@ -112,6 +112,14 @@ $env:LLM_SECTION="OPENSHIFT_LLM"
 
 Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/secrets.yaml ...` gibi kaynak bilgisi gorulur.
 
+Endpoint ve key saglik kontrolu icin notebook:
+
+```text
+llm/llm_endpoint_healthcheck.ipynb
+```
+
+Bu notebook sirasiyla config okuma, TCP/TLS handshake, `/models`, repo icindeki chat call ve opsiyonel LangChain call testlerini yapar.
+
 ## Promptu Dry Run Gormek
 
 ```powershell
