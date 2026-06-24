@@ -252,6 +252,9 @@ class MultivarAnomalyTests(unittest.TestCase):
         )
         self.assertNotIn("pd_to_rating_group", features.columns)
         self.assertNotIn("pd_ratio", features.columns)
+        self.assertIn("irb_rating_pd", features.columns)
+        self.assertIn("irb_model_pd", features.columns)
+        self.assertIn("rating_group", features.columns)
         self.assertNotIn("q_equity_to_assets", features.columns)
         self.assertNotIn("q_debt_to_sales", features.columns)
         self.assertNotIn("memzuc_debt_to_q_sales", features.columns)
@@ -378,6 +381,9 @@ class MultivarAnomalyTests(unittest.TestCase):
         features = build_feature_frame(raw, [column for column in raw.columns if column not in {"cohort_dt", "mono_id"}])
 
         self.assertNotIn("pd_ratio", features.columns)
+        self.assertIn("irb_rating_pd", features.columns)
+        self.assertIn("irb_model_pd", features.columns)
+        self.assertIn("rating_group", features.columns)
 
     def test_peer_meaningfulness_diagnostic_flags_weak_peer_set(self):
         diagnostic = peer_diagnostic_payload(

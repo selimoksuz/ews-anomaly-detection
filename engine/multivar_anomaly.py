@@ -103,6 +103,12 @@ FORBIDDEN_DERIVED_FEATURES = {
     "q_notes_receivable_to_assets",
 }
 
+DIRECT_PD_RATING_SIGNAL_FEATURES = {
+    "irb_rating_pd",
+    "irb_model_pd",
+    "rating_group",
+}
+
 MULTIVAR_DETAIL_EXTRA_COLUMNS = {
     "PEER_LEVEL": "VARCHAR2(64)",
     "PEER_REPRESENTATIVENESS_SCORE": "NUMBER(6,2)",
@@ -1312,9 +1318,9 @@ def select_model_features(
         column
         for column in train_features.columns
         if column not in {ID_COLUMN, TIME_COLUMN}
-        and column not in RAW_MODEL_EXCLUDE_COLUMNS
+        and (column not in RAW_MODEL_EXCLUDE_COLUMNS or column in DIRECT_PD_RATING_SIGNAL_FEATURES)
         and column not in FORBIDDEN_DERIVED_FEATURES
-        and column.startswith(DERIVED_FEATURE_PREFIXES)
+        and (column.startswith(DERIVED_FEATURE_PREFIXES) or column in DIRECT_PD_RATING_SIGNAL_FEATURES)
     ]
     selected = []
     for column in candidates:

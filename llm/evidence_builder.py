@@ -122,11 +122,9 @@ TECHNICAL_COLUMNS = {
     "created_at",
 }
 
-EXCLUDED_PD_RATING_SIGNALS = {
+FORBIDDEN_PD_RATING_COMPARISON_SIGNALS = {
     "pd_ratio",
-    "irb_rating_pd",
-    "irb_model_pd",
-    "rating_group",
+    "pd_to_rating_group",
 }
 
 
@@ -246,7 +244,7 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                 "peer_definition": {
                     "base": "same cohort month plus segment/sector/size fallback hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
-                    "note": "IRB PD, model PD, PD ratio and rating_group are not anomaly evidence and are not used in peer grouping.",
+                    "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
                 },
                 "data_quality": data_quality_payload(
                     row=row,
@@ -287,7 +285,7 @@ def build_evidence_from_result_rows(frame: pd.DataFrame, *, max_customers: int |
         features = [
             feature_evidence_from_detail(detail)
             for detail in details
-            if not is_excluded_pd_rating_signal(detail.get("feature") or detail.get("feature_name"))
+            if not is_forbidden_pd_rating_comparison(detail.get("feature") or detail.get("feature_name"))
         ]
         packages.append(
             {
@@ -304,7 +302,7 @@ def build_evidence_from_result_rows(frame: pd.DataFrame, *, max_customers: int |
                 "peer_definition": {
                     "base": "same cohort month plus segment/sector/size fallback hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
-                    "note": "IRB PD, model PD, PD ratio and rating_group are not anomaly evidence and are not used in peer grouping.",
+                    "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
                 },
                 "data_quality": {
                     "coverage_ratio": clean_number(row.get("coverage_ratio")),
@@ -361,7 +359,7 @@ def build_evidence_packages_from_oracle(
     keep_columns = [
         column
         for column in dict.fromkeys([ID_COLUMN, TIME_COLUMN, *CONTEXT_COLUMNS, *numeric_source_columns])
-        if column in sample_frame.columns and column not in EXCLUDED_PD_RATING_SIGNALS
+        if column in sample_frame.columns
     ]
     logger.info(
         "Oracle sample loaded: rows=%s columns=%s numeric_source_columns=%s keep_columns=%s",
@@ -378,7 +376,7 @@ def build_evidence_packages_from_oracle(
     )
     log_step_done(
         "02",
-        f"raw_columns={len(sample_frame.columns)} used_input_columns={len(keep_columns)} numeric_source_columns={len(numeric_source_columns)} pd_rating_excluded={','.join(sorted(EXCLUDED_PD_RATING_SIGNALS))}",
+        f"raw_columns={len(sample_frame.columns)} used_input_columns={len(keep_columns)} numeric_source_columns={len(numeric_source_columns)} forbidden_pd_rating_comparisons={','.join(sorted(FORBIDDEN_PD_RATING_COMPARISON_SIGNALS))}",
     )
     logger.info(
         "Loading Oracle reference/score windows: reference_rows_limit=%s chunk_size=%s note='reference rows are used for feature/trend/seasonality statistics; they are not sent to the LLM'",
@@ -622,9 +620,8 @@ def infer_numeric_source_columns(frame: pd.DataFrame) -> list[str]:
     for column in frame.columns:
         if (
             column in {ID_COLUMN, TIME_COLUMN}
-            or column in CONTEXT_COLUMNS
+            or (column in CONTEXT_COLUMNS and column != "rating_group")
             or column in TECHNICAL_COLUMNS
-            or column in EXCLUDED_PD_RATING_SIGNALS
         ):
             continue
         series = pd.to_numeric(frame[column], errors="coerce")
@@ -636,16 +633,17 @@ def infer_numeric_source_columns(frame: pd.DataFrame) -> list[str]:
 def feature_dictionary(feature: str) -> dict[str, Any]:
     return {
         "label": FEATURE_LABELS.get(feature, feature),
+        "category": variable_category(feature),
         "formula": FEATURE_FORMULAS.get(feature),
         "risk_direction": risk_direction(feature),
         "interpretation_note": interpretation_note(feature),
     }
 
 
-def is_excluded_pd_rating_signal(feature: Any) -> bool:
+def is_forbidden_pd_rating_comparison(feature: Any) -> bool:
     if feature is None:
         return False
-    return str(feature).strip().lower() in EXCLUDED_PD_RATING_SIGNALS
+    return str(feature).strip().lower() in FORBIDDEN_PD_RATING_COMPARISON_SIGNALS
 
 
 def log_step(step_no: str, title: str) -> None:
@@ -659,6 +657,7 @@ def log_step_done(step_no: str, detail: str) -> None:
 def raw_column_dictionary(column: str) -> dict[str, Any]:
     return {
         "label": RAW_COLUMN_LABELS.get(column) or FEATURE_LABELS.get(column),
+        "category": variable_category(column),
         "role": raw_column_role(column),
     }
 
@@ -668,8 +667,8 @@ def raw_column_role(column: str) -> str:
         return "id"
     if column == TIME_COLUMN:
         return "time"
-    if column in EXCLUDED_PD_RATING_SIGNALS:
-        return "excluded_pd_rating_signal"
+    if variable_category(column) == "pd_rating":
+        return "direct_pd_rating_signal"
     if column in CONTEXT_COLUMNS:
         return "context_or_peer"
     if column in TECHNICAL_COLUMNS:
@@ -704,8 +703,9 @@ def log_raw_table_audit(
     for column in raw_columns:
         dictionary = raw_column_dictionary(column)
         logger.info(
-            "AUDIT RAW VARIABLE | name=%s used=%s numeric_source=%s role=%s description=%s",
+            "AUDIT RAW VARIABLE | name=%s category=%s used=%s numeric_source=%s role=%s description=%s",
             column,
+            dictionary["category"],
             column in used_columns,
             column in numeric_columns,
             dictionary["role"],
@@ -728,8 +728,9 @@ def log_transformed_feature_audit(selected_features: list[str], numeric_source_c
     for feature in selected_features:
         dictionary = feature_dictionary(feature)
         logger.info(
-            "AUDIT TRANSFORMED FEATURE | name=%s description=%s formula=%s source_raw_columns=%s risk_direction=%s note=%s",
+            "AUDIT TRANSFORMED FEATURE | name=%s category=%s description=%s formula=%s source_raw_columns=%s risk_direction=%s note=%s",
             feature,
+            dictionary["category"],
             dictionary["label"] or "MISSING_DICTIONARY",
             dictionary["formula"] or "raw_or_direct_transformed_feature",
             ",".join(feature_source_columns(feature, numeric_source_columns)) or "UNKNOWN",
@@ -744,8 +745,8 @@ def log_evidence_contract(selected_features: list[str]) -> None:
     logger.info(
         "AUDIT PIPELINE CONTRACT | raw_input=Oracle raw monthly rows generated_features=%s peer_grouping=%s excluded_signals=%s",
         len(selected_features),
-        "cohort_dt + musteri_segment + sector + monthly_size fallback; rating_group/PD excluded",
-        ",".join(sorted(EXCLUDED_PD_RATING_SIGNALS)),
+        "cohort_dt + musteri_segment + sector + monthly_size fallback; direct PD/rating signals allowed; PD/rating cross-ratios forbidden",
+        ",".join(sorted(FORBIDDEN_PD_RATING_COMPARISON_SIGNALS)),
     )
     logger.info(
         "AUDIT PEER VARIABLES | variables=peer_definition_level,peer_hierarchy,peer_median,peer_z,peer_support,peer_quality"
@@ -760,7 +761,7 @@ def log_evidence_contract(selected_features: list[str]) -> None:
         "AUDIT SEASONALITY VARIABLES | variables=month_of_year,same_month_last_year_value,yoy_change_pct,same_month_customer_median,same_month_customer_z,seasonal_peer_median,seasonal_peer_z,seasonality_note"
     )
     logger.info(
-        "AUDIT LLM INPUT CONTRACT | one JSON evidence package per customer-period; includes context,data_quality,feature dictionary,current/history/peer/trend/seasonality; excludes model score,target,PD/rating signals"
+        "AUDIT LLM INPUT CONTRACT | one JSON evidence package per customer-period; includes context,data_quality,feature dictionary,current/history/peer/trend/seasonality; excludes model score,target,PD/rating cross-ratios"
     )
 
 
@@ -771,6 +772,46 @@ def feature_source_columns(feature: str, numeric_source_columns: list[str]) -> l
     tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", formula)
     known_columns = set(numeric_source_columns) | set(RAW_COLUMN_LABELS) | set(FEATURE_LABELS)
     return [token for token in tokens if token in known_columns]
+
+
+def variable_category(name: str) -> str:
+    lower = str(name).lower()
+    if lower in {ID_COLUMN, TIME_COLUMN}:
+        return "identity_time"
+    if lower in TECHNICAL_COLUMNS:
+        return "technical"
+    if lower in {"musteri_segment", "cst_sector", "cst_nace_code", "cst_nace_code_id", "bilanco_flg", "ref_donem_id"}:
+        return "context"
+    if "memzuc" in lower:
+        return "memzuc"
+    if (
+        lower.startswith("fs_")
+        or lower.startswith("l1y_")
+        or lower.startswith("q_")
+        or "supheli" in lower
+        or "alacak" in lower
+        or "receivable" in lower
+        or lower
+        in {
+            "equity_l1y",
+            "toplam_varlik_ttr",
+            "financial_term_l1y",
+            "financial_term_q",
+            "annualization_q",
+        }
+    ):
+        return "financial"
+    if lower.startswith("irb_") or "pd" in lower or "rating" in lower:
+        return "pd_rating"
+    if "gunceltkn" in lower or "gunceltbe" in lower or "tkn" in lower or "tbe" in lower:
+        return "internal_kkb"
+    if "kkb" in lower:
+        return "kkb"
+    if lower.startswith("bank_"):
+        return "bank_risk"
+    if "external" in lower:
+        return "external"
+    return "other"
 
 
 def configured_oracle_table_name(table_key: str) -> str:
@@ -786,6 +827,8 @@ def configured_oracle_table_name(table_key: str) -> str:
 
 def risk_direction(feature: str) -> str:
     lower = feature.lower()
+    if lower == "rating_group":
+        return "HIGHER_IS_RISKY"
     if any(token in lower for token in DECREASE_IS_RISK_HINTS):
         return "LOWER_IS_RISKY"
     if any(token in lower for token in INCREASE_IS_RISK_TOKENS):
