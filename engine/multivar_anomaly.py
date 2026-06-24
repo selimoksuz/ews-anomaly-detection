@@ -34,6 +34,8 @@ EXCLUDED_FEATURE_COLUMNS = {
     "ref_donem_id",
     "kkbguncelsorgu_no",
     "yukleme_zmn",
+    "data_time",
+    "created_at",
 }
 
 DESCRIPTOR_COLUMNS = {

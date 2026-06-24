@@ -119,10 +119,40 @@ def write_llm_outputs_to_oracle(
             reason_frame,
             batch_size=batch_size,
         )
+        result_counts = count_llm_output_rows(
+            ora,
+            results_table_key,
+            scoring_month=scoring_month,
+            run_id=run_id,
+        )
+        reason_counts = count_llm_output_rows(
+            ora,
+            reasons_table_key,
+            scoring_month=scoring_month,
+            run_id=run_id,
+        )
         logger.info(
             "Inserted LLM Oracle rows: results=%s reasons=%s",
             inserted_results,
             inserted_reasons,
+        )
+        logger.info(
+            "AUDIT OUTPUT TABLE | table_key=%s table=%s inserted=%s total_rows_after=%s scoring_month_rows_after=%s run_rows_after=%s",
+            results_table_key,
+            ora._qualified_table_name(results_table_key),
+            inserted_results,
+            result_counts["total_rows"],
+            result_counts["scoring_month_rows"],
+            result_counts["run_rows"],
+        )
+        logger.info(
+            "AUDIT OUTPUT TABLE | table_key=%s table=%s inserted=%s total_rows_after=%s scoring_month_rows_after=%s run_rows_after=%s",
+            reasons_table_key,
+            ora._qualified_table_name(reasons_table_key),
+            inserted_reasons,
+            reason_counts["total_rows"],
+            reason_counts["scoring_month_rows"],
+            reason_counts["run_rows"],
         )
         return {
             "backend": "oracle",
@@ -135,7 +165,90 @@ def write_llm_outputs_to_oracle(
             "deleted_reasons": int(deleted["reasons"]),
             "inserted_results": int(inserted_results),
             "inserted_reasons": int(inserted_reasons),
+            "result_table_total_rows_after": int(result_counts["total_rows"]),
+            "result_table_scoring_month_rows_after": int(result_counts["scoring_month_rows"]),
+            "result_table_run_rows_after": int(result_counts["run_rows"]),
+            "reason_table_total_rows_after": int(reason_counts["total_rows"]),
+            "reason_table_scoring_month_rows_after": int(reason_counts["scoring_month_rows"]),
+            "reason_table_run_rows_after": int(reason_counts["run_rows"]),
         }
+
+
+def audit_llm_output_tables(
+    scoring_month,
+    *,
+    results_table_key: str = DEFAULT_LLM_RESULTS_TABLE_KEY,
+    reasons_table_key: str = DEFAULT_LLM_REASONS_TABLE_KEY,
+) -> dict[str, Any]:
+    scoring_month = pd.Timestamp(scoring_month).normalize()
+    config = load_config()
+    secrets = load_secrets()
+    audit: dict[str, Any] = {}
+    with OracleConnector(config, secrets) as ora:
+        for label, table_key in (("results", results_table_key), ("reasons", reasons_table_key)):
+            table_name = ora._qualified_table_name(table_key)
+            exists = ora._table_exists(table_key)
+            counts = (
+                count_llm_output_rows(ora, table_key, scoring_month=scoring_month, run_id=None)
+                if exists
+                else {"total_rows": 0, "scoring_month_rows": 0, "run_rows": 0}
+            )
+            audit[label] = {
+                "table_key": table_key,
+                "table": table_name,
+                "exists": bool(exists),
+                **counts,
+            }
+            logger.info(
+                "AUDIT OUTPUT TABLE | label=%s table_key=%s table=%s exists=%s total_rows=%s scoring_month=%s scoring_month_rows=%s",
+                label,
+                table_key,
+                table_name,
+                exists,
+                counts["total_rows"],
+                scoring_month.date(),
+                counts["scoring_month_rows"],
+            )
+    return audit
+
+
+def count_llm_output_rows(
+    ora: OracleConnector,
+    table_key: str,
+    *,
+    scoring_month: pd.Timestamp,
+    run_id: str | None,
+) -> dict[str, int]:
+    table_name = ora._qualified_table_name(table_key)
+    params = {"scoring_month": pd.Timestamp(scoring_month).to_pydatetime()}
+    total_frame = ora._read_query(f"SELECT COUNT(*) AS ROW_COUNT FROM {table_name}")
+    month_frame = ora._read_query(
+        f"""
+        SELECT COUNT(*) AS ROW_COUNT
+        FROM {table_name}
+        WHERE TRUNC({TIME_COLUMN.upper()}) = TRUNC(:scoring_month)
+        """,
+        params,
+    )
+    run_rows = 0
+    if run_id:
+        run_params = dict(params)
+        run_params["run_id"] = run_id
+        run_frame = ora._read_query(
+            f"""
+            SELECT COUNT(*) AS ROW_COUNT
+            FROM {table_name}
+            WHERE TRUNC({TIME_COLUMN.upper()}) = TRUNC(:scoring_month)
+              AND RUN_ID = :run_id
+            """,
+            run_params,
+        )
+        run_rows = int(run_frame.iloc[0]["row_count"])
+    return {
+        "total_rows": int(total_frame.iloc[0]["row_count"]),
+        "scoring_month_rows": int(month_frame.iloc[0]["row_count"]),
+        "run_rows": int(run_rows),
+    }
 
 
 def ensure_llm_output_tables(

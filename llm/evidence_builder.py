@@ -11,6 +11,7 @@ import argparse
 import json
 import logging
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from engine.config_loader import load_config, load_secrets
 from engine.multivar_anomaly import (
     CONTEXT_COLUMNS,
     FEATURE_LABELS,
@@ -38,9 +40,51 @@ from engine.multivar_anomaly import (
     sample_oracle_frame,
     select_model_features,
 )
+from engine.oracle_io import OracleConnector
 
 
 logger = logging.getLogger(__name__)
+
+RAW_COLUMN_LABELS = {
+    "cohort_dt": "Kaydin ait oldugu ay sonu / skorlanan donem",
+    "mono_id": "Musteri tekil anonim numarasi",
+    "musteri_segment": "Musteri segment kodu",
+    "bilanco_flg": "Bilanco veri tipi bayragi",
+    "cst_sector": "Musteri faaliyet sektoru metni",
+    "cst_nace_code": "Musteri faaliyet NACE kodu",
+    "cst_nace_code_id": "Musteri faaliyet NACE kod id",
+    "bank_total_risk": "Bankadaki toplam kredi riski",
+    "financial_term_l1y": "Son 12 ay/yillik finansal donem tarihi",
+    "fs_net_sales_cumulative_l1y": "Son 12 ay net satis",
+    "fs_trade_receivables_l1y": "Son 12 ay ticari alacak",
+    "fs_notes_receivable_l1y": "Son 12 ay senetli alacak",
+    "supheli_ticari_alacaklar_l1y": "Son 12 ay supheli ticari alacak",
+    "equity_l1y": "Son 12 ay ozkaynak",
+    "fs_net_profit_cumulative_l1y": "Son 12 ay net kar",
+    "financial_term_q": "Ara donem/ceyrek finansal donem tarihi",
+    "annualization_q": "Ara donem finansali yilliklandirma katsayisi",
+    "fs_net_sales_cumulative_q": "Ara donem net satis",
+    "fs_ebitda_cumulative_q": "Ara donem FAVOK/EBITDA",
+    "fs_net_profit_cumulative_q": "Ara donem net kar",
+    "fs_trade_receivables_q": "Ara donem ticari alacak",
+    "fs_notes_receivable_q": "Ara donem senetli alacak",
+    "supheli_alacaklar_q": "Ara donem supheli alacak",
+    "fs_equity_q": "Ara donem ozkaynak",
+    "memzuc_total_risk": "Tum bankacilik sistemi toplam riski",
+    "memzuc_total_limit": "Tum bankacilik sistemi toplam limiti",
+    "memzuc_st_mt_cash_risk": "Kisa/orta vadeli nakdi risk",
+    "irb_rating_pd": "Rating notuna karsilik gelen PD",
+    "irb_model_pd": "Istatistiksel model bazli PD",
+    "rating_group": "Derecelendirme grubu",
+    "toplam_varlik_ttr": "Musterinin toplam varlik degeri",
+    "ref_donem_id": "Varlik verisinin referans donemi",
+    "gunceltkn_dgr": "Guncel bireysel KKB borcu",
+    "gunceltbe_dgr": "Guncel ticari KKB borcu",
+    "kkbguncelsorgu_no": "En son KKB sorgu numarasi",
+    "yukleme_zmn": "Kaydin yuklenme zamani",
+    "data_time": "Oracle input tablosu teknik veri zamani",
+    "created_at": "Oracle input tablosu teknik olusturma zamani",
+}
 
 FEATURE_FORMULAS = {
     "memzuc_limit_utilization": "memzuc_total_risk / memzuc_total_limit",
@@ -74,6 +118,8 @@ DECREASE_IS_RISK_HINTS = (
 TECHNICAL_COLUMNS = {
     "kkbguncelsorgu_no",
     "yukleme_zmn",
+    "data_time",
+    "created_at",
 }
 
 
@@ -138,6 +184,7 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
         raise ValueError("No usable transformed features could be selected.")
     logger.info("Selected transformed features: %s", len(selected_features))
     logger.debug("Selected transformed feature names: %s", ", ".join(selected_features))
+    log_transformed_feature_audit(selected_features, numeric_source_columns)
 
     logger.info("Building peer artifacts.")
     peer_artifacts = build_peer_artifacts(score_df, score_features, selected_features)
@@ -295,6 +342,12 @@ def build_evidence_packages_from_oracle(
         len(sample_frame.columns),
         len(numeric_source_columns),
         len(keep_columns),
+    )
+    log_raw_table_audit(
+        table_key=table_key,
+        sample_frame=sample_frame,
+        numeric_source_columns=numeric_source_columns,
+        keep_columns=keep_columns,
     )
     logger.info(
         "Loading Oracle train/score windows: max_train_rows=%s chunk_size=%s",
@@ -488,6 +541,108 @@ def feature_dictionary(feature: str) -> dict[str, Any]:
         "risk_direction": risk_direction(feature),
         "interpretation_note": interpretation_note(feature),
     }
+
+
+def raw_column_dictionary(column: str) -> dict[str, Any]:
+    return {
+        "label": RAW_COLUMN_LABELS.get(column) or FEATURE_LABELS.get(column),
+        "role": raw_column_role(column),
+    }
+
+
+def raw_column_role(column: str) -> str:
+    if column == ID_COLUMN:
+        return "id"
+    if column == TIME_COLUMN:
+        return "time"
+    if column in CONTEXT_COLUMNS:
+        return "context_or_peer"
+    if column in TECHNICAL_COLUMNS:
+        return "technical_excluded"
+    return "numeric_source_candidate"
+
+
+def log_raw_table_audit(
+    *,
+    table_key: str,
+    sample_frame: pd.DataFrame,
+    numeric_source_columns: list[str],
+    keep_columns: list[str],
+) -> None:
+    raw_columns = list(sample_frame.columns)
+    used_columns = set(keep_columns)
+    numeric_columns = set(numeric_source_columns)
+    missing_all = [column for column in raw_columns if not raw_column_dictionary(column)["label"]]
+    missing_used = [column for column in raw_columns if column in used_columns and not raw_column_dictionary(column)["label"]]
+    logger.info(
+        "AUDIT RAW SOURCE | table_key=%s table=%s raw_table_columns=%s used_input_columns=%s numeric_source_columns=%s dictionary_coverage_all=%s/%s dictionary_coverage_used=%s/%s",
+        table_key,
+        configured_oracle_table_name(table_key),
+        len(raw_columns),
+        len(used_columns),
+        len(numeric_columns),
+        len(raw_columns) - len(missing_all),
+        len(raw_columns),
+        len(used_columns) - len(missing_used),
+        len(used_columns),
+    )
+    for column in raw_columns:
+        dictionary = raw_column_dictionary(column)
+        logger.info(
+            "AUDIT RAW VARIABLE | name=%s used=%s numeric_source=%s role=%s description=%s",
+            column,
+            column in used_columns,
+            column in numeric_columns,
+            dictionary["role"],
+            dictionary["label"] or "MISSING_DICTIONARY",
+        )
+    if missing_used:
+        logger.warning("AUDIT RAW DICTIONARY MISSING FOR USED VARIABLES | columns=%s", ", ".join(missing_used))
+    if missing_all:
+        logger.warning("AUDIT RAW DICTIONARY MISSING FOR TABLE VARIABLES | columns=%s", ", ".join(missing_all))
+
+
+def log_transformed_feature_audit(selected_features: list[str], numeric_source_columns: list[str]) -> None:
+    missing = [feature for feature in selected_features if not feature_dictionary(feature).get("label")]
+    logger.info(
+        "AUDIT TRANSFORMED FEATURES | selected_count=%s dictionary_coverage=%s/%s",
+        len(selected_features),
+        len(selected_features) - len(missing),
+        len(selected_features),
+    )
+    for feature in selected_features:
+        dictionary = feature_dictionary(feature)
+        logger.info(
+            "AUDIT TRANSFORMED FEATURE | name=%s description=%s formula=%s source_raw_columns=%s risk_direction=%s note=%s",
+            feature,
+            dictionary["label"] or "MISSING_DICTIONARY",
+            dictionary["formula"] or "raw_or_direct_transformed_feature",
+            ",".join(feature_source_columns(feature, numeric_source_columns)) or "UNKNOWN",
+            dictionary["risk_direction"],
+            dictionary["interpretation_note"],
+        )
+    if missing:
+        logger.warning("AUDIT TRANSFORMED DICTIONARY MISSING | features=%s", ", ".join(missing))
+
+
+def feature_source_columns(feature: str, numeric_source_columns: list[str]) -> list[str]:
+    formula = FEATURE_FORMULAS.get(feature)
+    if not formula:
+        return [feature] if feature in numeric_source_columns else []
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", formula)
+    known_columns = set(numeric_source_columns) | set(RAW_COLUMN_LABELS) | set(FEATURE_LABELS)
+    return [token for token in tokens if token in known_columns]
+
+
+def configured_oracle_table_name(table_key: str) -> str:
+    try:
+        config = load_config()
+        secrets = load_secrets()
+        ora = OracleConnector(config, secrets)
+        return ora._qualified_table_name(table_key)
+    except Exception as exc:  # pragma: no cover - only affects diagnostic log text
+        logger.debug("Could not resolve configured Oracle table name for %s: %s", table_key, exc)
+        return table_key
 
 
 def risk_direction(feature: str) -> str:

@@ -20,7 +20,7 @@ from llm.evidence_builder import (
     load_input_frame,
     write_jsonl,
 )
-from llm.oracle_output import write_llm_outputs_to_oracle
+from llm.oracle_output import audit_llm_output_tables, write_llm_outputs_to_oracle
 
 
 logger = logging.getLogger(__name__)
@@ -70,12 +70,18 @@ def configure_logging() -> None:
 
     level_name = (os.environ.get("LLM_LOG_LEVEL") or os.environ.get("LOG_LEVEL") or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
+    log_file = Path(os.environ.get("LLM_LOG_FILE", "runtime/logs/cli/llm_anomaly.log"))
+    log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=level,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        stream=sys.stdout,
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(log_file, encoding="utf-8"),
+        ],
         force=True,
     )
+    logger.info("LLM console/file logging enabled: log_file=%s", log_file)
 
 
 def load_local_env_files() -> None:
@@ -300,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             logger.info("Oracle persistence completed: %s", oracle_result)
             print(json.dumps(oracle_result, ensure_ascii=False))
+        elif evidence:
+            logger.info("Oracle persistence skipped: dry_run=%s persist_oracle=%s", args.dry_run, args.persist_oracle)
+            audit_llm_output_tables(evidence[0].get("cohort_dt"))
         return 0
 
     if args.from_evidence:
@@ -333,6 +342,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         logger.info("Oracle persistence completed: %s", oracle_result)
         print(json.dumps(oracle_result, ensure_ascii=False))
+    elif evidence:
+        logger.info("Oracle persistence skipped: dry_run=%s persist_oracle=%s", args.dry_run, args.persist_oracle)
+        audit_llm_output_tables(evidence[0].get("cohort_dt"))
     return 0
 
 
