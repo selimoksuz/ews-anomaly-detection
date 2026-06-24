@@ -113,7 +113,7 @@ $env:LLM_SECTION="OPENSHIFT_LLM"
 
 Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/secrets.yaml ...` gibi kaynak bilgisi gorulur.
 
-Kurum ici endpoint `response_format` desteklemiyorsa logda `Invalid parameter: response_format` / `unsupported value` gibi HTTP 400 hata gorulebilir. Kod bu durumda ayni istegi otomatik `response_format` olmadan tekrar dener. Bastan kapatmak istersen:
+Kurum ici endpoint `response_format` desteklemiyorsa logda `Invalid parameter: response_format` / `unsupported value` gibi HTTP 400 hata gorulebilir. Kod otomatik fallback yapmaz; bu parametreyi kullanmak istemiyorsan bilincli olarak kapat:
 
 ```yaml
 llm:

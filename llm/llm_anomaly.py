@@ -146,25 +146,7 @@ def call_openai_compatible_chat(messages: list[dict[str, str]], *, timeout_secon
         )
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        if "response_format" in payload and exc.code in {400, 422} and "response_format" in body.lower():
-            logger.warning(
-                "LLM endpoint rejected response_format; retrying without response_format. status=%s body=%s",
-                exc.code,
-                truncate_text(body, 500),
-            )
-            payload.pop("response_format", None)
-            try:
-                raw = post_chat_completion(
-                    base_url=base_url,
-                    api_key=str(api_key),
-                    payload=payload,
-                    timeout_seconds=timeout_seconds,
-                )
-            except urllib.error.HTTPError as retry_exc:
-                retry_body = retry_exc.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"LLM call failed after response_format fallback: HTTP {retry_exc.code}: {retry_body}") from retry_exc
-        else:
-            raise RuntimeError(f"LLM call failed: HTTP {exc.code}: {body}") from exc
+        raise RuntimeError(f"LLM call failed: HTTP {exc.code}: {body}") from exc
 
     parsed = json.loads(raw)
     content = parsed["choices"][0]["message"]["content"]
