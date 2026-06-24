@@ -134,7 +134,7 @@ Endpoint ve key saglik kontrolu icin notebook:
 llm/llm_endpoint_healthcheck.ipynb
 ```
 
-Bu notebook sirasiyla config okuma, TCP/TLS handshake, `/models`, repo icindeki chat call ve opsiyonel LangChain call testlerini yapar.
+Bu notebook sirasiyla repo root bulma, `secret/secrets.yaml` path/section/key varligi kontrolu, config okuma, TCP/TLS handshake, `/models`, repo icindeki chat call ve opsiyonel LangChain call testlerini yapar.
 
 ## Promptu Dry Run Gormek
 
