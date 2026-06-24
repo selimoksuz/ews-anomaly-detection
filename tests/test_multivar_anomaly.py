@@ -243,6 +243,7 @@ class MultivarAnomalyTests(unittest.TestCase):
             "q_suspicious_to_trade_receivables",
             "suspicious_receivables_share",
             "pd_to_limit_utilization",
+            "pd_ratio",
             "pd_to_rating_group",
         ]
         generated = [column for column in features.columns if column not in {"cohort_dt", "mono_id"}]
@@ -250,6 +251,7 @@ class MultivarAnomalyTests(unittest.TestCase):
             [column for column in generated if any(token in column for token in forbidden_names)]
         )
         self.assertNotIn("pd_to_rating_group", features.columns)
+        self.assertNotIn("pd_ratio", features.columns)
         self.assertNotIn("q_equity_to_assets", features.columns)
         self.assertNotIn("q_debt_to_sales", features.columns)
         self.assertNotIn("memzuc_debt_to_q_sales", features.columns)
@@ -323,13 +325,13 @@ class MultivarAnomalyTests(unittest.TestCase):
     def test_reason_ranking_prioritizes_risk_increase_for_review(self):
         details = [
             {"feature": "l1y_equity_to_assets", "direction_comment": "peer medyan gore artmis; risk azalisi", "contribution_pct": 40.0},
-            {"feature": "pd_ratio", "direction_comment": "peer medyan gore artmis; risk artisi", "contribution_pct": 10.0},
+            {"feature": "memzuc_risk_to_assets", "direction_comment": "peer medyan gore artmis; risk artisi", "contribution_pct": 10.0},
             {"feature": "l1y_debt_to_sales", "is_missing_reason": True, "direction_comment": "deger missing oldugu icin yon yorumu yok", "contribution_pct": 5.0},
         ]
 
         ranked = rank_reason_details_for_review(details)
 
-        self.assertEqual(ranked[0]["feature"], "pd_ratio")
+        self.assertEqual(ranked[0]["feature"], "memzuc_risk_to_assets")
         self.assertEqual(ranked[1]["feature"], "l1y_debt_to_sales")
         self.assertEqual(ranked[2]["feature"], "l1y_equity_to_assets")
 
@@ -345,7 +347,7 @@ class MultivarAnomalyTests(unittest.TestCase):
         self.assertEqual(len(full), 100)
 
     def test_peer_representativeness_quality_labels(self):
-        level = pd.Series(["AY_SEGMENT_RATING_SEKTOR_SIZE", "AY_SEGMENT", "AY", "GLOBAL_FEATURE"])
+        level = pd.Series(["AY_SEGMENT_SEKTOR_SIZE", "AY_SEGMENT", "AY", "GLOBAL_FEATURE"])
         support = pd.Series([250, 80, 1000, 1000])
 
         score = peer_representativeness_score(level, support)
@@ -356,7 +358,7 @@ class MultivarAnomalyTests(unittest.TestCase):
         self.assertEqual(quality.iloc[2], "ZAYIF")
         self.assertEqual(quality.iloc[3], "ZAYIF")
 
-    def test_pd_feature_peer_hierarchy_does_not_use_rating_group(self):
+    def test_pd_ratio_is_not_available_as_anomaly_feature(self):
         rows = []
         for idx in range(8):
             rows.append(
@@ -375,10 +377,7 @@ class MultivarAnomalyTests(unittest.TestCase):
         raw = pd.DataFrame(rows)
         features = build_feature_frame(raw, [column for column in raw.columns if column not in {"cohort_dt", "mono_id"}])
 
-        peer = build_peer_artifacts(raw, features, ["pd_ratio"], min_support=2)
-
-        self.assertTrue(peer.level["pd_ratio"].str.contains("RATING").sum() == 0)
-        self.assertIn("AY_SEGMENT_SEKTOR_SIZE", set(peer.level["pd_ratio"]))
+        self.assertNotIn("pd_ratio", features.columns)
 
     def test_peer_meaningfulness_diagnostic_flags_weak_peer_set(self):
         diagnostic = peer_diagnostic_payload(

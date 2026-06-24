@@ -122,6 +122,13 @@ TECHNICAL_COLUMNS = {
     "created_at",
 }
 
+EXCLUDED_PD_RATING_SIGNALS = {
+    "pd_ratio",
+    "irb_rating_pd",
+    "irb_model_pd",
+    "rating_group",
+}
+
 
 @dataclass(frozen=True)
 class EvidenceConfig:
@@ -185,6 +192,7 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
     logger.info("Selected transformed features: %s", len(selected_features))
     logger.debug("Selected transformed feature names: %s", ", ".join(selected_features))
     log_transformed_feature_audit(selected_features, numeric_source_columns)
+    log_evidence_contract(selected_features)
 
     logger.info("Building peer artifacts.")
     peer_artifacts = build_peer_artifacts(score_df, score_features, selected_features)
@@ -231,9 +239,9 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                     "scoring_month_only": True,
                 },
                 "peer_definition": {
-                    "base": "same cohort month plus segment/rating/sector/size fallback hierarchy",
+                    "base": "same cohort month plus segment/sector/size fallback hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
-                    "note": "PD features do not use rating_group in peer hierarchy to avoid double-counting PD/rating information.",
+                    "note": "IRB PD, model PD, PD ratio and rating_group are not anomaly evidence and are not used in peer grouping.",
                 },
                 "data_quality": data_quality_payload(
                     row=row,
@@ -249,6 +257,10 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
         if len(packages) == 1 or len(packages) % 100 == 0:
             logger.info("Built evidence packages: %s/%s", len(packages), min(len(score_df), config.max_customers or len(score_df)))
     logger.info("Completed LLM evidence package build: packages=%s", len(packages))
+    log_step_done(
+        "03",
+        f"evidence_packages={len(packages)} transformed_features={len(selected_features)} scoring_month={scoring_month.date()} peer_variables=6 history_variables=10 trend_variables=4 seasonality_variables=8",
+    )
     return packages
 
 
@@ -267,7 +279,11 @@ def build_evidence_from_result_rows(frame: pd.DataFrame, *, max_customers: int |
     packages: list[dict[str, Any]] = []
     for _, row in frame.iterrows():
         details = parse_reason_details(row.get("reason_details"))
-        features = [feature_evidence_from_detail(detail) for detail in details]
+        features = [
+            feature_evidence_from_detail(detail)
+            for detail in details
+            if not is_excluded_pd_rating_signal(detail.get("feature") or detail.get("feature_name"))
+        ]
         packages.append(
             {
                 "mono_id": clean_context_value(row.get(ID_COLUMN)),
@@ -281,9 +297,9 @@ def build_evidence_from_result_rows(frame: pd.DataFrame, *, max_customers: int |
                     "source_note": "Built from runtime reason_details because raw input rows were not available locally.",
                 },
                 "peer_definition": {
-                    "base": "same cohort month plus segment/rating/sector/size fallback hierarchy",
+                    "base": "same cohort month plus segment/sector/size fallback hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
-                    "note": "PD features do not use rating_group in peer hierarchy to avoid double-counting PD/rating information.",
+                    "note": "IRB PD, model PD, PD ratio and rating_group are not anomaly evidence and are not used in peer grouping.",
                 },
                 "data_quality": {
                     "coverage_ratio": clean_number(row.get("coverage_ratio")),
@@ -310,6 +326,7 @@ def build_evidence_packages_from_oracle(
 ) -> list[dict[str, Any]]:
     """Build full LLM evidence directly from the configured Oracle input table."""
 
+    log_step("01", "Oracle kaynak tablo ve ay profili okunuyor")
     logger.info(
         "Profiling Oracle input months: table_key=%s requested_scoring_month=%s",
         table_key,
@@ -327,14 +344,19 @@ def build_evidence_packages_from_oracle(
         prior_rows,
         len(month_profile["month_counts"]),
     )
+    log_step_done(
+        "01",
+        f"source_table={configured_oracle_table_name(table_key)} selected_month={selected_month.date()} total_rows={month_profile['total_rows']} prior_rows={prior_rows}",
+    )
 
+    log_step("02", "Ham tablo kolonlari ve veri sozlugu denetleniyor")
     logger.info("Sampling Oracle input frame for feature inference: limit=%s", 100_000)
     sample_frame = sample_oracle_frame(table_key=table_key, limit=100_000)
     numeric_source_columns = infer_numeric_source_columns(sample_frame)
     keep_columns = [
         column
         for column in dict.fromkeys([ID_COLUMN, TIME_COLUMN, *CONTEXT_COLUMNS, *numeric_source_columns])
-        if column in sample_frame.columns
+        if column in sample_frame.columns and column not in EXCLUDED_PD_RATING_SIGNALS
     ]
     logger.info(
         "Oracle sample loaded: rows=%s columns=%s numeric_source_columns=%s keep_columns=%s",
@@ -348,6 +370,10 @@ def build_evidence_packages_from_oracle(
         sample_frame=sample_frame,
         numeric_source_columns=numeric_source_columns,
         keep_columns=keep_columns,
+    )
+    log_step_done(
+        "02",
+        f"raw_columns={len(sample_frame.columns)} used_input_columns={len(keep_columns)} numeric_source_columns={len(numeric_source_columns)} pd_rating_excluded={','.join(sorted(EXCLUDED_PD_RATING_SIGNALS))}",
     )
     logger.info(
         "Loading Oracle train/score windows: max_train_rows=%s chunk_size=%s",
@@ -373,6 +399,7 @@ def build_evidence_packages_from_oracle(
     combined = pd.concat([train_df, prior_df, score_df], ignore_index=True)
     combined = combined.drop_duplicates(subset=[ID_COLUMN, TIME_COLUMN], keep="last").reset_index(drop=True)
     logger.info("Combined Oracle evidence frame: rows=%s columns=%s", len(combined), len(combined.columns))
+    log_step("03", "Musteri bazli history ve aylik peer gruplariyla LLM evidence uretiliyor")
     return build_evidence_packages(
         combined,
         EvidenceConfig(
@@ -526,7 +553,12 @@ def resolve_scoring_month_from_profile(month_profile: dict[str, Any], scoring_mo
 def infer_numeric_source_columns(frame: pd.DataFrame) -> list[str]:
     columns = []
     for column in frame.columns:
-        if column in {ID_COLUMN, TIME_COLUMN} or column in CONTEXT_COLUMNS or column in TECHNICAL_COLUMNS:
+        if (
+            column in {ID_COLUMN, TIME_COLUMN}
+            or column in CONTEXT_COLUMNS
+            or column in TECHNICAL_COLUMNS
+            or column in EXCLUDED_PD_RATING_SIGNALS
+        ):
             continue
         series = pd.to_numeric(frame[column], errors="coerce")
         if float(series.notna().mean()) >= 0.05:
@@ -543,6 +575,20 @@ def feature_dictionary(feature: str) -> dict[str, Any]:
     }
 
 
+def is_excluded_pd_rating_signal(feature: Any) -> bool:
+    if feature is None:
+        return False
+    return str(feature).strip().lower() in EXCLUDED_PD_RATING_SIGNALS
+
+
+def log_step(step_no: str, title: str) -> None:
+    logger.info("========== STEP %s START | %s ==========", step_no, title)
+
+
+def log_step_done(step_no: str, detail: str) -> None:
+    logger.info("========== STEP %s DONE | %s ==========", step_no, detail)
+
+
 def raw_column_dictionary(column: str) -> dict[str, Any]:
     return {
         "label": RAW_COLUMN_LABELS.get(column) or FEATURE_LABELS.get(column),
@@ -555,6 +601,8 @@ def raw_column_role(column: str) -> str:
         return "id"
     if column == TIME_COLUMN:
         return "time"
+    if column in EXCLUDED_PD_RATING_SIGNALS:
+        return "excluded_pd_rating_signal"
     if column in CONTEXT_COLUMNS:
         return "context_or_peer"
     if column in TECHNICAL_COLUMNS:
@@ -623,6 +671,30 @@ def log_transformed_feature_audit(selected_features: list[str], numeric_source_c
         )
     if missing:
         logger.warning("AUDIT TRANSFORMED DICTIONARY MISSING | features=%s", ", ".join(missing))
+
+
+def log_evidence_contract(selected_features: list[str]) -> None:
+    logger.info(
+        "AUDIT PIPELINE CONTRACT | raw_input=Oracle raw monthly rows generated_features=%s peer_grouping=%s excluded_signals=%s",
+        len(selected_features),
+        "cohort_dt + musteri_segment + sector + monthly_size fallback; rating_group/PD excluded",
+        ",".join(sorted(EXCLUDED_PD_RATING_SIGNALS)),
+    )
+    logger.info(
+        "AUDIT PEER VARIABLES | variables=peer_definition_level,peer_hierarchy,peer_median,peer_z,peer_support,peer_quality"
+    )
+    logger.info(
+        "AUDIT HISTORY VARIABLES | variables=period_count,median,p25,p75,robust_scale,rolling_3m_median,rolling_6m_median,rolling_12m_median,previous_value,change_pct"
+    )
+    logger.info(
+        "AUDIT TREND VARIABLES | variables=slope_6m,slope_12m,trend_break_flag,trend_note"
+    )
+    logger.info(
+        "AUDIT SEASONALITY VARIABLES | variables=month_of_year,same_month_last_year_value,yoy_change_pct,same_month_customer_median,same_month_customer_z,seasonal_peer_median,seasonal_peer_z,seasonality_note"
+    )
+    logger.info(
+        "AUDIT LLM INPUT CONTRACT | one JSON evidence package per customer-period; includes context,data_quality,feature dictionary,current/history/peer/trend/seasonality; excludes model score,target,PD/rating signals"
+    )
 
 
 def feature_source_columns(feature: str, numeric_source_columns: list[str]) -> list[str]:

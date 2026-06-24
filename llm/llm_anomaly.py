@@ -20,7 +20,11 @@ from llm.evidence_builder import (
     load_input_frame,
     write_jsonl,
 )
-from llm.oracle_output import audit_llm_output_tables, write_llm_outputs_to_oracle
+from llm.oracle_output import (
+    audit_llm_output_tables,
+    ensure_llm_output_tables_in_oracle,
+    write_llm_outputs_to_oracle,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -154,6 +158,7 @@ def call_openai_compatible_chat(messages: list[dict[str, str]], *, timeout_secon
 
 
 def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False) -> list[dict[str, Any]]:
+    log_step("04", "LLM modelinden anomali karari aliniyor")
     decisions = []
     total = len(evidence_items)
     logger.info("Starting LLM decision step: evidence_items=%s dry_run=%s", total, dry_run)
@@ -176,8 +181,13 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
                 }
             )
         else:
-            decisions.append(call_openai_compatible_chat(messages))
+            try:
+                decisions.append(call_openai_compatible_chat(messages))
+            except Exception as exc:
+                log_step_failed("04", f"LLM decision failed at item {index}/{total}: {exc}")
+                raise
     logger.info("Completed LLM decision step: decisions=%s", len(decisions))
+    log_step_done("04", f"llm_decisions={len(decisions)} dry_run={dry_run}")
     return decisions
 
 
@@ -233,6 +243,9 @@ def main(argv: list[str] | None = None) -> int:
     run_oracle_parser.add_argument("--persist-oracle", action="store_true", default=True)
     run_oracle_parser.add_argument("--dry-run", action="store_true")
 
+    ensure_parser = subparsers.add_parser("ensure-output-tables")
+    ensure_parser.add_argument("--scoring-month")
+
     args = parser.parse_args(argv)
     logger.info("LLM anomaly CLI started: command=%s", args.command)
     if args.command == "build-evidence":
@@ -276,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "run-oracle":
+        log_step("00", "LLM Oracle anomaly run basladi")
         logger.info(
             "Running Oracle-to-LLM flow: table_key=%s scoring_month=%s max_customers=%s max_train_rows=%s top_features=%s dry_run=%s persist_oracle=%s",
             args.table_key,
@@ -293,22 +307,47 @@ def main(argv: list[str] | None = None) -> int:
             top_features=args.top_features,
             table_key=args.table_key,
         )
-        decisions = run_decisions(evidence, dry_run=args.dry_run)
+        try:
+            decisions = run_decisions(evidence, dry_run=args.dry_run)
+        except Exception as exc:
+            log_step_skipped("05", f"LLM karar uretilemedi; Oracle output tablolari doldurulmadi. reason={exc}")
+            if evidence:
+                audit_llm_output_tables(evidence[0].get("cohort_dt"))
+            return 2
         output_path = write_jsonl(decisions, args.output_path)
         logger.info("Wrote %s LLM decision rows to %s", len(decisions), output_path)
         print(f"wrote {len(decisions)} LLM decision rows to {output_path}")
         if args.persist_oracle and not args.dry_run:
+            log_step("05", "LLM kararlari Oracle output tablolarina yaziliyor")
             logger.info("Persisting LLM decisions to Oracle output tables.")
-            oracle_result = write_llm_outputs_to_oracle(
-                decisions,
-                llm_model=current_model_name(),
-                evidence_source="oracle_input",
-            )
+            try:
+                oracle_result = write_llm_outputs_to_oracle(
+                    decisions,
+                    llm_model=current_model_name(),
+                    evidence_source="oracle_input",
+                )
+            except Exception as exc:
+                log_step_failed("05", f"Oracle output write failed: {exc}")
+                if evidence:
+                    audit_llm_output_tables(evidence[0].get("cohort_dt"))
+                return 3
             logger.info("Oracle persistence completed: %s", oracle_result)
             print(json.dumps(oracle_result, ensure_ascii=False))
+            log_step_done(
+                "05",
+                f"inserted_results={oracle_result.get('inserted_results')} inserted_reasons={oracle_result.get('inserted_reasons')} results_table={oracle_result.get('results_table')} reasons_table={oracle_result.get('reasons_table')}",
+            )
         elif evidence:
+            log_step("05", "Dry-run output tablo audit'i yapiliyor")
             logger.info("Oracle persistence skipped: dry_run=%s persist_oracle=%s", args.dry_run, args.persist_oracle)
             audit_llm_output_tables(evidence[0].get("cohort_dt"))
+        return 0
+
+    if args.command == "ensure-output-tables":
+        log_step("00", "LLM Oracle output tablolari olusturuluyor veya kontrol ediliyor")
+        result = ensure_llm_output_tables_in_oracle(scoring_month=args.scoring_month)
+        log_step_done("00", "output table ensure completed")
+        print(json.dumps(result, ensure_ascii=False))
         return 0
 
     if args.from_evidence:
@@ -329,23 +368,57 @@ def main(argv: list[str] | None = None) -> int:
                 top_features=args.top_features,
             ),
         )
-    decisions = run_decisions(evidence, dry_run=args.dry_run)
+    try:
+        decisions = run_decisions(evidence, dry_run=args.dry_run)
+    except Exception as exc:
+        log_step_skipped("05", f"LLM karar uretilemedi; Oracle output tablolari doldurulmadi. reason={exc}")
+        if evidence:
+            audit_llm_output_tables(evidence[0].get("cohort_dt"))
+        return 2
     output_path = write_jsonl(decisions, args.output_path)
     logger.info("Wrote %s LLM decision rows to %s", len(decisions), output_path)
     print(f"wrote {len(decisions)} LLM decision rows to {output_path}")
     if args.persist_oracle and not args.dry_run:
+        log_step("05", "LLM kararlari Oracle output tablolarina yaziliyor")
         logger.info("Persisting LLM decisions to Oracle output tables.")
-        oracle_result = write_llm_outputs_to_oracle(
-            decisions,
-            llm_model=current_model_name(),
-            evidence_source=args.evidence_source,
-        )
+        try:
+            oracle_result = write_llm_outputs_to_oracle(
+                decisions,
+                llm_model=current_model_name(),
+                evidence_source=args.evidence_source,
+            )
+        except Exception as exc:
+            log_step_failed("05", f"Oracle output write failed: {exc}")
+            if evidence:
+                audit_llm_output_tables(evidence[0].get("cohort_dt"))
+            return 3
         logger.info("Oracle persistence completed: %s", oracle_result)
         print(json.dumps(oracle_result, ensure_ascii=False))
+        log_step_done(
+            "05",
+            f"inserted_results={oracle_result.get('inserted_results')} inserted_reasons={oracle_result.get('inserted_reasons')} results_table={oracle_result.get('results_table')} reasons_table={oracle_result.get('reasons_table')}",
+        )
     elif evidence:
+        log_step("05", "Dry-run output tablo audit'i yapiliyor")
         logger.info("Oracle persistence skipped: dry_run=%s persist_oracle=%s", args.dry_run, args.persist_oracle)
         audit_llm_output_tables(evidence[0].get("cohort_dt"))
     return 0
+
+
+def log_step(step_no: str, title: str) -> None:
+    logger.info("========== STEP %s START | %s ==========", step_no, title)
+
+
+def log_step_done(step_no: str, detail: str) -> None:
+    logger.info("========== STEP %s DONE | %s ==========", step_no, detail)
+
+
+def log_step_failed(step_no: str, reason: str) -> None:
+    logger.error("========== STEP %s FAILED | %s ==========", step_no, reason)
+
+
+def log_step_skipped(step_no: str, reason: str) -> None:
+    logger.warning("========== STEP %s SKIPPED | %s ==========", step_no, reason)
 
 
 def current_model_name() -> str:

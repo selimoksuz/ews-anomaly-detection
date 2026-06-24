@@ -83,6 +83,11 @@ def write_llm_outputs_to_oracle(
         len(result_frame),
         len(reason_frame),
     )
+    logger.info(
+        "AUDIT STRUCTURED OUTPUT CONTRACT | results_columns=%s reasons_columns=%s",
+        ",".join(LLM_RESULT_COLUMNS),
+        ",".join(LLM_REASON_COLUMNS),
+    )
 
     config = load_config()
     secrets = load_secrets()
@@ -210,6 +215,58 @@ def audit_llm_output_tables(
                 counts["scoring_month_rows"],
             )
     return audit
+
+
+def ensure_llm_output_tables_in_oracle(
+    *,
+    scoring_month=None,
+    results_table_key: str = DEFAULT_LLM_RESULTS_TABLE_KEY,
+    reasons_table_key: str = DEFAULT_LLM_REASONS_TABLE_KEY,
+) -> dict[str, Any]:
+    month = pd.Timestamp(scoring_month).normalize() if scoring_month else None
+    config = load_config()
+    secrets = load_secrets()
+    audit: dict[str, Any] = {}
+    with OracleConnector(config, secrets) as ora:
+        ensure_llm_output_tables(
+            ora,
+            results_table_key=results_table_key,
+            reasons_table_key=reasons_table_key,
+        )
+        for label, table_key in (("results", results_table_key), ("reasons", reasons_table_key)):
+            table_name = ora._qualified_table_name(table_key)
+            exists = ora._table_exists(table_key)
+            total_rows = count_table_rows(ora, table_key) if exists else 0
+            scoring_month_rows = (
+                count_llm_output_rows(ora, table_key, scoring_month=month, run_id=None)["scoring_month_rows"]
+                if exists and month is not None
+                else None
+            )
+            audit[label] = {
+                "table_key": table_key,
+                "table": table_name,
+                "exists": bool(exists),
+                "total_rows": int(total_rows),
+                "scoring_month": month.strftime("%Y-%m-%d") if month is not None else None,
+                "scoring_month_rows": scoring_month_rows,
+            }
+            logger.info(
+                "AUDIT OUTPUT TABLE ENSURE | label=%s table_key=%s table=%s exists=%s total_rows=%s scoring_month=%s scoring_month_rows=%s",
+                label,
+                table_key,
+                table_name,
+                exists,
+                total_rows,
+                month.date() if month is not None else None,
+                scoring_month_rows,
+            )
+    return audit
+
+
+def count_table_rows(ora: OracleConnector, table_key: str) -> int:
+    table_name = ora._qualified_table_name(table_key)
+    frame = ora._read_query(f"SELECT COUNT(*) AS ROW_COUNT FROM {table_name}")
+    return int(frame.iloc[0]["row_count"])
 
 
 def count_llm_output_rows(

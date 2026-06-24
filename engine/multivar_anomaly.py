@@ -74,9 +74,7 @@ DEFAULT_MAX_CALIBRATION_ROWS = 300_000
 REASON_CANDIDATE_MULTIPLIER = 2
 
 PEER_LEVEL_SCORE = {
-    "AY_SEGMENT_RATING_SEKTOR_SIZE": 1.00,
-    "AY_SEGMENT_SEKTOR_SIZE": 0.92,
-    "AY_SEGMENT_RATING_SIZE": 0.92,
+    "AY_SEGMENT_SEKTOR_SIZE": 1.00,
     "AY_SEGMENT_SEKTOR": 0.84,
     "AY_SEGMENT_SIZE": 0.78,
     "AY_SEGMENT": 0.68,
@@ -84,9 +82,7 @@ PEER_LEVEL_SCORE = {
     "GLOBAL_FEATURE": 0.25,
 }
 MEANINGFUL_PEER_LEVELS = {
-    "AY_SEGMENT_RATING_SEKTOR_SIZE",
     "AY_SEGMENT_SEKTOR_SIZE",
-    "AY_SEGMENT_RATING_SIZE",
     "AY_SEGMENT_SEKTOR",
     "AY_SEGMENT_SIZE",
 }
@@ -98,6 +94,7 @@ PEER_MEANINGFULNESS_THRESHOLDS = {
     "min_narrow_peer_pct": 75.0,
 }
 FORBIDDEN_DERIVED_FEATURES = {
+    "pd_ratio",
     "pd_to_rating_group",
     "q_equity_to_assets",
     "q_debt_to_sales",
@@ -1114,11 +1111,6 @@ def build_peer_context(raw_frame: pd.DataFrame, feature_frame: pd.DataFrame) -> 
         default="SEG_NA",
         index=feature_frame.index,
     )
-    context["peer_rating"] = normalized_category(
-        raw.get("rating_group"),
-        default="RATING_NA",
-        index=feature_frame.index,
-    )
     sector_source = raw.get("cst_nace_code_id")
     if sector_source is None:
         sector_source = raw.get("cst_nace_code")
@@ -1132,8 +1124,6 @@ def build_peer_context(raw_frame: pd.DataFrame, feature_frame: pd.DataFrame) -> 
     context["peer_size"] = monthly_size_bucket(feature_frame)
     context["peer_key"] = (
         context["peer_segment"].astype(str)
-        + "|"
-        + context["peer_rating"].astype(str)
         + "|"
         + context["peer_sector"].astype(str)
         + "|"
@@ -1186,17 +1176,8 @@ def peer_reference_for_feature(
 
 
 def peer_hierarchy_for_feature(feature: str) -> list[tuple[str, list[str]]]:
-    if str(feature).startswith("pd_"):
-        return [
-            ("AY_SEGMENT_SEKTOR_SIZE", [TIME_COLUMN, "peer_segment", "peer_sector", "peer_size"]),
-            ("AY_SEGMENT_SIZE", [TIME_COLUMN, "peer_segment", "peer_size"]),
-            ("AY_SEGMENT_SEKTOR", [TIME_COLUMN, "peer_segment", "peer_sector"]),
-            ("AY_SEGMENT", [TIME_COLUMN, "peer_segment"]),
-            ("AY", [TIME_COLUMN]),
-        ]
     return [
-        ("AY_SEGMENT_RATING_SEKTOR_SIZE", [TIME_COLUMN, "peer_segment", "peer_rating", "peer_sector", "peer_size"]),
-        ("AY_SEGMENT_RATING_SIZE", [TIME_COLUMN, "peer_segment", "peer_rating", "peer_size"]),
+        ("AY_SEGMENT_SEKTOR_SIZE", [TIME_COLUMN, "peer_segment", "peer_sector", "peer_size"]),
         ("AY_SEGMENT_SEKTOR", [TIME_COLUMN, "peer_segment", "peer_sector"]),
         ("AY_SEGMENT_SIZE", [TIME_COLUMN, "peer_segment", "peer_size"]),
         ("AY_SEGMENT", [TIME_COLUMN, "peer_segment"]),
