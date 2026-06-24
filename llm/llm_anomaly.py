@@ -129,18 +129,60 @@ def call_openai_compatible_chat(messages: list[dict[str, str]], *, timeout_secon
     api_key = settings.get("api_key")
     model = str(settings["model"])
     timeout_seconds = int(settings.get("timeout_seconds") or timeout_seconds)
+    response_format = str(settings.get("response_format") or "json_object")
     if not api_key:
         raise RuntimeError(
             "LLM API key is required. Set LLM_API_KEY/OPENAI_API_KEY env variable "
             "or secret/secrets.yaml llm.api_key / llm.sections.<section>.api_key."
         )
 
-    payload = {
+    payload = build_chat_payload(model=model, messages=messages, response_format=response_format)
+    try:
+        raw = post_chat_completion(
+            base_url=base_url,
+            api_key=str(api_key),
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+        )
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        if "response_format" in payload and exc.code in {400, 422} and "response_format" in body.lower():
+            logger.warning(
+                "LLM endpoint rejected response_format; retrying without response_format. status=%s body=%s",
+                exc.code,
+                truncate_text(body, 500),
+            )
+            payload.pop("response_format", None)
+            try:
+                raw = post_chat_completion(
+                    base_url=base_url,
+                    api_key=str(api_key),
+                    payload=payload,
+                    timeout_seconds=timeout_seconds,
+                )
+            except urllib.error.HTTPError as retry_exc:
+                retry_body = retry_exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"LLM call failed after response_format fallback: HTTP {retry_exc.code}: {retry_body}") from retry_exc
+        else:
+            raise RuntimeError(f"LLM call failed: HTTP {exc.code}: {body}") from exc
+
+    parsed = json.loads(raw)
+    content = parsed["choices"][0]["message"]["content"]
+    return parse_llm_json_content(content)
+
+
+def build_chat_payload(*, model: str, messages: list[dict[str, str]], response_format: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "model": model,
         "temperature": 0,
         "messages": messages,
-        "response_format": {"type": "json_object"},
     }
+    if llm_response_format_enabled(response_format):
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+def post_chat_completion(*, base_url: str, api_key: str, payload: dict[str, Any], timeout_seconds: int) -> str:
     request = urllib.request.Request(
         f"{base_url}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
@@ -150,16 +192,46 @@ def call_openai_compatible_chat(messages: list[dict[str, str]], *, timeout_secon
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"LLM call failed: HTTP {exc.code}: {body}") from exc
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        return response.read().decode("utf-8")
 
-    parsed = json.loads(raw)
-    content = parsed["choices"][0]["message"]["content"]
-    return json.loads(content)
+
+def parse_llm_json_content(content: Any) -> dict[str, Any]:
+    if isinstance(content, dict):
+        return content
+    text = str(content).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        extracted = extract_first_json_object(text)
+        if extracted is not None:
+            return extracted
+        raise RuntimeError(f"LLM response content is not valid JSON: {truncate_text(text, 500)}")
+
+
+def extract_first_json_object(text: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def llm_response_format_enabled(value: Any) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized not in {"", "none", "false", "0", "off", "disabled", "no"}
+
+
+def truncate_text(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...<truncated>"
 
 
 def load_llm_settings() -> dict[str, Any]:
@@ -192,14 +264,20 @@ def load_llm_settings() -> dict[str, Any]:
                 120,
             )
         ),
+        "response_format": first_non_empty(
+            os.environ.get("LLM_RESPONSE_FORMAT"),
+            secret_settings.get("response_format"),
+            "json_object",
+        ),
         "source": secret_settings.get("_source", "env/default"),
     }
     logger.info(
-        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s",
+        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s response_format=%s",
         mask_url(str(settings["base_url"])),
         settings["model"],
         llm_key_source(secret_settings),
         settings["timeout_seconds"],
+        settings["response_format"],
     )
     return settings
 

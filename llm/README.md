@@ -80,7 +80,7 @@ oracle:
 
 LLM ayarlari su sirayla okunur:
 
-1. Terminal env degiskenleri: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`
+1. Terminal env degiskenleri: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`, `LLM_RESPONSE_FORMAT`
 2. Lokal dosyalar: repo kokundeki `.env` ve `llm/.env.local`
 3. Secret dosyasi: `secret/secrets.yaml`
 4. Default: `base_url=https://api.openai.com/v1`, `model=gpt-4.1-mini`, `timeout_seconds=120`
@@ -96,6 +96,7 @@ llm:
       api_key: "<valid-key>"
       model: "gpt-oss-20b"
       timeout_seconds: 120
+      response_format: "json_object"
 ```
 
 Baska bir LLM section secmek icin:
@@ -111,6 +112,21 @@ $env:LLM_SECTION="OPENSHIFT_LLM"
 ```
 
 Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/secrets.yaml ...` gibi kaynak bilgisi gorulur.
+
+Kurum ici endpoint `response_format` desteklemiyorsa logda `Invalid parameter: response_format` / `unsupported value` gibi HTTP 400 hata gorulebilir. Kod bu durumda ayni istegi otomatik `response_format` olmadan tekrar dener. Bastan kapatmak istersen:
+
+```yaml
+llm:
+  sections:
+    OPENSHIFT_LLM:
+      response_format: "none"
+```
+
+veya:
+
+```bash
+export LLM_RESPONSE_FORMAT=none
+```
 
 Endpoint ve key saglik kontrolu icin notebook:
 
