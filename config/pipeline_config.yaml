@@ -35,6 +35,8 @@ oracle:
     multivar_input: EWS_ANOMALY_MULTIVAR_INPUT
     multivar_results: EWS_ANOMALY_MULTIVAR_RESULTS
     multivar_details: EWS_ANOMALY_MULTIVAR_DETAILS
+    llm_results: EWS_ANOMALY_LLM_RESULTS
+    llm_reason_details: EWS_ANOMALY_LLM_REASONS
 
 logging:
   logger_name: ews.multivar

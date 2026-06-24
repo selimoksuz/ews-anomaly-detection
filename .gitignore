@@ -9,8 +9,11 @@ output/
 artifacts/
 meta/
 runtime/
+.codex-remote-attachments/
 *.egg-info/
 dist/
 build/
 .env
+llm/.env.local
+tests/test_llm_*.py
 .claude/
