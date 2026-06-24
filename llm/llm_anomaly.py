@@ -300,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
             args.dry_run,
             args.persist_oracle and not args.dry_run,
         )
+        if args.persist_oracle and not args.dry_run:
+            logger.info("Ensuring Oracle output tables before LLM call so structured output target exists even if LLM fails.")
+            ensure_llm_output_tables_in_oracle(scoring_month=args.scoring_month)
         evidence = build_evidence_packages_from_oracle(
             scoring_month=args.scoring_month,
             max_customers=args.max_customers,

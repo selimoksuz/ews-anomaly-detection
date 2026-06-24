@@ -195,6 +195,11 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
     log_evidence_contract(selected_features)
 
     logger.info("Building peer artifacts.")
+    logger.info(
+        "Peer scope: peer reference is computed on full scoring cohort before max_customers filtering: score_rows=%s selected_features=%s grouping=cohort_dt+segment+sector+monthly_size",
+        len(score_df),
+        len(selected_features),
+    )
     peer_artifacts = build_peer_artifacts(score_df, score_features, selected_features)
     train_context = build_peer_context(train_df, train_features)
     score_context = build_peer_context(score_df, score_features)
@@ -376,7 +381,7 @@ def build_evidence_packages_from_oracle(
         f"raw_columns={len(sample_frame.columns)} used_input_columns={len(keep_columns)} numeric_source_columns={len(numeric_source_columns)} pd_rating_excluded={','.join(sorted(EXCLUDED_PD_RATING_SIGNALS))}",
     )
     logger.info(
-        "Loading Oracle train/score windows: max_train_rows=%s chunk_size=%s",
+        "Loading Oracle reference/score windows: reference_rows_limit=%s chunk_size=%s note='reference rows are used for feature/trend/seasonality statistics; they are not sent to the LLM'",
         max_train_rows,
         chunk_size,
     )
@@ -396,9 +401,28 @@ def build_evidence_packages_from_oracle(
         len(prior_df),
         len(score_df),
     )
-    combined = pd.concat([train_df, prior_df, score_df], ignore_index=True)
+    selected_customer_ids = selected_scoring_customer_ids(score_df, max_customers=max_customers)
+    selected_history_df = load_selected_customer_history_oracle(
+        table_key=table_key,
+        customer_ids=selected_customer_ids,
+        selected_month=selected_month,
+        keep_columns=keep_columns,
+    )
+    logger.info(
+        "Selected customer full history loaded: selected_customer_count=%s selected_history_rows=%s note='this full history is used for the actual LLM payload customers before max_customers filtering'",
+        len(selected_customer_ids),
+        len(selected_history_df),
+    )
+    combined = pd.concat([train_df, prior_df, selected_history_df, score_df], ignore_index=True)
     combined = combined.drop_duplicates(subset=[ID_COLUMN, TIME_COLUMN], keep="last").reset_index(drop=True)
     logger.info("Combined Oracle evidence frame: rows=%s columns=%s", len(combined), len(combined.columns))
+    logger.info(
+        "LLM payload scope: scoring_rows_available=%s llm_customer_payloads_requested=%s llm_customer_payloads_to_build=%s reference_rows_not_sent_to_llm=%s",
+        len(score_df),
+        max_customers or "ALL",
+        len(selected_customer_ids) if max_customers is not None else len(score_df),
+        len(train_df),
+    )
     log_step("03", "Musteri bazli history ve aylik peer gruplariyla LLM evidence uretiliyor")
     return build_evidence_packages(
         combined,
@@ -533,6 +557,49 @@ def build_feature_evidence(
             "history_periods": int(history_series.notna().sum()),
         },
     }
+
+
+def selected_scoring_customer_ids(score_df: pd.DataFrame, *, max_customers: int | None) -> list[str]:
+    ids = score_df[ID_COLUMN].astype(str).drop_duplicates()
+    if max_customers is not None:
+        ids = ids.head(max_customers)
+    return ids.tolist()
+
+
+def load_selected_customer_history_oracle(
+    *,
+    table_key: str,
+    customer_ids: list[str],
+    selected_month: pd.Timestamp,
+    keep_columns: list[str],
+    batch_size: int = 900,
+) -> pd.DataFrame:
+    if not customer_ids:
+        return pd.DataFrame(columns=keep_columns)
+    parts = []
+    config = load_config()
+    secrets = load_secrets()
+    selected_columns = ", ".join(column.upper() for column in keep_columns)
+    with OracleConnector(config, secrets) as ora:
+        table_name = ora._qualified_table_name(table_key)
+        for offset in range(0, len(customer_ids), batch_size):
+            batch = customer_ids[offset : offset + batch_size]
+            binds = {f"id_{index}": value for index, value in enumerate(batch)}
+            binds["selected_month"] = pd.Timestamp(selected_month).to_pydatetime()
+            placeholders = ", ".join(f":id_{index}" for index in range(len(batch)))
+            sql = f"""
+                SELECT {selected_columns}
+                FROM {table_name}
+                WHERE {ID_COLUMN.upper()} IN ({placeholders})
+                  AND TRUNC({TIME_COLUMN.upper()}) < TRUNC(:selected_month)
+            """
+            parts.append(normalize_columns(ora._read_query(sql, binds)))
+    if not parts:
+        return pd.DataFrame(columns=keep_columns)
+    history = pd.concat(parts, ignore_index=True)
+    if TIME_COLUMN in history.columns:
+        history[TIME_COLUMN] = parse_dates(history[TIME_COLUMN])
+    return history
 
 
 def resolve_scoring_month(frame: pd.DataFrame, scoring_month: str | None) -> pd.Timestamp:
