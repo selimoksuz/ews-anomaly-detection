@@ -32,6 +32,48 @@ python -m llm.llm_anomaly build-oracle runtime/llm/evidence_oracle.jsonl --max-c
 
 Bu komut `ZT_VAR2.EWS_ANOMALY_MULTIVAR_INPUT` ham input tablosundan okur, gerekli turetilmis feature'lari uretir ve LLM'e gidecek evidence JSONL dosyasini yazar.
 
+Oracle baglanti ayari `secret/secrets.yaml` icindedir. Bu dosya `secret/secrets.yaml.example` dosyasindan kopyalanir ve git'e alinmaz.
+
+Direkt kullanici ile baglanacaksan:
+
+```yaml
+oracle:
+  sections:
+    ORA_PRD_ZTUSER:
+      user: "<oracle-user>"
+      password: "<oracle-user-password>"
+      host: "<oracle-host>"
+      port: 1521
+      service_name: "<oracle-service>"
+```
+
+Proxy auth kullanacaksan:
+
+```yaml
+oracle:
+  sections:
+    ORA_PRD_ZTUSER:
+      user: "<proxy-user>[<target-schema-or-user>]"
+      password: "<proxy-user-password>"
+      host: "<oracle-host>"
+      port: 1521
+      service_name: "<oracle-service>"
+```
+
+Input/output tablo owner bilgileri credential tarafinda degil `config/pipeline_config.yaml` icindedir. Her tablo ayri owner/schema ile yazilabilir:
+
+```yaml
+oracle:
+  section: ORA_PRD_ZTUSER
+  tables:
+    multivar_input:
+      owner: X1
+      table: EWS_ANOMALY_MULTIVAR_INPUT
+    llm_results:
+      owner: X2
+      table: EWS_ANOMALY_LLM_RESULTS
+```
+
 ## Promptu Dry Run Gormek
 
 ```powershell

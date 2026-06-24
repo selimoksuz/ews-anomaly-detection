@@ -1,4 +1,5 @@
 config/secrets.yaml
+secret/secrets.yaml
 logs/
 models/
 __pycache__/

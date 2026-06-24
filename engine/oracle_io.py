@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -19,7 +21,8 @@ except ImportError as exc:  # pragma: no cover - dependency is environment-speci
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PIPELINE_CONFIG = PROJECT_ROOT / "config" / "pipeline_config.yaml"
-DEFAULT_SECRETS_CONFIG = PROJECT_ROOT / "config" / "secrets.yaml"
+DEFAULT_SECRETS_CONFIG = PROJECT_ROOT / "secret" / "secrets.yaml"
+_ORACLE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$.#]*$")
 
 
 def load_yaml_config(config_source=None, default_path: Path | None = None) -> dict:
@@ -37,15 +40,58 @@ def load_yaml_config(config_source=None, default_path: Path | None = None) -> di
     return payload
 
 
+def resolve_default_secrets_path() -> Path:
+    override = os.getenv("EWS_ANOMALY_SECRETS_PATH") or os.getenv("RISK_PIPELINE_SECRETS_PATH")
+    return Path(override) if override else DEFAULT_SECRETS_CONFIG
+
+
+def case_get(mapping: Mapping[str, Any], key: str) -> Any:
+    key_lower = str(key).lower()
+    for current_key, value in mapping.items():
+        if str(current_key).lower() == key_lower:
+            return value
+    return None
+
+
+def merge_non_empty(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+    for key, value in source.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        target[key] = value
+
+
+def parse_proxy_user(user: str) -> tuple[str, str | None]:
+    match = re.match(r"^([^[\]]+)\[([^[\]]+)\]$", str(user).strip())
+    if not match:
+        return str(user), None
+    return match.group(1).strip(), match.group(2).strip()
+
+
+def validate_oracle_identifier(value: str, label: str) -> str:
+    text = str(value).strip()
+    for part in text.split("."):
+        if not _ORACLE_IDENT_RE.match(part):
+            raise ValueError(f"Unsafe Oracle {label}: {value!r}")
+    return text.upper()
+
+
 class OracleConnector:
     """Thin Oracle connector for multivar input/output tables."""
 
     def __init__(self, pipeline_config=None, secrets=None) -> None:
         self.pipeline_config = load_yaml_config(pipeline_config, DEFAULT_PIPELINE_CONFIG)
-        self.secrets = load_yaml_config(secrets, DEFAULT_SECRETS_CONFIG)
+        self.secrets = load_yaml_config(secrets, resolve_default_secrets_path())
         self.pipeline_settings = self.pipeline_config["pipeline"]
         self.oracle_settings = self.pipeline_config["oracle"]
-        self.connection_settings = self.secrets["oracle"]
+        self.oracle_section = str(
+            self.oracle_settings.get("section")
+            or os.getenv("EWS_ANOMALY_ORACLE_SECTION")
+            or os.getenv("ORACLE_SECTION")
+            or "ORA_PRD_ZTUSER"
+        )
+        self.connection_settings = self._oracle_connection_settings(self.oracle_section)
         logger_name = self.pipeline_config.get("logging", {}).get("logger_name", "ews.multivar")
         self.logger = logging.getLogger(logger_name)
         self.connection = None
@@ -59,10 +105,44 @@ class OracleConnector:
 
     @property
     def schema(self) -> str:
-        schema = self.oracle_settings.get("schema") or self.connection_settings.get("schema")
+        schema = (
+            self.oracle_settings.get("default_owner")
+            or self.oracle_settings.get("schema")
+            or self.connection_settings.get("schema")
+        )
         if not schema:
             raise ValueError("Oracle schema must be defined in pipeline_config.yaml or secrets.yaml.")
-        return str(schema).upper()
+        return validate_oracle_identifier(str(schema), "schema")
+
+    def _oracle_connection_settings(self, section: str) -> dict[str, Any]:
+        oracle = self.secrets.get("oracle") if isinstance(self.secrets, dict) else None
+        if not isinstance(oracle, dict):
+            raise ValueError("secret/secrets.yaml must contain an oracle mapping.")
+
+        values: dict[str, Any] = {}
+        connection = oracle.get("connection")
+        if isinstance(connection, Mapping):
+            merge_non_empty(values, connection)
+
+        sections = oracle.get("sections") or oracle.get("connections")
+        if isinstance(sections, Mapping):
+            section_payload = case_get(sections, section)
+            if isinstance(section_payload, Mapping):
+                merge_non_empty(values, section_payload)
+
+        # Backward compatibility for the older flat oracle secret shape.
+        flat_keys = {"user", "password", "host", "port", "service_name", "service", "sid", "proxy_user"}
+        if not values and any(key in oracle for key in flat_keys):
+            merge_non_empty(values, oracle)
+
+        missing = [key for key in ("user", "password", "host", "port") if not values.get(key)]
+        if missing:
+            raise ValueError(
+                f"Oracle credential section {section!r} missing required keys: {', '.join(missing)}"
+            )
+        if not (values.get("service_name") or values.get("service") or values.get("sid")):
+            raise ValueError(f"Oracle credential section {section!r} must define service_name, service, or sid.")
+        return values
 
     def connect(self):
         if self.connection is not None:
@@ -75,15 +155,24 @@ class OracleConnector:
 
         host = self.connection_settings["host"]
         port = self.connection_settings["port"]
-        service_name = self.connection_settings["service_name"]
-        proxy_user = self.connection_settings["proxy_user"]
+        service_name = (
+            self.connection_settings.get("service_name")
+            or self.connection_settings.get("service")
+        )
+        sid = self.connection_settings.get("sid")
         user = self.connection_settings["user"]
         password = self.connection_settings["password"]
 
-        dsn = f"{host}:{port}/{service_name}"
-        proxy_identity = f"{proxy_user}[{user}]"
+        if service_name:
+            dsn = f"{host}:{port}/{service_name}"
+        else:
+            dsn = oracledb.makedsn(str(host), int(port), sid=str(sid))
+        connect_user, proxy_user = parse_proxy_user(str(user))
         self.logger.info("Opening Oracle connection to %s", dsn)
-        self.connection = oracledb.connect(user=proxy_identity, password=password, dsn=dsn)
+        kwargs = {"user": connect_user, "password": password, "dsn": dsn}
+        if proxy_user:
+            kwargs["proxy_user"] = proxy_user
+        self.connection = oracledb.connect(**kwargs)
         return self.connection
 
     def close(self) -> None:
@@ -93,6 +182,7 @@ class OracleConnector:
 
     def _table_exists(self, table_key: str) -> bool:
         table_name = self._table_name(table_key)
+        owner = self._table_owner(table_key)
         connection = self.connect()
         with connection.cursor() as cursor:
             cursor.execute(
@@ -102,13 +192,14 @@ class OracleConnector:
                 WHERE OWNER = :owner
                   AND TABLE_NAME = :table_name
                 """,
-                owner=self.schema,
+                owner=owner,
                 table_name=table_name,
             )
             return bool(cursor.fetchone()[0])
 
     def _table_columns(self, table_key: str) -> set[str]:
         table_name = self._table_name(table_key)
+        owner = self._table_owner(table_key)
         connection = self.connect()
         with connection.cursor() as cursor:
             cursor.execute(
@@ -118,7 +209,7 @@ class OracleConnector:
                 WHERE OWNER = :owner
                   AND TABLE_NAME = :table_name
                 """,
-                owner=self.schema,
+                owner=owner,
                 table_name=table_name,
             )
             return {row[0] for row in cursor.fetchall()}
@@ -146,10 +237,30 @@ class OracleConnector:
         tables = self.oracle_settings["tables"]
         if table_key not in tables:
             raise KeyError(f"Oracle table '{table_key}' is not defined in pipeline_config.yaml.")
-        return str(tables[table_key]).upper()
+        payload = tables[table_key]
+        if isinstance(payload, Mapping):
+            table = payload.get("table") or payload.get("name")
+        else:
+            table = payload
+        if not table:
+            raise ValueError(f"Oracle table '{table_key}' must define table/name.")
+        return validate_oracle_identifier(str(table), "table")
+
+    def _table_owner(self, table_key: str) -> str:
+        tables = self.oracle_settings["tables"]
+        if table_key not in tables:
+            raise KeyError(f"Oracle table '{table_key}' is not defined in pipeline_config.yaml.")
+        payload = tables[table_key]
+        owner = None
+        if isinstance(payload, Mapping):
+            owner = payload.get("owner") or payload.get("schema")
+        owner = owner or self.oracle_settings.get("default_owner") or self.oracle_settings.get("schema")
+        if not owner:
+            raise ValueError(f"Oracle table '{table_key}' must define owner/schema.")
+        return validate_oracle_identifier(str(owner), "owner")
 
     def _qualified_table_name(self, table_key: str) -> str:
-        return f"{self.schema}.{self._table_name(table_key)}"
+        return f"{self._table_owner(table_key)}.{self._table_name(table_key)}"
 
     @staticmethod
     def _coerce_scalar_sequence(values: Sequence[Any]) -> tuple[Any, ...]:

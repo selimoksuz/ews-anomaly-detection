@@ -30,13 +30,23 @@ multivar_anomaly:
       details_table_key: multivar_details
 
 oracle:
-  schema: ZT_VAR2
+  section: ORA_PRD_ZTUSER
   tables:
-    multivar_input: EWS_ANOMALY_MULTIVAR_INPUT
-    multivar_results: EWS_ANOMALY_MULTIVAR_RESULTS
-    multivar_details: EWS_ANOMALY_MULTIVAR_DETAILS
-    llm_results: EWS_ANOMALY_LLM_RESULTS
-    llm_reason_details: EWS_ANOMALY_LLM_REASONS
+    multivar_input:
+      owner: ZT_VAR2
+      table: EWS_ANOMALY_MULTIVAR_INPUT
+    multivar_results:
+      owner: ZT_VAR2
+      table: EWS_ANOMALY_MULTIVAR_RESULTS
+    multivar_details:
+      owner: ZT_VAR2
+      table: EWS_ANOMALY_MULTIVAR_DETAILS
+    llm_results:
+      owner: ZT_VAR2
+      table: EWS_ANOMALY_LLM_RESULTS
+    llm_reason_details:
+      owner: ZT_VAR2
+      table: EWS_ANOMALY_LLM_REASONS
 
 logging:
   logger_name: ews.multivar

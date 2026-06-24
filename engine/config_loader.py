@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -75,7 +76,11 @@ def save_config(config: dict, config_path=None):
 
 
 def load_secrets(secrets_path=None):
-    path = Path(secrets_path) if secrets_path else PROJECT_ROOT / "config" / "secrets.yaml"
+    if secrets_path:
+        path = Path(secrets_path)
+    else:
+        override = os.getenv("EWS_ANOMALY_SECRETS_PATH") or os.getenv("RISK_PIPELINE_SECRETS_PATH")
+        path = Path(override) if override else PROJECT_ROOT / "secret" / "secrets.yaml"
     return _load_yaml_mapping(path)
 
 
