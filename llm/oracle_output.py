@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -15,6 +16,8 @@ from engine.oracle_io import OracleConnector
 
 DEFAULT_LLM_RESULTS_TABLE_KEY = "llm_results"
 DEFAULT_LLM_REASONS_TABLE_KEY = "llm_reason_details"
+
+logger = logging.getLogger(__name__)
 
 LLM_RESULT_COLUMNS = [
     "run_id",
@@ -55,6 +58,7 @@ def write_llm_outputs_to_oracle(
     batch_size: int = 1000,
 ) -> dict[str, Any]:
     if not decisions:
+        logger.info("No LLM decisions to persist to Oracle.")
         return {
             "backend": "oracle",
             "run_id": None,
@@ -73,32 +77,52 @@ def write_llm_outputs_to_oracle(
         evidence_source=evidence_source,
     )
     reason_frame = prepare_llm_reason_frame(decisions, run_id=run_id)
+    logger.info(
+        "Prepared LLM Oracle output frames: run_id=%s result_rows=%s reason_rows=%s",
+        run_id,
+        len(result_frame),
+        len(reason_frame),
+    )
 
     config = load_config()
     secrets = load_secrets()
     with OracleConnector(config, secrets) as ora:
+        logger.info(
+            "Ensuring LLM Oracle output tables: results=%s reasons=%s",
+            ora._qualified_table_name(results_table_key),
+            ora._qualified_table_name(reasons_table_key),
+        )
         ensure_llm_output_tables(
             ora,
             results_table_key=results_table_key,
             reasons_table_key=reasons_table_key,
         )
+        logger.info("Deleting previous LLM output rows for scoring_month=%s", scoring_month.date())
         deleted = delete_llm_output_month(
             ora,
             scoring_month=scoring_month,
             results_table_key=results_table_key,
             reasons_table_key=reasons_table_key,
         )
+        logger.info("Deleted old LLM rows: results=%s reasons=%s", deleted["results"], deleted["reasons"])
+        logger.info("Inserting LLM result rows: rows=%s", len(result_frame))
         inserted_results = insert_frame(
             ora,
             results_table_key,
             result_frame,
             batch_size=batch_size,
         )
+        logger.info("Inserting LLM reason rows: rows=%s", len(reason_frame))
         inserted_reasons = insert_frame(
             ora,
             reasons_table_key,
             reason_frame,
             batch_size=batch_size,
+        )
+        logger.info(
+            "Inserted LLM Oracle rows: results=%s reasons=%s",
+            inserted_results,
+            inserted_reasons,
         )
         return {
             "backend": "oracle",

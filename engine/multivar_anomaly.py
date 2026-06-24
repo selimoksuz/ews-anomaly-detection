@@ -756,11 +756,32 @@ def load_windows_oracle(
     latest_prior_by_id = pd.DataFrame()
     train_frac = 1.0 if max_train_rows is None else min(1.0, float(max_train_rows) / float(max(prior_rows, 1)))
     rng = np.random.default_rng(random_state)
+    rows_seen = 0
+    prior_rows_seen = 0
+    scoring_rows_seen = 0
+    sampled_train_rows = 0
 
-    for chunk in iter_multivar_oracle_chunks(table_key=table_key, columns=keep_columns, chunk_size=chunk_size):
+    logger.info(
+        "Loading Oracle windows: table_key=%s selected_month=%s prior_rows=%s max_train_rows=%s train_sample_frac=%.6f chunk_size=%s keep_columns=%s",
+        table_key,
+        selected_month.date(),
+        prior_rows,
+        max_train_rows,
+        train_frac,
+        chunk_size,
+        len(keep_columns),
+    )
+
+    for chunk_index, chunk in enumerate(
+        iter_multivar_oracle_chunks(table_key=table_key, columns=keep_columns, chunk_size=chunk_size),
+        start=1,
+    ):
+        rows_seen += len(chunk)
         chunk[TIME_COLUMN] = parse_dates(chunk[TIME_COLUMN])
         prior = chunk[chunk[TIME_COLUMN] < selected_month]
         scoring = chunk[chunk[TIME_COLUMN] == selected_month]
+        prior_rows_seen += len(prior)
+        scoring_rows_seen += len(scoring)
 
         if not prior.empty:
             if train_frac >= 1.0:
@@ -770,10 +791,20 @@ def load_windows_oracle(
                 sample = prior.sample(frac=train_frac, random_state=seed)
             if not sample.empty:
                 train_parts.append(sample)
+                sampled_train_rows += len(sample)
             latest_prior_by_id = update_latest_by_id(latest_prior_by_id, prior)
 
         if not scoring.empty:
             score_parts.append(scoring)
+        logger.info(
+            "Oracle chunk %s loaded: chunk_rows=%s total_rows=%s prior_rows_seen=%s scoring_rows_seen=%s sampled_train_rows=%s",
+            chunk_index,
+            len(chunk),
+            rows_seen,
+            prior_rows_seen,
+            scoring_rows_seen,
+            sampled_train_rows,
+        )
 
     if not train_parts:
         raise ValueError("No training sample was collected from prior months.")
@@ -793,6 +824,13 @@ def load_windows_oracle(
         if not latest_prior_by_id.empty
         else latest_prior_by_id
     )
+    logger.info(
+        "Oracle window load completed: scanned_rows=%s train_rows=%s prior_latest_rows=%s score_rows=%s",
+        rows_seen,
+        len(train_df),
+        len(prior_df),
+        len(score_df),
+    )
     return train_df.reset_index(drop=True), score_df.reset_index(drop=True), prior_df.reset_index(drop=True)
 
 
@@ -807,6 +845,12 @@ def iter_multivar_oracle_chunks(
     with OracleConnector(config, secrets) as ora:
         select_columns = ", ".join(column.upper() for column in columns)
         sql = f"SELECT {select_columns} FROM {ora._qualified_table_name(table_key)}"
+        logger.info(
+            "Starting Oracle chunk reader: table=%s selected_columns=%s chunk_size=%s",
+            ora._qualified_table_name(table_key),
+            len(columns),
+            chunk_size,
+        )
         with ora.connection.cursor() as cursor:
             cursor.execute(sql)
             output_columns = [description[0].lower() for description in cursor.description]
@@ -815,6 +859,7 @@ def iter_multivar_oracle_chunks(
                 if not rows:
                     break
                 yield pd.DataFrame(rows, columns=output_columns)
+        logger.info("Oracle chunk reader completed: table=%s", ora._qualified_table_name(table_key))
 
 
 def count_multivar_oracle_rows(table_key: str = DEFAULT_MULTIVAR_TABLE_KEY) -> int:

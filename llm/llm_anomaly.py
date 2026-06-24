@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -20,6 +22,8 @@ from llm.evidence_builder import (
 )
 from llm.oracle_output import write_llm_outputs_to_oracle
 
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """Sen banka kredi riski ve erken uyari anomalisi degerlendiren uzman bir analistsin.
 
@@ -59,6 +63,19 @@ OUTPUT_CONTRACT = {
     "caveat": "string or null",
     "recommended_action": "Izle | Manuel incele | Portfoy yoneticisine gonder | Limit/risk gozden gecir | Veri kontrolu yap",
 }
+
+
+def configure_logging() -> None:
+    """Enable visible console logs for CLI runs."""
+
+    level_name = (os.environ.get("LLM_LOG_LEVEL") or os.environ.get("LOG_LEVEL") or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
 
 
 def load_local_env_files() -> None:
@@ -132,7 +149,16 @@ def call_openai_compatible_chat(messages: list[dict[str, str]], *, timeout_secon
 
 def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False) -> list[dict[str, Any]]:
     decisions = []
-    for item in evidence_items:
+    total = len(evidence_items)
+    logger.info("Starting LLM decision step: evidence_items=%s dry_run=%s", total, dry_run)
+    for index, item in enumerate(evidence_items, start=1):
+        logger.info(
+            "LLM decision progress: %s/%s mono_id=%s cohort_dt=%s",
+            index,
+            total,
+            item.get("mono_id"),
+            item.get("cohort_dt"),
+        )
         messages = build_messages(item)
         if dry_run:
             decisions.append(
@@ -145,6 +171,7 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
             )
         else:
             decisions.append(call_openai_compatible_chat(messages))
+    logger.info("Completed LLM decision step: decisions=%s", len(decisions))
     return decisions
 
 
@@ -158,6 +185,7 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     parser = argparse.ArgumentParser(description="Build evidence and optionally run LLM anomaly decisions.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -200,7 +228,9 @@ def main(argv: list[str] | None = None) -> int:
     run_oracle_parser.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args(argv)
+    logger.info("LLM anomaly CLI started: command=%s", args.command)
     if args.command == "build-evidence":
+        logger.info("Loading input file: %s", args.input_path)
         frame = load_input_frame(args.input_path)
         if args.from_results:
             evidence = build_evidence_from_result_rows(frame, max_customers=args.max_customers)
@@ -214,10 +244,19 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         output_path = write_jsonl(evidence, args.output_path)
+        logger.info("Wrote %s evidence packages to %s", len(evidence), output_path)
         print(f"wrote {len(evidence)} evidence packages to {output_path}")
         return 0
 
     if args.command == "build-oracle":
+        logger.info(
+            "Building Oracle evidence: table_key=%s scoring_month=%s max_customers=%s max_train_rows=%s top_features=%s",
+            args.table_key,
+            args.scoring_month or "latest",
+            args.max_customers,
+            args.max_train_rows,
+            args.top_features,
+        )
         evidence = build_evidence_packages_from_oracle(
             scoring_month=args.scoring_month,
             max_customers=args.max_customers,
@@ -226,10 +265,21 @@ def main(argv: list[str] | None = None) -> int:
             table_key=args.table_key,
         )
         output_path = write_jsonl(evidence, args.output_path)
+        logger.info("Wrote %s Oracle evidence packages to %s", len(evidence), output_path)
         print(f"wrote {len(evidence)} Oracle evidence packages to {output_path}")
         return 0
 
     if args.command == "run-oracle":
+        logger.info(
+            "Running Oracle-to-LLM flow: table_key=%s scoring_month=%s max_customers=%s max_train_rows=%s top_features=%s dry_run=%s persist_oracle=%s",
+            args.table_key,
+            args.scoring_month or "latest",
+            args.max_customers,
+            args.max_train_rows,
+            args.top_features,
+            args.dry_run,
+            args.persist_oracle and not args.dry_run,
+        )
         evidence = build_evidence_packages_from_oracle(
             scoring_month=args.scoring_month,
             max_customers=args.max_customers,
@@ -239,22 +289,28 @@ def main(argv: list[str] | None = None) -> int:
         )
         decisions = run_decisions(evidence, dry_run=args.dry_run)
         output_path = write_jsonl(decisions, args.output_path)
+        logger.info("Wrote %s LLM decision rows to %s", len(decisions), output_path)
         print(f"wrote {len(decisions)} LLM decision rows to {output_path}")
         if args.persist_oracle and not args.dry_run:
+            logger.info("Persisting LLM decisions to Oracle output tables.")
             oracle_result = write_llm_outputs_to_oracle(
                 decisions,
                 llm_model=current_model_name(),
                 evidence_source="oracle_input",
             )
+            logger.info("Oracle persistence completed: %s", oracle_result)
             print(json.dumps(oracle_result, ensure_ascii=False))
         return 0
 
     if args.from_evidence:
+        logger.info("Reading evidence JSONL: %s", args.input_path)
         evidence = read_jsonl(args.input_path)
     elif args.from_results:
+        logger.info("Loading existing result rows: %s", args.input_path)
         frame = load_input_frame(args.input_path)
         evidence = build_evidence_from_result_rows(frame, max_customers=args.max_customers)
     else:
+        logger.info("Loading raw input rows: %s", args.input_path)
         frame = load_input_frame(args.input_path)
         evidence = build_evidence_packages(
             frame,
@@ -266,13 +322,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     decisions = run_decisions(evidence, dry_run=args.dry_run)
     output_path = write_jsonl(decisions, args.output_path)
+    logger.info("Wrote %s LLM decision rows to %s", len(decisions), output_path)
     print(f"wrote {len(decisions)} LLM decision rows to {output_path}")
     if args.persist_oracle and not args.dry_run:
+        logger.info("Persisting LLM decisions to Oracle output tables.")
         oracle_result = write_llm_outputs_to_oracle(
             decisions,
             llm_model=current_model_name(),
             evidence_source=args.evidence_source,
         )
+        logger.info("Oracle persistence completed: %s", oracle_result)
         print(json.dumps(oracle_result, ensure_ascii=False))
     return 0
 

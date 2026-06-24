@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,8 @@ from engine.multivar_anomaly import (
     select_model_features,
 )
 
+
+logger = logging.getLogger(__name__)
 
 FEATURE_FORMULAS = {
     "memzuc_limit_utilization": "memzuc_total_risk / memzuc_total_limit",
@@ -96,6 +99,14 @@ def load_input_frame(input_path: str | Path) -> pd.DataFrame:
 def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None = None) -> list[dict[str, Any]]:
     config = config or EvidenceConfig()
     frame = normalize_columns(frame).copy()
+    logger.info(
+        "Building LLM evidence packages: rows=%s columns=%s requested_scoring_month=%s max_customers=%s top_features=%s",
+        len(frame),
+        len(frame.columns),
+        config.scoring_month or "latest",
+        config.max_customers,
+        config.top_features,
+    )
     if ID_COLUMN not in frame.columns:
         raise ValueError(f"Missing required id column: {ID_COLUMN}")
     if TIME_COLUMN not in frame.columns:
@@ -110,18 +121,29 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
         raise ValueError(f"No prior rows available before scoring month {scoring_month.date()}.")
     if score_df.empty:
         raise ValueError(f"No scoring rows found for {scoring_month.date()}.")
+    logger.info(
+        "Resolved scoring month: %s train_rows=%s score_rows=%s",
+        scoring_month.date(),
+        len(train_df),
+        len(score_df),
+    )
 
     numeric_source_columns = infer_numeric_source_columns(frame)
+    logger.info("Inferred numeric source columns: %s", len(numeric_source_columns))
     train_features = build_feature_frame(train_df, numeric_source_columns)
     score_features = build_feature_frame(score_df, numeric_source_columns)
     selected_features = select_model_features(train_features, score_features)
     selected_features = [feature for feature in selected_features if feature not in FORBIDDEN_DERIVED_FEATURES]
     if not selected_features:
         raise ValueError("No usable transformed features could be selected.")
+    logger.info("Selected transformed features: %s", len(selected_features))
+    logger.debug("Selected transformed feature names: %s", ", ".join(selected_features))
 
+    logger.info("Building peer artifacts.")
     peer_artifacts = build_peer_artifacts(score_df, score_features, selected_features)
     train_context = build_peer_context(train_df, train_features)
     score_context = build_peer_context(score_df, score_features)
+    logger.info("Peer/context artifacts are ready.")
 
     packages: list[dict[str, Any]] = []
     for row_position, row_index in enumerate(score_df.index):
@@ -177,6 +199,9 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                 "features": feature_evidence,
             }
         )
+        if len(packages) == 1 or len(packages) % 100 == 0:
+            logger.info("Built evidence packages: %s/%s", len(packages), min(len(score_df), config.max_customers or len(score_df)))
+    logger.info("Completed LLM evidence package build: packages=%s", len(packages))
     return packages
 
 
@@ -238,12 +263,25 @@ def build_evidence_packages_from_oracle(
 ) -> list[dict[str, Any]]:
     """Build full LLM evidence directly from the configured Oracle input table."""
 
+    logger.info(
+        "Profiling Oracle input months: table_key=%s requested_scoring_month=%s",
+        table_key,
+        scoring_month or "latest",
+    )
     month_profile = profile_months_oracle(table_key=table_key)
     selected_month = resolve_scoring_month_from_profile(month_profile, scoring_month)
     prior_rows = int(sum(count for month, count in month_profile["month_counts"].items() if month < selected_month))
     if prior_rows <= 0:
         raise ValueError(f"No prior rows available before scoring month {selected_month.date()}.")
+    logger.info(
+        "Oracle month profile resolved: selected_month=%s total_rows=%s prior_rows=%s month_count=%s",
+        selected_month.date(),
+        month_profile["total_rows"],
+        prior_rows,
+        len(month_profile["month_counts"]),
+    )
 
+    logger.info("Sampling Oracle input frame for feature inference: limit=%s", 100_000)
     sample_frame = sample_oracle_frame(table_key=table_key, limit=100_000)
     numeric_source_columns = infer_numeric_source_columns(sample_frame)
     keep_columns = [
@@ -251,6 +289,18 @@ def build_evidence_packages_from_oracle(
         for column in dict.fromkeys([ID_COLUMN, TIME_COLUMN, *CONTEXT_COLUMNS, *numeric_source_columns])
         if column in sample_frame.columns
     ]
+    logger.info(
+        "Oracle sample loaded: rows=%s columns=%s numeric_source_columns=%s keep_columns=%s",
+        len(sample_frame),
+        len(sample_frame.columns),
+        len(numeric_source_columns),
+        len(keep_columns),
+    )
+    logger.info(
+        "Loading Oracle train/score windows: max_train_rows=%s chunk_size=%s",
+        max_train_rows,
+        chunk_size,
+    )
     train_df, score_df, prior_df = load_windows_oracle(
         table_key=table_key,
         selected_month=selected_month,
@@ -261,8 +311,15 @@ def build_evidence_packages_from_oracle(
         random_state=random_state,
         keep_columns=keep_columns,
     )
+    logger.info(
+        "Oracle windows loaded: train_rows=%s prior_rows=%s score_rows=%s",
+        len(train_df),
+        len(prior_df),
+        len(score_df),
+    )
     combined = pd.concat([train_df, prior_df, score_df], ignore_index=True)
     combined = combined.drop_duplicates(subset=[ID_COLUMN, TIME_COLUMN], keep="last").reset_index(drop=True)
+    logger.info("Combined Oracle evidence frame: rows=%s columns=%s", len(combined), len(combined.columns))
     return build_evidence_packages(
         combined,
         EvidenceConfig(
