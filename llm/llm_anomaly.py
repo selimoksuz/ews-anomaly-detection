@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from engine.config_loader import load_secrets
 from llm.evidence_builder import (
     EvidenceConfig,
     build_evidence_from_result_rows,
@@ -123,12 +124,16 @@ def build_messages(evidence: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def call_openai_compatible_chat(messages: list[dict[str, str]], *, timeout_seconds: int = 120) -> dict[str, Any]:
-    load_local_env_files()
-    base_url = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    api_key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    model = os.environ.get("LLM_MODEL", "gpt-4.1-mini")
+    settings = load_llm_settings()
+    base_url = str(settings["base_url"]).rstrip("/")
+    api_key = settings.get("api_key")
+    model = str(settings["model"])
+    timeout_seconds = int(settings.get("timeout_seconds") or timeout_seconds)
     if not api_key:
-        raise RuntimeError("LLM_API_KEY or OPENAI_API_KEY env variable is required.")
+        raise RuntimeError(
+            "LLM API key is required. Set LLM_API_KEY/OPENAI_API_KEY env variable "
+            "or secret/secrets.yaml llm.api_key / llm.sections.<section>.api_key."
+        )
 
     payload = {
         "model": model,
@@ -155,6 +160,123 @@ def call_openai_compatible_chat(messages: list[dict[str, str]], *, timeout_secon
     parsed = json.loads(raw)
     content = parsed["choices"][0]["message"]["content"]
     return json.loads(content)
+
+
+def load_llm_settings() -> dict[str, Any]:
+    """Load OpenAI-compatible LLM settings from env/local env files or secrets.yaml."""
+
+    load_local_env_files()
+    secret_settings = load_llm_secret_settings()
+    settings = {
+        "base_url": first_non_empty(
+            os.environ.get("LLM_BASE_URL"),
+            os.environ.get("OPENAI_BASE_URL"),
+            secret_settings.get("base_url"),
+            "https://api.openai.com/v1",
+        ),
+        "api_key": first_non_empty(
+            os.environ.get("LLM_API_KEY"),
+            os.environ.get("OPENAI_API_KEY"),
+            secret_settings.get("api_key"),
+            secret_settings.get("openai_api_key"),
+        ),
+        "model": first_non_empty(
+            os.environ.get("LLM_MODEL"),
+            secret_settings.get("model"),
+            "gpt-4.1-mini",
+        ),
+        "timeout_seconds": parse_timeout_seconds(
+            first_non_empty(
+                os.environ.get("LLM_TIMEOUT_SECONDS"),
+                secret_settings.get("timeout_seconds"),
+                120,
+            )
+        ),
+        "source": secret_settings.get("_source", "env/default"),
+    }
+    logger.info(
+        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s",
+        mask_url(str(settings["base_url"])),
+        settings["model"],
+        llm_key_source(secret_settings),
+        settings["timeout_seconds"],
+    )
+    return settings
+
+
+def load_llm_secret_settings() -> dict[str, Any]:
+    try:
+        secrets = load_secrets()
+    except FileNotFoundError:
+        return {}
+    llm = secrets.get("llm") if isinstance(secrets, dict) else None
+    if not isinstance(llm, dict):
+        return {}
+
+    sections = llm.get("sections")
+    if isinstance(sections, dict):
+        section_name = (
+            os.environ.get("LLM_SECTION")
+            or llm.get("section")
+            or llm.get("default_section")
+            or next(iter(sections), None)
+        )
+        selected = sections.get(str(section_name)) if section_name is not None else None
+        if not isinstance(selected, dict):
+            available = ", ".join(str(key) for key in sections.keys())
+            raise RuntimeError(f"LLM secret section not found: {section_name}. Available sections: {available}")
+        result = dict(selected)
+        result["_source"] = f"secret/secrets.yaml llm.sections.{section_name}"
+        return result
+
+    result = dict(llm)
+    result["_source"] = "secret/secrets.yaml llm"
+    return result
+
+
+def first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def parse_timeout_seconds(value: Any) -> int:
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Invalid LLM timeout_seconds value: {value}") from exc
+    if timeout <= 0:
+        raise RuntimeError(f"Invalid LLM timeout_seconds value: {value}")
+    return timeout
+
+
+def llm_key_source(secret_settings: dict[str, Any]) -> str:
+    if os.environ.get("LLM_API_KEY"):
+        return "env:LLM_API_KEY"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "env:OPENAI_API_KEY"
+    if secret_settings.get("api_key") or secret_settings.get("openai_api_key"):
+        return str(secret_settings.get("_source", "secret/secrets.yaml"))
+    return "missing"
+
+
+def mask_url(url: str) -> str:
+    if not url:
+        return ""
+    if "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    host = rest.split("/", 1)[0]
+    suffix = "/" + rest.split("/", 1)[1] if "/" in rest else ""
+    if len(host) <= 8:
+        masked_host = host[:2] + "***"
+    else:
+        masked_host = host[:4] + "***" + host[-4:]
+    return f"{scheme}://{masked_host}{suffix}"
 
 
 def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False) -> list[dict[str, Any]]:
@@ -425,8 +547,7 @@ def log_step_skipped(step_no: str, reason: str) -> None:
 
 
 def current_model_name() -> str:
-    load_local_env_files()
-    return os.environ.get("LLM_MODEL", "gpt-4.1-mini")
+    return str(load_llm_settings().get("model") or "gpt-4.1-mini")
 
 
 if __name__ == "__main__":

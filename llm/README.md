@@ -4,7 +4,7 @@ Bu klasor, ekran goruntulerindeki LLM scriptinin revize edilmis ve proje icinde 
 
 Ana farklar:
 
-- API key kodda tutulmaz; `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` env degiskenleri kullanilir.
+- API key kodda tutulmaz; `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` env degiskenleri veya `secret/secrets.yaml` kullanilir.
 - LLM'e ham tablo degil, denetlenebilir `evidence JSON` verilir.
 - Evidence icinde veri sozlugu, risk yonu, musteri gecmisi, rolling medyanlar, trend, sezon, peer ve veri kalitesi birlikte bulunur.
 - Gelecek donemler LLM'e verilmez; skorlanan ay sadece onceki aylarla kiyaslanir.
@@ -76,6 +76,42 @@ oracle:
       table: EWS_ANOMALY_LLM_RESULTS
 ```
 
+## LLM Key ve Endpoint Ayarlari
+
+LLM ayarlari su sirayla okunur:
+
+1. Terminal env degiskenleri: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`
+2. Lokal dosyalar: repo kokundeki `.env` ve `llm/.env.local`
+3. Secret dosyasi: `secret/secrets.yaml`
+4. Default: `base_url=https://api.openai.com/v1`, `model=gpt-4.1-mini`, `timeout_seconds=120`
+
+Env degiskeni vermek istemiyorsan `secret/secrets.yaml` icine sunu koy:
+
+```yaml
+llm:
+  section: OPENSHIFT_LLM
+  sections:
+    OPENSHIFT_LLM:
+      base_url: "https://manavgat.yzyonetim.zb/v1"
+      api_key: "<valid-key>"
+      model: "gpt-oss-20b"
+      timeout_seconds: 120
+```
+
+Baska bir LLM section secmek icin:
+
+```bash
+export LLM_SECTION=OPENSHIFT_LLM
+```
+
+veya PowerShell:
+
+```powershell
+$env:LLM_SECTION="OPENSHIFT_LLM"
+```
+
+Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/secrets.yaml ...` gibi kaynak bilgisi gorulur.
+
 ## Promptu Dry Run Gormek
 
 ```powershell
@@ -118,6 +154,27 @@ python -m llm.llm_anomaly run-oracle runtime/llm/decisions_oracle_10.jsonl \
   --top-features 12
 ```
 
+Belirli bir cohort ayini skorlamak icin `--scoring-month` ver:
+
+```bash
+python -m llm.llm_anomaly run-oracle runtime/llm/decisions_oracle_20260531.jsonl \
+  --scoring-month 2026-05-31 \
+  --max-customers 10 \
+  --max-train-rows 300000
+```
+
+`--scoring-month` verilmezse kaynak Oracle input tablosundaki en buyuk `cohort_dt` otomatik secilir. Logda su satirla gorulur:
+
+```text
+SCORING COHORT SELECTED | requested=latest selected=2026-05-31 selection_mode=auto latest cohort_dt ...
+```
+
+Manuel secimde:
+
+```text
+SCORING COHORT SELECTED | requested=2026-04-30 selected=2026-04-30 selection_mode=manual --scoring-month ...
+```
+
 Onemli:
 
 - `build-oracle`: sadece evidence JSONL uretir, LLM'e gitmez, Oracle output insert yapmaz.
@@ -155,7 +212,7 @@ STEP 05 START/DONE | LLM kararlari Oracle output tablolarina yaziliyor
 Bir adim yapilamazsa logda `FAILED` veya `SKIPPED` ve nedeni yazilir. Ornek:
 
 ```text
-STEP 04 FAILED | LLM_API_KEY or OPENAI_API_KEY env variable is required
+STEP 04 FAILED | LLM API key is required. Set LLM_API_KEY/OPENAI_API_KEY env variable or secret/secrets.yaml llm.api_key / llm.sections.<section>.api_key.
 STEP 05 SKIPPED | LLM karar uretilemedi; Oracle output tablolari doldurulmadi
 ```
 

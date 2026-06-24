@@ -173,6 +173,14 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
     if score_df.empty:
         raise ValueError(f"No scoring rows found for {scoring_month.date()}.")
     logger.info(
+        "SCORING COHORT SELECTED | requested=%s selected=%s selection_mode=%s train_rows=%s score_rows=%s override='--scoring-month YYYY-MM-DD'",
+        config.scoring_month or "latest",
+        scoring_month.date(),
+        scoring_month_selection_mode(config.scoring_month),
+        len(train_df),
+        len(score_df),
+    )
+    logger.info(
         "Resolved scoring month: %s train_rows=%s score_rows=%s",
         scoring_month.date(),
         len(train_df),
@@ -340,6 +348,18 @@ def build_evidence_packages_from_oracle(
     prior_rows = int(sum(count for month, count in month_profile["month_counts"].items() if month < selected_month))
     if prior_rows <= 0:
         raise ValueError(f"No prior rows available before scoring month {selected_month.date()}.")
+    selected_month_rows = int(month_profile["month_counts"].get(selected_month, 0))
+    logger.info(
+        "SCORING COHORT SELECTED | table_key=%s source_table=%s requested=%s selected=%s selection_mode=%s selected_month_rows=%s prior_rows=%s available_months_tail=%s override='--scoring-month YYYY-MM-DD'",
+        table_key,
+        configured_oracle_table_name(table_key),
+        scoring_month or "latest",
+        selected_month.date(),
+        scoring_month_selection_mode(scoring_month),
+        selected_month_rows,
+        prior_rows,
+        available_month_tail(month_profile),
+    )
     logger.info(
         "Oracle month profile resolved: selected_month=%s total_rows=%s prior_rows=%s month_count=%s",
         selected_month.date(),
@@ -349,7 +369,7 @@ def build_evidence_packages_from_oracle(
     )
     log_step_done(
         "01",
-        f"source_table={configured_oracle_table_name(table_key)} selected_month={selected_month.date()} total_rows={month_profile['total_rows']} prior_rows={prior_rows}",
+        f"source_table={configured_oracle_table_name(table_key)} requested_scoring_month={scoring_month or 'latest'} selected_month={selected_month.date()} selection_mode={scoring_month_selection_mode(scoring_month)} selected_month_rows={selected_month_rows} total_rows={month_profile['total_rows']} prior_rows={prior_rows}",
     )
 
     log_step("02", "Ham tablo kolonlari ve veri sozlugu denetleniyor")
@@ -400,6 +420,14 @@ def build_evidence_packages_from_oracle(
         len(score_df),
     )
     selected_customer_ids = selected_scoring_customer_ids(score_df, max_customers=max_customers)
+    logger.info(
+        "SCORING CUSTOMER SELECTION | selected_month=%s score_rows_available=%s max_customers=%s llm_payload_customers=%s selection_rule=first_distinct_%s_after_oracle_order",
+        selected_month.date(),
+        len(score_df),
+        max_customers or "ALL",
+        len(selected_customer_ids),
+        max_customers or "all",
+    )
     selected_history_df = load_selected_customer_history_oracle(
         table_key=table_key,
         customer_ids=selected_customer_ids,
@@ -613,6 +641,15 @@ def resolve_scoring_month_from_profile(month_profile: dict[str, Any], scoring_mo
     if not months:
         raise ValueError("No months found in Oracle source profile.")
     return pd.Timestamp(max(months)).normalize()
+
+
+def scoring_month_selection_mode(scoring_month: str | None) -> str:
+    return "manual --scoring-month" if scoring_month else "auto latest cohort_dt"
+
+
+def available_month_tail(month_profile: dict[str, Any], *, limit: int = 6) -> str:
+    months = sorted(pd.Timestamp(month).normalize() for month in month_profile.get("month_counts", {}).keys())
+    return ",".join(month.strftime("%Y-%m-%d") for month in months[-limit:])
 
 
 def infer_numeric_source_columns(frame: pd.DataFrame) -> list[str]:
