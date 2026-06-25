@@ -179,7 +179,6 @@ def build_langchain_structured_chain() -> Any:
         api_key=str(settings["api_key"]),
         model=str(settings["model"]),
         temperature=0,
-        timeout=int(settings["timeout_seconds"]),
         max_retries=int(settings["max_retries"]),
         **optional_llm_kwargs(settings),
     )
@@ -454,13 +453,7 @@ def load_llm_settings() -> dict[str, Any]:
             os.environ.get("LLM_MODEL"),
             secret_settings.get("model"),
         ),
-        "timeout_seconds": parse_timeout_seconds(
-            first_non_empty(
-                os.environ.get("LLM_TIMEOUT_SECONDS"),
-                secret_settings.get("timeout_seconds"),
-                120,
-            )
-        ),
+        "timeout_seconds": None,
         "max_retries": parse_non_negative_int(
             first_non_empty(
                 os.environ.get("LLM_MAX_RETRIES"),
@@ -528,16 +521,6 @@ def first_non_empty(*values: Any) -> Any:
             continue
         return value
     return None
-
-
-def parse_timeout_seconds(value: Any) -> int:
-    try:
-        timeout = int(value)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"Invalid LLM timeout_seconds value: {value}") from exc
-    if timeout <= 0:
-        raise RuntimeError(f"Invalid LLM timeout_seconds value: {value}")
-    return timeout
 
 
 def parse_non_negative_int(value: Any, *, name: str) -> int:

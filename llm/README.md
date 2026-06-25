@@ -80,10 +80,10 @@ oracle:
 
 LLM ayarlari su sirayla okunur:
 
-1. Terminal env degiskenleri: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`
+1. Terminal env degiskenleri: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
 2. Lokal dosyalar: repo kokundeki `.env` ve `llm/.env.local`
 3. Secret dosyasi: `secret/secrets.yaml`
-4. `timeout_seconds` verilmezse default 120 kullanilir.
+4. Model cagrisinda `ChatOpenAI` icine timeout parametresi verilmez; referans notebooktaki davranis korunur.
 
 `base_url`, `api_key` ve `model` zorunludur. Bu proje on-prem/internal endpoint kullanir; dis `https://api.openai.com/v1` adresine otomatik gecis yapmaz.
 
@@ -97,7 +97,6 @@ llm:
       base_url: "https://manavgat.yzyonetim.zb/v1"
       api_key: "<valid-key>"
       model: "gpt-oss-20b"
-      timeout_seconds: 120
 ```
 
 Baska bir LLM section secmek icin:
@@ -120,22 +119,14 @@ Varsayilan LLM cagri sekli ilk calisan kaynak kodun operasyonel kalibiyla aynidi
 
 Cikti tipi sade degildir. `AnomalyBatchResult.results` altinda genis `AnomalyRecord` doner: `period_position`, `mono_id`, `cohort_dt`, `is_anomaly`, `anomaly_type`, `risk_level`, `confidence`, `seasonality_assessment`, `trend_assessment`, `peer_assessment`, `main_reasons`, `caveat`, `recommended_action`. Oracle output tablolari bu genis yapiyi kullanir.
 
-Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, token sismesini ve response timeout riskini azaltmak icindir.
+Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, gereksiz token sismesini azaltmak icindir.
 
-Timeout/retry ayarlari env veya `secret/secrets.yaml` altindan verilebilir:
-
-```yaml
-llm:
-  sections:
-    OPENSHIFT_LLM:
-      timeout_seconds: 300
-      max_retries: 0
-```
+`timeout_seconds` eski config/secret dosyalarinda kalsa bile LLM scoring cagrisina aktarilmaz. Bu bilerek yapildi; onceki calisan notebook `ChatOpenAI` icine timeout vermedigi icin uzun structured cevaplarda client tarafinda erken kesme olmuyordu.
 
 Logda su satirlar gorulmelidir:
 
 ```text
-LLM settings resolved: ... timeout_seconds=300 max_retries=0 max_tokens=None structured_call=with_structured_output_schema_only client=langchain_structured
+LLM settings resolved: ... timeout_seconds=None max_retries=0 max_tokens=None structured_call=with_structured_output_schema_only client=langchain_structured
 LangChain structured LLM chain initialized: model=gpt-oss-20b structured_call=with_structured_output_schema_only max_retries=0 max_tokens=None
 LLM request payload prepared: mono_id=... decision_items=... formatter=compact_text
 ```
