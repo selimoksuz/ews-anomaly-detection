@@ -33,6 +33,14 @@ class FakeChatOpenAI:
         return "fake_structured_llm"
 
 
+class FakeHttpxClient:
+    last_instance = None
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        FakeHttpxClient.last_instance = self
+
+
 class FakeResponse:
     results = [{"period_position": 0, "mono_id": "C1", "cohort_dt": "2026-05-31"}]
 
@@ -52,10 +60,12 @@ class StructuredChainCallTests(unittest.TestCase):
         fake_prompts = types.SimpleNamespace(ChatPromptTemplate=FakePromptTemplate)
         fake_core = types.SimpleNamespace(prompts=fake_prompts)
         fake_openai = types.SimpleNamespace(ChatOpenAI=FakeChatOpenAI)
+        fake_httpx = types.SimpleNamespace(Client=FakeHttpxClient)
         return {
             "langchain_core": fake_core,
             "langchain_core.prompts": fake_prompts,
             "langchain_openai": fake_openai,
+            "httpx": fake_httpx,
         }
 
     def test_load_settings_ignores_legacy_timeout_sources(self):
@@ -74,9 +84,11 @@ class StructuredChainCallTests(unittest.TestCase):
             settings = llm_anomaly.load_llm_settings()
 
         self.assertIsNone(settings["timeout_seconds"])
+        self.assertFalse(settings["http_trust_env"])
 
     def test_structured_chain_uses_source_compatible_methodless_call(self):
         FakeChatOpenAI.last_instance = None
+        FakeHttpxClient.last_instance = None
         settings = {
             "base_url": "https://manavgat.yzyonetim.zb/v1",
             "api_key": "test-key",
@@ -84,6 +96,7 @@ class StructuredChainCallTests(unittest.TestCase):
             "timeout_seconds": None,
             "max_retries": 0,
             "max_tokens": None,
+            "http_trust_env": False,
         }
 
         with patch.dict(sys.modules, self.fake_langchain_modules()), patch.object(
@@ -94,12 +107,17 @@ class StructuredChainCallTests(unittest.TestCase):
             llm_anomaly.build_langchain_structured_chain()
 
         self.assertIsNotNone(FakeChatOpenAI.last_instance)
+        self.assertIsNotNone(FakeHttpxClient.last_instance)
         self.assertNotIn("timeout", FakeChatOpenAI.last_instance.kwargs)
+        self.assertEqual(FakeChatOpenAI.last_instance.kwargs["http_client"], FakeHttpxClient.last_instance)
+        self.assertEqual(FakeHttpxClient.last_instance.kwargs["trust_env"], False)
+        self.assertIsNone(FakeHttpxClient.last_instance.kwargs["timeout"])
         self.assertEqual(FakeChatOpenAI.last_instance.structured_schema, object)
         self.assertEqual(FakeChatOpenAI.last_instance.structured_kwargs, {})
 
     def test_structured_chain_ignores_configured_timeout_for_source_compatibility(self):
         FakeChatOpenAI.last_instance = None
+        FakeHttpxClient.last_instance = None
         settings = {
             "base_url": "https://manavgat.yzyonetim.zb/v1",
             "api_key": "test-key",
@@ -107,6 +125,7 @@ class StructuredChainCallTests(unittest.TestCase):
             "timeout_seconds": 600,
             "max_retries": 0,
             "max_tokens": None,
+            "http_trust_env": False,
         }
 
         with patch.dict(sys.modules, self.fake_langchain_modules()), patch.object(
@@ -118,6 +137,8 @@ class StructuredChainCallTests(unittest.TestCase):
 
         self.assertIsNotNone(FakeChatOpenAI.last_instance)
         self.assertNotIn("timeout", FakeChatOpenAI.last_instance.kwargs)
+        self.assertIsNotNone(FakeHttpxClient.last_instance)
+        self.assertFalse(FakeHttpxClient.last_instance.kwargs["trust_env"])
 
     def test_first_customer_payload_preview_is_logged(self):
         evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1, 2, 3]}]

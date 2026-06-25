@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 LLM_PAYLOAD_PREVIEW_CUSTOMERS = 3
 LLM_PAYLOAD_PREVIEW_CHARS = 50000
 LLM_ERROR_PAYLOAD_PREVIEW_CHARS = 8000
+PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
 
 SYSTEM_PROMPT = """Sen deneyimli bir banka risk yoneticisi ve finansal anomali uzmanisin.
 Sana secilen scoring ayina ait musteri snapshot kayitlari verilecek.
@@ -169,20 +170,23 @@ def build_langchain_structured_chain() -> Any:
     validate_llm_settings(settings)
     schema = anomaly_batch_schema()
     try:
+        import httpx
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_openai import ChatOpenAI
     except ImportError as exc:
         raise RuntimeError(
             "LangChain structured LLM dependencies are required. "
-            "Install requirements.txt or pip install langchain-openai langchain-core pydantic."
+            "Install requirements.txt or pip install langchain-openai langchain-core pydantic httpx."
         ) from exc
 
+    http_client = httpx.Client(trust_env=bool(settings["http_trust_env"]), timeout=None)
     llm = ChatOpenAI(
         base_url=str(settings["base_url"]).rstrip("/"),
         api_key=str(settings["api_key"]),
         model=str(settings["model"]),
         temperature=0,
         max_retries=int(settings["max_retries"]),
+        http_client=http_client,
         **optional_llm_kwargs(settings),
     )
     structured_llm = llm.with_structured_output(schema)
@@ -193,10 +197,11 @@ def build_langchain_structured_chain() -> Any:
         ]
     )
     logger.info(
-        "LangChain structured LLM chain initialized: model=%s structured_call=with_structured_output_schema_only max_retries=%s max_tokens=%s",
+        "LangChain structured LLM chain initialized: model=%s structured_call=with_structured_output_schema_only max_retries=%s max_tokens=%s http_trust_env=%s",
         settings["model"],
         settings["max_retries"],
         settings.get("max_tokens"),
+        settings["http_trust_env"],
     )
     return prompt | structured_llm
 
@@ -505,16 +510,26 @@ def load_llm_settings() -> dict[str, Any]:
             ),
             name="LLM max_tokens",
         ),
+        "http_trust_env": parse_bool(
+            first_non_empty(
+                os.environ.get("LLM_HTTP_TRUST_ENV"),
+                secret_settings.get("http_trust_env"),
+                False,
+            ),
+            name="LLM http_trust_env",
+        ),
         "source": secret_settings.get("_source", "env/default"),
     }
     logger.info(
-        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s structured_call=with_structured_output_schema_only client=langchain_structured",
+        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s http_trust_env=%s proxy_env_present=%s structured_call=with_structured_output_schema_only client=langchain_structured",
         mask_url(str(settings["base_url"])),
         settings["model"],
         llm_key_source(secret_settings),
         settings["timeout_seconds"],
         settings["max_retries"],
         settings["max_tokens"],
+        settings["http_trust_env"],
+        proxy_env_present(),
     )
     return settings
 
@@ -559,6 +574,24 @@ def first_non_empty(*values: Any) -> Any:
     return None
 
 
+def parse_bool(value: Any, *, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "evet"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "hayir", "hayır"}:
+            return False
+    raise RuntimeError(f"Invalid {name} value: {value}")
+
+
+def proxy_env_present() -> bool:
+    return any(bool(os.environ.get(name)) for name in PROXY_ENV_VARS)
+
+
 def parse_non_negative_int(value: Any, *, name: str) -> int:
     try:
         parsed = int(value)
@@ -579,15 +612,6 @@ def parse_optional_positive_int(value: Any, *, name: str) -> int | None:
     if parsed <= 0:
         raise RuntimeError(f"Invalid {name} value: {value}")
     return parsed
-
-
-def parse_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    text = str(value).strip().lower()
-    return text in {"1", "true", "yes", "y", "on", "evet"}
 
 
 def llm_key_source(secret_settings: dict[str, Any]) -> str:
