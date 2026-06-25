@@ -945,15 +945,6 @@ def build_series_reference_frame(*frames: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def concat_non_empty_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
-    parts = [frame.copy() for frame in frames if frame is not None and not frame.empty]
-    if not parts:
-        return pd.DataFrame()
-    if len(parts) == 1:
-        return parts[0]
-    return pd.concat(parts, ignore_index=True)
-
-
 def snapshot_series(
     *,
     feature: str,
@@ -996,22 +987,28 @@ def customer_snapshot_series(
     history_series: pd.Series,
     series_periods: int,
 ) -> list[dict[str, Any]]:
-    history_frame = pd.DataFrame(
+    rows: list[dict[str, Any]] = []
+    parsed_history_dates = pd.to_datetime(history_dates, errors="coerce")
+    parsed_history_values = pd.to_numeric(history_series, errors="coerce")
+    for date_value, metric_value in zip(parsed_history_dates, parsed_history_values):
+        if pd.isna(date_value):
+            continue
+        rows.append(
+            {
+                "cohort_dt": pd.Timestamp(date_value).normalize(),
+                "value": clean_number(metric_value),
+                "is_current_snapshot": False,
+            }
+        )
+    rows.append(
         {
-            "cohort_dt": pd.to_datetime(history_dates, errors="coerce"),
-            "value": pd.to_numeric(history_series, errors="coerce"),
-            "is_current_snapshot": False,
-        }
-    )
-    current_frame = pd.DataFrame(
-        {
-            "cohort_dt": [pd.Timestamp(scoring_month).normalize()],
-            "value": [current],
-            "is_current_snapshot": [True],
+            "cohort_dt": pd.Timestamp(scoring_month).normalize(),
+            "value": clean_number(current),
+            "is_current_snapshot": True,
         }
     )
     series = (
-        concat_non_empty_frames([history_frame, current_frame])
+        pd.DataFrame(rows)
         .dropna(subset=["cohort_dt"])
         .drop_duplicates(subset=["cohort_dt"], keep="last")
         .sort_values("cohort_dt")
@@ -1101,6 +1098,7 @@ def load_selected_customer_history_oracle(
                   AND TRUNC({TIME_COLUMN.upper()}) < TRUNC(:selected_month)
             """
             parts.append(normalize_columns(ora._read_query(sql, binds)))
+    parts = [part for part in parts if part is not None and not part.empty]
     if not parts:
         return pd.DataFrame(columns=keep_columns)
     history = pd.concat(parts, ignore_index=True)
