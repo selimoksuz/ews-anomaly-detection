@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, List, Optional
@@ -154,11 +155,7 @@ def load_local_env_files() -> None:
 def build_langchain_structured_chain() -> Any:
     settings = load_llm_settings()
     validate_llm_settings(settings)
-    if AnomalyBatchResult is None:
-        raise RuntimeError(
-            "Pydantic is required for the LLM structured output flow. "
-            "Install requirements.txt or pip install pydantic."
-        )
+    schema = anomaly_batch_schema()
     try:
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_openai import ChatOpenAI
@@ -175,7 +172,7 @@ def build_langchain_structured_chain() -> Any:
         temperature=0,
         timeout=int(settings["timeout_seconds"]),
     )
-    structured_llm = llm.with_structured_output(AnomalyBatchResult)
+    structured_llm = llm.with_structured_output(schema)
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
@@ -184,6 +181,26 @@ def build_langchain_structured_chain() -> Any:
     )
     logger.info("LangChain structured LLM chain initialized: model=%s", settings["model"])
     return prompt | structured_llm
+
+
+def anomaly_batch_schema() -> type:
+    if AnomalyBatchResult is None:
+        raise RuntimeError(
+            "Pydantic is required for the LLM structured output flow. "
+            "Install requirements.txt or pip install pydantic."
+        )
+    if not isinstance(AnomalyBatchResult, type):
+        raise RuntimeError(f"Invalid LLM structured schema: expected class, got {type(AnomalyBatchResult).__name__}.")
+    if BaseModel is not None:
+        try:
+            is_pydantic_model = issubclass(AnomalyBatchResult, BaseModel)
+        except TypeError as exc:
+            raise RuntimeError(
+                f"Invalid LLM structured schema: AnomalyBatchResult is not a Pydantic class ({exc})."
+            ) from exc
+        if not is_pydantic_model:
+            raise RuntimeError("Invalid LLM structured schema: AnomalyBatchResult does not inherit Pydantic BaseModel.")
+    return AnomalyBatchResult
 
 
 def validate_llm_settings(settings: dict[str, Any]) -> None:
@@ -211,14 +228,92 @@ def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
 
 def invoke_langchain_structured_decision(chain: Any, evidence: dict[str, Any]) -> dict[str, Any]:
     response = chain.invoke({"input_records": format_evidence_for_langchain([evidence])})
-    batch = model_to_dict(response)
-    records = batch.get("results") if isinstance(batch, dict) else None
+    batch = normalize_structured_response(response)
+    records = extract_decision_records(batch)
     if not records:
         raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(batch), 500)}")
     decision = model_to_dict(records[0])
     decision.setdefault("mono_id", evidence.get("mono_id"))
     decision.setdefault("cohort_dt", evidence.get("cohort_dt"))
     return decision
+
+
+def normalize_structured_response(response: Any) -> Any:
+    batch = model_to_dict(response)
+    if isinstance(batch, str):
+        parsed = parse_json_payload_text(batch)
+        return parsed if parsed is not None else batch
+    if isinstance(batch, dict):
+        if "parsed" in batch and batch.get("parsed") is not None:
+            return normalize_structured_response(batch["parsed"])
+        content = batch.get("content")
+        if isinstance(content, str) and content.strip():
+            parsed = parse_json_payload_text(content)
+            if parsed is not None:
+                return parsed
+        raw = batch.get("raw")
+        if raw is not None:
+            raw_batch = normalize_structured_response(raw)
+            if extract_decision_records(raw_batch):
+                return raw_batch
+    return batch
+
+
+def extract_decision_records(batch: Any) -> list[Any] | None:
+    batch = model_to_dict(batch)
+    if isinstance(batch, dict):
+        results = batch.get("results")
+        if isinstance(results, list) and results:
+            return results
+        if is_single_decision(batch):
+            return [batch]
+        for key in ("parsed", "raw", "message"):
+            if key in batch:
+                nested = extract_decision_records(batch[key])
+                if nested:
+                    return nested
+        content = batch.get("content")
+        if isinstance(content, str):
+            parsed = parse_json_payload_text(content)
+            return extract_decision_records(parsed) if parsed is not None else None
+    if isinstance(batch, list) and batch:
+        return batch
+    if isinstance(batch, str):
+        parsed = parse_json_payload_text(batch)
+        return extract_decision_records(parsed) if parsed is not None else None
+    return None
+
+
+def is_single_decision(value: dict[str, Any]) -> bool:
+    return {"is_anomaly", "anomaly_type", "risk_level"}.issubset(value.keys())
+
+
+def parse_json_payload_text(text: str) -> Any:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    for candidate in (cleaned, extract_json_fragment(cleaned)):
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def extract_json_fragment(text: str) -> str | None:
+    object_start = text.find("{")
+    array_start = text.find("[")
+    starts = [index for index in (object_start, array_start) if index >= 0]
+    if not starts:
+        return None
+    start = min(starts)
+    end = max(text.rfind("}"), text.rfind("]"))
+    if end <= start:
+        return None
+    return text[start : end + 1]
 
 
 def model_to_dict(value: Any) -> Any:

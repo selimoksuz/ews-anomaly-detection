@@ -136,6 +136,73 @@ class EvidenceConfig:
     min_history_periods: int = 3
 
 
+@dataclass
+class SeasonalPeerMedianCache:
+    month_of_year: int
+    grouped_medians: dict[tuple[str, tuple[str, ...]], dict[tuple[str, ...], float]]
+    global_medians: dict[str, float | None]
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        train_features: pd.DataFrame,
+        train_context: pd.DataFrame,
+        selected_features: list[str],
+        month_of_year: int,
+    ) -> "SeasonalPeerMedianCache":
+        grouped_medians: dict[tuple[str, tuple[str, ...]], dict[tuple[str, ...], float]] = {}
+        global_medians: dict[str, float | None] = {}
+        if train_context.empty or TIME_COLUMN not in train_context:
+            return cls(month_of_year=month_of_year, grouped_medians=grouped_medians, global_medians=global_medians)
+
+        months = pd.to_datetime(train_context[TIME_COLUMN], errors="coerce").dt.month
+        month_mask = months.eq(month_of_year)
+        seasonal_context = train_context.loc[month_mask].copy()
+        logger.info(
+            "Precomputing seasonal peer cache: month_of_year=%s seasonal_reference_rows=%s selected_features=%s note='same data, vectorized once for the scoring month seasonality lookup'",
+            month_of_year,
+            int(month_mask.sum()),
+            len(selected_features),
+        )
+        for feature in selected_features:
+            if feature not in train_features.columns:
+                global_medians[feature] = None
+                continue
+            values = pd.to_numeric(train_features.loc[month_mask, feature], errors="coerce")
+            valid = values.notna()
+            global_values = values.loc[valid]
+            global_medians[feature] = clean_number(global_values.median()) if len(global_values) else None
+            if not len(global_values):
+                continue
+            for _, keys in peer_hierarchy_for_feature(feature):
+                usable_keys = [key for key in keys if key != TIME_COLUMN and key in seasonal_context.columns]
+                if not usable_keys:
+                    continue
+                helper = seasonal_context.loc[valid, usable_keys].astype(str).copy()
+                helper["_value"] = global_values
+                grouped = helper.groupby(usable_keys, dropna=False)["_value"].agg(["median", "count"])
+                grouped = grouped[grouped["count"].ge(PEER_MIN_SUPPORT)]
+                table: dict[tuple[str, ...], float] = {}
+                for group_key, median in grouped["median"].items():
+                    if not isinstance(group_key, tuple):
+                        group_key = (group_key,)
+                    table[tuple(str(part) for part in group_key)] = float(median)
+                grouped_medians[(feature, tuple(usable_keys))] = table
+        return cls(month_of_year=month_of_year, grouped_medians=grouped_medians, global_medians=global_medians)
+
+    def median_for(self, *, feature: str, score_context_row: pd.Series) -> float | None:
+        for _, keys in peer_hierarchy_for_feature(feature):
+            usable_keys = [key for key in keys if key != TIME_COLUMN and key in score_context_row.index]
+            if not usable_keys:
+                return self.global_medians.get(feature)
+            lookup_key = tuple(str(score_context_row[key]) for key in usable_keys)
+            table = self.grouped_medians.get((feature, tuple(usable_keys)), {})
+            if lookup_key in table:
+                return clean_number(table[lookup_key])
+        return self.global_medians.get(feature)
+
+
 def load_input_frame(input_path: str | Path) -> pd.DataFrame:
     path = Path(input_path)
     if not path.exists():
@@ -209,15 +276,24 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
     peer_artifacts = build_peer_artifacts(score_df, score_features, selected_features)
     train_context = build_peer_context(train_df, train_features)
     score_context = build_peer_context(score_df, score_features)
+    seasonal_peer_cache = SeasonalPeerMedianCache.build(
+        train_features=train_features,
+        train_context=train_context,
+        selected_features=selected_features,
+        month_of_year=int(scoring_month.month),
+    )
+    reference_scale_cache = build_reference_scale_cache(train_features, selected_features)
     logger.info("Peer/context artifacts are ready.")
 
     packages: list[dict[str, Any]] = []
+    history_id_series = train_df[ID_COLUMN].astype(str)
+    history_groups = {customer_id: group.copy() for customer_id, group in train_df.groupby(history_id_series, sort=False)}
     for row_position, row_index in enumerate(score_df.index):
         if config.max_customers is not None and len(packages) >= config.max_customers:
             break
         row = score_df.loc[row_index]
         customer_id = str(row[ID_COLUMN])
-        customer_history = train_df[train_df[ID_COLUMN].astype(str) == customer_id].copy()
+        customer_history = history_groups.get(customer_id, train_df.iloc[0:0].copy())
         customer_feature_history = train_features.loc[customer_history.index] if len(customer_history) else pd.DataFrame()
         feature_evidence = []
         for feature in selected_features:
@@ -233,6 +309,8 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                 train_context=train_context,
                 score_context_row=score_context.iloc[row_position],
                 scoring_month=scoring_month,
+                seasonal_peer_cache=seasonal_peer_cache,
+                reference_scale_cache=reference_scale_cache,
             )
             feature_evidence.append(item)
 
@@ -323,6 +401,208 @@ def build_evidence_from_result_rows(frame: pd.DataFrame, *, max_customers: int |
             }
         )
     return packages
+
+
+def build_evidence_packages_from_prepared_windows(
+    *,
+    train_df: pd.DataFrame,
+    score_df: pd.DataFrame,
+    selected_history_df: pd.DataFrame,
+    prior_df: pd.DataFrame | None = None,
+    numeric_source_columns: list[str],
+    scoring_month: pd.Timestamp,
+    selected_customer_ids: list[str] | None = None,
+    config: EvidenceConfig | None = None,
+) -> list[dict[str, Any]]:
+    """Build evidence from already separated Oracle windows.
+
+    Oracle has already loaded train, score and selected-customer history windows.
+    Keeping those windows separate avoids building a multi-million-row combined
+    frame only to split and scan it again.
+    """
+
+    config = config or EvidenceConfig(scoring_month=scoring_month.strftime("%Y-%m-%d"))
+    scoring_month = pd.Timestamp(scoring_month).normalize()
+    train_df = normalize_columns(train_df).copy().reset_index(drop=True)
+    score_df = normalize_columns(score_df).copy().reset_index(drop=True)
+    selected_history_df = normalize_columns(selected_history_df).copy().reset_index(drop=True)
+    prior_df = normalize_columns(prior_df).copy().reset_index(drop=True) if prior_df is not None else pd.DataFrame()
+
+    for label, frame in (
+        ("train", train_df),
+        ("score", score_df),
+        ("selected_history", selected_history_df),
+        ("prior_latest", prior_df),
+    ):
+        if frame.empty and label == "prior_latest":
+            continue
+        if ID_COLUMN not in frame.columns:
+            raise ValueError(f"Missing required id column in {label} window: {ID_COLUMN}")
+        if TIME_COLUMN not in frame.columns:
+            raise ValueError(f"Missing required time column in {label} window: {TIME_COLUMN}")
+        frame[TIME_COLUMN] = parse_dates(frame[TIME_COLUMN])
+
+    train_df = train_df[train_df[TIME_COLUMN] < scoring_month].sort_values([ID_COLUMN, TIME_COLUMN]).reset_index(drop=True)
+    if not prior_df.empty:
+        prior_df = prior_df[prior_df[TIME_COLUMN] < scoring_month].copy()
+        train_df = (
+            pd.concat([train_df, prior_df], ignore_index=True)
+            .drop_duplicates(subset=[ID_COLUMN, TIME_COLUMN], keep="last")
+            .sort_values([ID_COLUMN, TIME_COLUMN])
+            .reset_index(drop=True)
+        )
+    score_df = score_df[score_df[TIME_COLUMN].eq(scoring_month)].reset_index(drop=True)
+    selected_history_df = selected_history_df[selected_history_df[TIME_COLUMN] < scoring_month].sort_values(
+        [ID_COLUMN, TIME_COLUMN]
+    ).reset_index(drop=True)
+    if train_df.empty:
+        raise ValueError(f"No prior rows available before scoring month {scoring_month.date()}.")
+    if score_df.empty:
+        raise ValueError(f"No scoring rows found for {scoring_month.date()}.")
+
+    selected_customer_ids = selected_customer_ids or selected_scoring_customer_ids(
+        score_df,
+        max_customers=config.max_customers,
+    )
+    selected_score_df = select_score_rows_for_customer_ids(score_df, selected_customer_ids)
+    logger.info(
+        "Building Oracle evidence from prepared windows: train_rows=%s prior_latest_rows=%s score_rows=%s selected_history_rows=%s selected_score_rows=%s selected_customers=%s top_features=%s note='no combined frame rebuild; full scoring cohort is still used for peer references'",
+        len(train_df),
+        len(prior_df),
+        len(score_df),
+        len(selected_history_df),
+        len(selected_score_df),
+        len(selected_customer_ids),
+        config.top_features,
+    )
+    if selected_score_df.empty:
+        raise ValueError("No scoring rows matched selected customer ids.")
+
+    logger.info("Inferred numeric source columns: %s", len(numeric_source_columns))
+    train_features = build_feature_frame(train_df, numeric_source_columns)
+    score_features = build_feature_frame(score_df, numeric_source_columns)
+    selected_history_features = (
+        build_feature_frame(selected_history_df, numeric_source_columns)
+        if not selected_history_df.empty
+        else pd.DataFrame(index=selected_history_df.index)
+    )
+    selected_features = select_model_features(train_features, score_features)
+    selected_features = [feature for feature in selected_features if feature not in FORBIDDEN_DERIVED_FEATURES]
+    if not selected_features:
+        raise ValueError("No usable transformed features could be selected.")
+    logger.info("Selected transformed features: %s", len(selected_features))
+    logger.debug("Selected transformed feature names: %s", ", ".join(selected_features))
+    log_transformed_feature_audit(selected_features, numeric_source_columns)
+    log_evidence_contract(selected_features)
+
+    logger.info("Building peer artifacts on full scoring cohort.")
+    logger.info(
+        "Peer scope: peer reference is computed on full scoring cohort before max_customers filtering: score_rows=%s selected_features=%s grouping=cohort_dt+segment+sector+monthly_size",
+        len(score_df),
+        len(selected_features),
+    )
+    peer_artifacts = build_peer_artifacts(score_df, score_features, selected_features)
+    train_context = build_peer_context(train_df, train_features)
+    score_context = build_peer_context(score_df, score_features)
+    seasonal_peer_cache = SeasonalPeerMedianCache.build(
+        train_features=train_features,
+        train_context=train_context,
+        selected_features=selected_features,
+        month_of_year=int(scoring_month.month),
+    )
+    reference_scale_cache = build_reference_scale_cache(train_features, selected_features)
+    logger.info(
+        "Peer/context artifacts are ready: peer_rows=%s train_context_rows=%s selected_history_rows=%s",
+        len(score_df),
+        len(train_context),
+        len(selected_history_df),
+    )
+
+    history_id_series = selected_history_df[ID_COLUMN].astype(str) if not selected_history_df.empty else pd.Series(dtype=str)
+    history_groups = (
+        {customer_id: group.copy() for customer_id, group in selected_history_df.groupby(history_id_series, sort=False)}
+        if not selected_history_df.empty
+        else {}
+    )
+
+    packages: list[dict[str, Any]] = []
+    for row_position, row_index in enumerate(selected_score_df.index):
+        row = score_df.loc[row_index]
+        customer_id = str(row[ID_COLUMN])
+        customer_history = history_groups.get(customer_id, selected_history_df.iloc[0:0].copy())
+        customer_feature_history = (
+            selected_history_features.loc[customer_history.index] if len(customer_history) else pd.DataFrame()
+        )
+        score_context_row = score_context.loc[row_index]
+        feature_evidence = []
+        for feature in selected_features:
+            item = build_feature_evidence(
+                feature=feature,
+                row_position=row_position,
+                row_index=row_index,
+                score_features=score_features,
+                train_features=train_features,
+                customer_history=customer_history,
+                customer_feature_history=customer_feature_history,
+                peer_artifacts=peer_artifacts,
+                train_context=train_context,
+                score_context_row=score_context_row,
+                scoring_month=scoring_month,
+                seasonal_peer_cache=seasonal_peer_cache,
+                reference_scale_cache=reference_scale_cache,
+            )
+            feature_evidence.append(item)
+
+        feature_evidence = rank_feature_evidence(feature_evidence)[: config.top_features]
+        coverage_ratio = coverage_for_features(score_features.loc[row_index], selected_features)
+        packages.append(
+            {
+                "mono_id": customer_id,
+                "cohort_dt": scoring_month.strftime("%Y-%m-%d"),
+                "context": context_payload(row),
+                "decision_contract": {
+                    "target_or_label_available": False,
+                    "llm_should_decide_is_anomaly": True,
+                    "future_periods_included": False,
+                    "scoring_month_only": True,
+                },
+                "peer_definition": {
+                    "base": "same cohort month plus segment/sector/size fallback hierarchy",
+                    "min_support": PEER_MIN_SUPPORT,
+                    "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
+                },
+                "data_quality": data_quality_payload(
+                    row=row,
+                    feature_row=score_features.loc[row_index],
+                    selected_features=selected_features,
+                    coverage_ratio=coverage_ratio,
+                    min_history_periods=config.min_history_periods,
+                    customer_history_periods=len(customer_history),
+                ),
+                "features": feature_evidence,
+            }
+        )
+        if len(packages) == 1 or len(packages) % 100 == 0:
+            logger.info("Built evidence packages: %s/%s", len(packages), len(selected_score_df))
+
+    logger.info("Completed LLM evidence package build: packages=%s", len(packages))
+    log_step_done(
+        "03",
+        f"evidence_packages={len(packages)} transformed_features={len(selected_features)} scoring_month={scoring_month.date()} peer_variables=6 history_variables=10 trend_variables=4 seasonality_variables=8",
+    )
+    return packages
+
+
+def select_score_rows_for_customer_ids(score_df: pd.DataFrame, customer_ids: list[str]) -> pd.DataFrame:
+    if not customer_ids:
+        return score_df.iloc[0:0].copy()
+    id_series = score_df[ID_COLUMN].astype(str)
+    selected_indexes = []
+    for customer_id in customer_ids:
+        matches = id_series[id_series.eq(str(customer_id))]
+        if not matches.empty:
+            selected_indexes.append(matches.index[0])
+    return score_df.loc[selected_indexes].copy()
 
 
 def build_evidence_packages_from_oracle(
@@ -439,9 +719,6 @@ def build_evidence_packages_from_oracle(
         len(selected_customer_ids),
         len(selected_history_df),
     )
-    combined = pd.concat([train_df, prior_df, selected_history_df, score_df], ignore_index=True)
-    combined = combined.drop_duplicates(subset=[ID_COLUMN, TIME_COLUMN], keep="last").reset_index(drop=True)
-    logger.info("Combined Oracle evidence frame: rows=%s columns=%s", len(combined), len(combined.columns))
     logger.info(
         "LLM payload scope: scoring_rows_available=%s llm_customer_payloads_requested=%s llm_customer_payloads_to_build=%s reference_rows_not_sent_to_llm=%s",
         len(score_df),
@@ -450,9 +727,15 @@ def build_evidence_packages_from_oracle(
         len(train_df),
     )
     log_step("03", "Musteri bazli history ve aylik peer gruplariyla LLM evidence uretiliyor")
-    return build_evidence_packages(
-        combined,
-        EvidenceConfig(
+    return build_evidence_packages_from_prepared_windows(
+        train_df=train_df,
+        score_df=score_df,
+        selected_history_df=selected_history_df,
+        prior_df=prior_df,
+        numeric_source_columns=numeric_source_columns,
+        scoring_month=selected_month,
+        selected_customer_ids=selected_customer_ids,
+        config=EvidenceConfig(
             scoring_month=selected_month.strftime("%Y-%m-%d"),
             max_customers=max_customers,
             top_features=top_features,
@@ -529,6 +812,8 @@ def build_feature_evidence(
     train_context: pd.DataFrame,
     score_context_row: pd.Series,
     scoring_month: pd.Timestamp,
+    seasonal_peer_cache: SeasonalPeerMedianCache | None = None,
+    reference_scale_cache: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     current = clean_number(score_features.loc[row_index, feature])
     history_series = (
@@ -559,6 +844,8 @@ def build_feature_evidence(
         train_context=train_context,
         score_context_row=score_context_row,
         scoring_month=scoring_month,
+        seasonal_peer_cache=seasonal_peer_cache,
+        reference_scale_cache=reference_scale_cache,
     )
 
     return {
@@ -954,6 +1241,8 @@ def seasonality_metrics(
     train_context: pd.DataFrame,
     score_context_row: pd.Series,
     scoring_month: pd.Timestamp,
+    seasonal_peer_cache: SeasonalPeerMedianCache | None = None,
+    reference_scale_cache: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     month_of_year = int(scoring_month.month)
     same_month_mask = pd.to_datetime(history_dates, errors="coerce").dt.month == month_of_year
@@ -961,13 +1250,17 @@ def seasonality_metrics(
     same_month_last_year_value = previous_same_month_value(history_dates, history_series, scoring_month)
     same_month_median = clean_number(same_month_values.median()) if len(same_month_values) else None
     same_month_z = robust_z(current, same_month_values) if current is not None and len(same_month_values) >= 2 else None
-    seasonal_peer_median = historical_seasonal_peer_median(
-        feature=feature,
-        train_features=train_features,
-        train_context=train_context,
-        score_context_row=score_context_row,
-        month_of_year=month_of_year,
-    )
+    if seasonal_peer_cache is not None and seasonal_peer_cache.month_of_year == month_of_year:
+        seasonal_peer_median = seasonal_peer_cache.median_for(feature=feature, score_context_row=score_context_row)
+    else:
+        seasonal_peer_median = historical_seasonal_peer_median(
+            feature=feature,
+            train_features=train_features,
+            train_context=train_context,
+            score_context_row=score_context_row,
+            month_of_year=month_of_year,
+        )
+    reference_scale = reference_scale_cache.get(feature) if reference_scale_cache else None
     return {
         "month_of_year": month_of_year,
         "same_month_last_year_value": same_month_last_year_value,
@@ -975,7 +1268,9 @@ def seasonality_metrics(
         "same_month_customer_median": same_month_median,
         "same_month_customer_z": same_month_z,
         "seasonal_peer_median": seasonal_peer_median,
-        "seasonal_peer_z": robust_z_against_reference(current, seasonal_peer_median, train_features.get(feature)),
+        "seasonal_peer_z": robust_z_against_scale(current, seasonal_peer_median, reference_scale)
+        if reference_scale is not None
+        else robust_z_against_reference(current, seasonal_peer_median, train_features.get(feature)),
         "seasonality_note": "Sezon etkisi ayni ay gecmisi ve ayni ay peer referansiyla okunmali.",
     }
 
@@ -1098,14 +1393,34 @@ def robust_z(current: float | None, values: pd.Series) -> float | None:
     return clean_number((float(current) - median) / scale)
 
 
+def build_reference_scale_cache(train_features: pd.DataFrame, selected_features: list[str]) -> dict[str, float]:
+    scales: dict[str, float] = {}
+    for feature in selected_features:
+        if feature in train_features.columns:
+            scales[feature] = robust_population_scale(train_features[feature])
+    logger.info("Reference scale cache ready: features=%s", len(scales))
+    return scales
+
+
+def robust_population_scale(values: pd.Series) -> float:
+    values = pd.to_numeric(values, errors="coerce").dropna().astype(float)
+    if len(values) < 2:
+        return 1.0
+    mad = float((values - values.median()).abs().median())
+    return max(mad * 1.4826 if mad > 1e-9 else float(values.std() or 1.0), 1e-6)
+
+
 def robust_z_against_reference(current: float | None, reference: float | None, population: pd.Series | None) -> float | None:
     if current is None or reference is None or population is None:
         return None
-    values = pd.to_numeric(population, errors="coerce").dropna().astype(float)
-    if len(values) < 2:
+    scale = robust_population_scale(population)
+    return robust_z_against_scale(current, reference, scale)
+
+
+def robust_z_against_scale(current: float | None, reference: float | None, scale: float | None) -> float | None:
+    if current is None or reference is None or scale is None:
         return None
-    mad = float((values - values.median()).abs().median())
-    scale = max(mad * 1.4826 if mad > 1e-9 else float(values.std() or 1.0), 1e-6)
+    scale = max(float(scale), 1e-6)
     return clean_number((float(current) - float(reference)) / scale)
 
 

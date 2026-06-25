@@ -196,6 +196,7 @@ Onemli:
 - `--max-train-rows 300000`: LLM'e 300k satir gondermez. History, peer, trend ve seasonality referanslarini hesaplamak icin kullanilan gecmis/reference ust limitidir.
 - Secilen musterilerin tam gecmisi ayrica cekilir; bu sayede `max_train_rows` sampling'i secilen musterinin history'sini dusurmez.
 - Peer referansi `max-customers` ile secilen 10 musteri uzerinden degil, skorlanan ayin tum scoring cohort'u uzerinden hesaplanir.
+- Evidence hazirligi Oracle path'te full train/score pencerelerini korur ama artik dev bir `combined` dataframe olusturup tekrar split etmez. Secilen musteri history'si onceden gruplanir, seasonal peer medyanlari ve robust scale degerleri scoring ayina gore cache'lenir. Bu veri veya feature azaltma degildir; ayni referans veriyi tekrar tekrar taramayi azaltir.
 
 Output tablolarini run oncesi olusturmak/kontrol etmek icin:
 
@@ -266,3 +267,5 @@ WHERE TRUNC(COHORT_DT) = DATE '2026-05-31';
 ```
 
 Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`.
+
+Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
