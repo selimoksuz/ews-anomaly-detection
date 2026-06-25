@@ -1,14 +1,12 @@
 """OpenAI-compatible LLM anomaly decision runner."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional
 
 from engine.config_loader import load_secrets
 from llm.evidence_builder import (
@@ -96,14 +94,14 @@ if BaseModel is not None and Field is not None:
         seasonality_assessment: str = Field(description="Sezon/mevsimsellik yorumu")
         trend_assessment: str = Field(description="Trend ve kademeli bozulma yorumu")
         peer_assessment: str = Field(description="Peer grubuna gore ayrisma yorumu")
-        main_reasons: list[AnomalyReasonRecord] = Field(description="Karari aciklayan ana feature gerekceleri")
-        caveat: str | None = Field(default=None, description="Varsa veri kalitesi veya karar kisiti")
+        main_reasons: List[AnomalyReasonRecord] = Field(description="Karari aciklayan ana feature gerekceleri")
+        caveat: Optional[str] = Field(default=None, description="Varsa veri kalitesi veya karar kisiti")
         recommended_action: str = Field(
             description="Onerilen aksiyon: Izle, Manuel incele, Portfoy yoneticisine gonder, Limit/risk gozden gecir veya Veri kontrolu yap"
         )
 
     class AnomalyBatchResult(BaseModel):
-        results: list[AnomalyRecord] = Field(
+        results: List[AnomalyRecord] = Field(
             description="Verilen musteri-donem evidence kayitlari icin kronolojik sira ile karar listesi"
         )
 else:
@@ -177,13 +175,13 @@ def build_langchain_structured_chain() -> Any:
         temperature=0,
         timeout=int(settings["timeout_seconds"]),
     )
+    structured_llm = llm.with_structured_output(AnomalyBatchResult)
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
             ("human", "Asagidaki musteri-donem evidence kayitlarini analiz et:\n\n{input_records}"),
         ]
     )
-    structured_llm = llm.with_structured_output(AnomalyBatchResult)
     logger.info("LangChain structured LLM chain initialized: model=%s", settings["model"])
     return prompt | structured_llm
 
