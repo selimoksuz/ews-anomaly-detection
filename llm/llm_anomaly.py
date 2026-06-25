@@ -25,6 +25,12 @@ from llm.oracle_output import (
     write_llm_outputs_to_oracle,
 )
 
+try:
+    from pydantic import BaseModel, Field
+except ImportError:  # Runtime dependency is checked when the LLM chain is built.
+    BaseModel = None
+    Field = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +74,44 @@ OUTPUT_CONTRACT = {
 }
 
 
+if BaseModel is not None and Field is not None:
+
+    class AnomalyReasonRecord(BaseModel):
+        feature: str = Field(description="Anomali gerekcesindeki degisken adi")
+        evidence: str = Field(description="Current, history, seasonality ve peer sayisal kanit ozeti")
+        interpretation: str = Field(description="Kanita dayali kisa Turkce is yorumu")
+
+    class AnomalyRecord(BaseModel):
+        mono_id: str = Field(description="Musteri tekil numarasi")
+        cohort_dt: str = Field(description="Skorlanan donem tarihi, YYYY-MM-DD")
+        is_anomaly: bool = Field(description="Bu musteri-donem kaydi anomali mi?")
+        anomaly_type: str = Field(
+            description=(
+                "Anomali tipi: ANI_RISK_ARTISI, FINANSAL_BOZULMA, PD_RISKI, KKB_RISKI, "
+                "PEER_UYUMSUZLUGU, DATA_GAP, TREND_KIRILMASI, SEZON_DISI_SAPMA veya NORMAL"
+            )
+        )
+        risk_level: str = Field(description="Risk seviyesi: DUSUK, ORTA, YUKSEK veya KRITIK")
+        confidence: float = Field(description="Guven skoru, 0.0 ile 1.0 arasinda")
+        seasonality_assessment: str = Field(description="Sezon/mevsimsellik yorumu")
+        trend_assessment: str = Field(description="Trend ve kademeli bozulma yorumu")
+        peer_assessment: str = Field(description="Peer grubuna gore ayrisma yorumu")
+        main_reasons: list[AnomalyReasonRecord] = Field(description="Karari aciklayan ana feature gerekceleri")
+        caveat: str | None = Field(default=None, description="Varsa veri kalitesi veya karar kisiti")
+        recommended_action: str = Field(
+            description="Onerilen aksiyon: Izle, Manuel incele, Portfoy yoneticisine gonder, Limit/risk gozden gecir veya Veri kontrolu yap"
+        )
+
+    class AnomalyBatchResult(BaseModel):
+        results: list[AnomalyRecord] = Field(
+            description="Verilen musteri-donem evidence kayitlari icin kronolojik sira ile karar listesi"
+        )
+else:
+    AnomalyReasonRecord = None
+    AnomalyRecord = None
+    AnomalyBatchResult = None
+
+
 def configure_logging() -> None:
     """Enable visible console logs for CLI runs."""
 
@@ -109,52 +153,14 @@ def load_local_env_files() -> None:
                     os.environ[key] = value
 
 
-def create_anomaly_batch_model() -> Any:
-    try:
-        from pydantic import BaseModel, Field
-    except ImportError as exc:
-        raise RuntimeError(
-            "Pydantic is required for the LLM structured output flow. "
-            "Install requirements.txt or pip install pydantic."
-        ) from exc
-
-    class AnomalyReasonRecord(BaseModel):
-        feature: str = Field(description="Anomali gerekcesindeki degisken adi")
-        evidence: str = Field(description="Current, history, seasonality ve peer sayisal kanit ozeti")
-        interpretation: str = Field(description="Kanita dayali kisa Turkce is yorumu")
-
-    class AnomalyRecord(BaseModel):
-        mono_id: str = Field(description="Musteri tekil numarasi")
-        cohort_dt: str = Field(description="Skorlanan donem tarihi, YYYY-MM-DD")
-        is_anomaly: bool = Field(description="Bu musteri-donem kaydi anomali mi?")
-        anomaly_type: str = Field(
-            description=(
-                "Anomali tipi: ANI_RISK_ARTISI, FINANSAL_BOZULMA, PD_RISKI, KKB_RISKI, "
-                "PEER_UYUMSUZLUGU, DATA_GAP, TREND_KIRILMASI, SEZON_DISI_SAPMA veya NORMAL"
-            )
-        )
-        risk_level: str = Field(description="Risk seviyesi: DUSUK, ORTA, YUKSEK veya KRITIK")
-        confidence: float = Field(description="Guven skoru, 0.0 ile 1.0 arasinda")
-        seasonality_assessment: str = Field(description="Sezon/mevsimsellik yorumu")
-        trend_assessment: str = Field(description="Trend ve kademeli bozulma yorumu")
-        peer_assessment: str = Field(description="Peer grubuna gore ayrisma yorumu")
-        main_reasons: list[AnomalyReasonRecord] = Field(description="Karari aciklayan ana feature gerekceleri")
-        caveat: str | None = Field(default=None, description="Varsa veri kalitesi veya karar kisiti")
-        recommended_action: str = Field(
-            description="Onerilen aksiyon: Izle, Manuel incele, Portfoy yoneticisine gonder, Limit/risk gozden gecir veya Veri kontrolu yap"
-        )
-
-    class AnomalyBatchResult(BaseModel):
-        results: list[AnomalyRecord] = Field(
-            description="Verilen musteri-donem evidence kayitlari icin kronolojik sira ile karar listesi"
-        )
-
-    return AnomalyBatchResult
-
-
 def build_langchain_structured_chain() -> Any:
     settings = load_llm_settings()
     validate_llm_settings(settings)
+    if AnomalyBatchResult is None:
+        raise RuntimeError(
+            "Pydantic is required for the LLM structured output flow. "
+            "Install requirements.txt or pip install pydantic."
+        )
     try:
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_openai import ChatOpenAI
@@ -177,7 +183,7 @@ def build_langchain_structured_chain() -> Any:
             ("human", "Asagidaki musteri-donem evidence kayitlarini analiz et:\n\n{input_records}"),
         ]
     )
-    structured_llm = llm.with_structured_output(create_anomaly_batch_model())
+    structured_llm = llm.with_structured_output(AnomalyBatchResult)
     logger.info("LangChain structured LLM chain initialized: model=%s", settings["model"])
     return prompt | structured_llm
 
