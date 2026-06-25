@@ -328,7 +328,7 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                     "scoring_month_only": True,
                 },
                 "peer_definition": {
-                    "base": "same cohort month plus segment/sector/size fallback hierarchy",
+                    "base": "same cohort month plus segment/sector/size hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
                     "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
                 },
@@ -386,7 +386,7 @@ def build_evidence_from_result_rows(frame: pd.DataFrame, *, max_customers: int |
                     "source_note": "Built from runtime reason_details because raw input rows were not available locally.",
                 },
                 "peer_definition": {
-                    "base": "same cohort month plus segment/sector/size fallback hierarchy",
+                    "base": "same cohort month plus segment/sector/size hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
                     "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
                 },
@@ -567,7 +567,7 @@ def build_evidence_packages_from_prepared_windows(
                     "scoring_month_only": True,
                 },
                 "peer_definition": {
-                    "base": "same cohort month plus segment/sector/size fallback hierarchy",
+                    "base": "same cohort month plus segment/sector/size hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
                     "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
                 },
@@ -1069,7 +1069,7 @@ def log_evidence_contract(selected_features: list[str]) -> None:
     logger.info(
         "AUDIT PIPELINE CONTRACT | raw_input=Oracle raw monthly rows generated_features=%s peer_grouping=%s excluded_signals=%s",
         len(selected_features),
-        "cohort_dt + musteri_segment + sector + monthly_size fallback; direct PD/rating signals allowed; PD/rating cross-ratios forbidden",
+        "cohort_dt + musteri_segment + sector + monthly_size hierarchy; direct PD/rating signals allowed; PD/rating cross-ratios forbidden",
         ",".join(sorted(FORBIDDEN_PD_RATING_COMPARISON_SIGNALS)),
     )
     logger.info(

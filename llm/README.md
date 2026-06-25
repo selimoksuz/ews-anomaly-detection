@@ -85,7 +85,7 @@ LLM ayarlari su sirayla okunur:
 3. Secret dosyasi: `secret/secrets.yaml`
 4. `timeout_seconds` verilmezse default 120 kullanilir.
 
-`base_url`, `api_key` ve `model` zorunludur. Bu proje on-prem/internal endpoint kullanir; dis `https://api.openai.com/v1` adresine otomatik fallback yapmaz.
+`base_url`, `api_key` ve `model` zorunludur. Bu proje on-prem/internal endpoint kullanir; dis `https://api.openai.com/v1` adresine otomatik gecis yapmaz.
 
 Env degiskeni vermek istemiyorsan `secret/secrets.yaml` icine sunu koy:
 
@@ -131,14 +131,14 @@ llm:
       timeout_seconds: 300
       max_retries: 0
       max_tokens: 1200
-      include_raw_response: false
+      structured_method: function_calling
 ```
 
 Logda su satirlar gorulmelidir:
 
 ```text
-LLM settings resolved: ... timeout_seconds=300 max_retries=0 max_tokens=1200 include_raw=False client=langchain_structured
-LangChain structured LLM chain initialized: model=gpt-oss-20b include_raw=False max_retries=0 max_tokens=1200
+LLM settings resolved: ... timeout_seconds=300 max_retries=0 max_tokens=1200 structured_method=function_calling client=langchain_structured
+LangChain structured LLM chain initialized: model=gpt-oss-20b structured_method=function_calling max_retries=0 max_tokens=1200
 LLM request payload prepared: mono_id=... periods=... formatter=compact_text
 ```
 
@@ -271,7 +271,7 @@ PD/rating notu:
 
 - `irb_rating_pd`, `irb_model_pd`, `rating_group` exclude edilmez; direkt sinyal olarak kullanilabilir.
 - `pd_ratio`, `pd_to_rating_group` gibi PD/rating alanlarini kendi arasinda oranlayan veya dogrudan karsilastiran turetilmis feature'lar kullanilmaz.
-- Peer grubu rating ile daraltilmaz; ana hiyerarsi ay + segment + sektor + aylik buyukluk fallback mantigidir.
+- Peer grubu rating ile daraltilmaz; ana hiyerarsi ay + segment + sektor + aylik buyukluk sirasidir.
 
 ## Output Insert Kontrolu
 
@@ -292,8 +292,8 @@ SELECT COUNT(*) FROM ZT_VAR2.EWS_ANOMALY_LLM_REASONS
 WHERE TRUNC(COHORT_DT) = DATE '2026-05-31';
 ```
 
-Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`. Basarili cevapta once `response.results` okunur; fallback parser sadece endpoint/LangChain cevabi farkli sekilde sardiginda devreye girer.
+Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`. Basarili cevapta dogrudan `response.results` okunur. Ek parser, raw response parser veya dis endpoint gecisi yoktur.
 
 Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
 
-Eger logda HTTP 200 OK sonrasi `LLM structured response did not include results: None` gorulurse endpoint cevap vermis ama LangChain parser structured objeyi `None` yapmis demektir. Debug icin gecici olarak `include_raw_response: true` verilebilir; bu ayni model cevabinin `raw.content` veya `tool_calls.function.arguments` alanindan JSON okumayi dener. Bu ikinci LLM cagrisi veya dis endpoint fallback'i degildir.
+Eger logda HTTP 200 OK sonrasi `LLM structured response did not include results` gorulurse endpoint cevap vermis ama LangChain structured chain `AnomalyBatchResult.results` objesini uretmemis demektir. Bu durumda once `structured_method: function_calling` kullanildigini ve notebook kernelinin guncel kodu import ettigini kontrol et.

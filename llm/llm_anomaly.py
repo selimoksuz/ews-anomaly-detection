@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any, List, Optional
@@ -183,10 +182,8 @@ def build_langchain_structured_chain() -> Any:
         max_retries=int(settings["max_retries"]),
         **optional_llm_kwargs(settings),
     )
-    if bool(settings.get("include_raw_response")):
-        structured_llm = llm.with_structured_output(schema, include_raw=True)
-    else:
-        structured_llm = llm.with_structured_output(schema)
+    structured_method = str(settings["structured_method"])
+    structured_llm = llm.with_structured_output(schema, method=structured_method)
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
@@ -194,9 +191,9 @@ def build_langchain_structured_chain() -> Any:
         ]
     )
     logger.info(
-        "LangChain structured LLM chain initialized: model=%s include_raw=%s max_retries=%s max_tokens=%s",
+        "LangChain structured LLM chain initialized: model=%s structured_method=%s max_retries=%s max_tokens=%s",
         settings["model"],
-        bool(settings.get("include_raw_response")),
+        structured_method,
         settings["max_retries"],
         settings.get("max_tokens"),
     )
@@ -362,22 +359,24 @@ def invoke_langchain_structured_decisions(chain: Any, evidence_items: list[dict[
         sum(len(item.get("features") or []) for item in evidence_items),
     )
     response = chain.invoke({"input_records": input_records})
-    records = response_results(response)
+    records = response.results
     if not records:
-        batch = normalize_structured_response(response)
-        records = extract_decision_records(batch)
-    if not records:
-        raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(model_to_dict(response)), 500)}")
+        raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(response), 500)}")
     if len(records) != len(evidence_items):
         raise RuntimeError(
             "LLM structured response result count mismatch: "
             f"expected={len(evidence_items)} actual={len(records)} mono_id={first_item.get('mono_id')}"
         )
     decisions = []
-    for fallback_position, record in enumerate(records):
+    for record in records:
         decision = model_to_dict(record)
-        position = period_position_from_decision(decision, fallback_position)
-        evidence = evidence_items[position] if 0 <= position < len(evidence_items) else evidence_items[min(fallback_position, len(evidence_items) - 1)]
+        position = int(decision["period_position"])
+        if not 0 <= position < len(evidence_items):
+            raise RuntimeError(
+                "LLM structured response period_position is out of range: "
+                f"period_position={position} expected_range=0..{len(evidence_items) - 1} mono_id={first_item.get('mono_id')}"
+            )
+        evidence = evidence_items[position]
         decision["period_position"] = position
         if not decision.get("mono_id"):
             decision["mono_id"] = evidence.get("mono_id")
@@ -385,29 +384,6 @@ def invoke_langchain_structured_decisions(chain: Any, evidence_items: list[dict[
             decision["cohort_dt"] = evidence.get("cohort_dt")
         decisions.append(decision)
     return decisions
-
-
-def response_results(response: Any) -> list[Any] | None:
-    if hasattr(response, "results"):
-        results = getattr(response, "results")
-        if isinstance(results, list) and results:
-            return results
-    response_dict = model_to_dict(response)
-    if isinstance(response_dict, dict):
-        results = response_dict.get("results")
-        if isinstance(results, list) and results:
-            return results
-        parsed = response_dict.get("parsed")
-        if parsed is not None:
-            return response_results(parsed)
-    return None
-
-
-def period_position_from_decision(decision: dict[str, Any], fallback: int) -> int:
-    try:
-        return int(decision.get("period_position"))
-    except (TypeError, ValueError):
-        return fallback
 
 
 def group_evidence_by_customer(evidence_items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -428,118 +404,6 @@ def group_evidence_by_customer(evidence_items: list[dict[str, Any]]) -> list[tup
 
 def evidence_period_sort_key(item: dict[str, Any]) -> tuple[str, str]:
     return (str(item.get("cohort_dt") or ""), str(item.get("mono_id") or ""))
-
-
-def normalize_structured_response(response: Any) -> Any:
-    batch = model_to_dict(response)
-    if isinstance(batch, str):
-        parsed = parse_json_payload_text(batch)
-        return parsed if parsed is not None else batch
-    if isinstance(batch, dict):
-        if "parsed" in batch and batch.get("parsed") is not None:
-            return normalize_structured_response(batch["parsed"])
-        content = batch.get("content")
-        if isinstance(content, str) and content.strip():
-            parsed = parse_json_payload_text(content)
-            if parsed is not None:
-                return parsed
-        tool_payload = extract_tool_call_payload(batch)
-        if tool_payload is not None:
-            return tool_payload
-        raw = batch.get("raw")
-        if raw is not None:
-            raw_batch = normalize_structured_response(raw)
-            if extract_decision_records(raw_batch):
-                return raw_batch
-    return batch
-
-
-def extract_decision_records(batch: Any) -> list[Any] | None:
-    batch = model_to_dict(batch)
-    if isinstance(batch, dict):
-        results = batch.get("results")
-        if isinstance(results, list) and results:
-            return results
-        if is_single_decision(batch):
-            return [batch]
-        tool_payload = extract_tool_call_payload(batch)
-        if tool_payload is not None:
-            nested = extract_decision_records(tool_payload)
-            if nested:
-                return nested
-        for key in ("parsed", "raw", "message"):
-            if key in batch:
-                nested = extract_decision_records(batch[key])
-                if nested:
-                    return nested
-        content = batch.get("content")
-        if isinstance(content, str):
-            parsed = parse_json_payload_text(content)
-            return extract_decision_records(parsed) if parsed is not None else None
-    if isinstance(batch, list) and batch:
-        return batch
-    if isinstance(batch, str):
-        parsed = parse_json_payload_text(batch)
-        return extract_decision_records(parsed) if parsed is not None else None
-    return None
-
-
-def is_single_decision(value: dict[str, Any]) -> bool:
-    return {"is_anomaly", "anomaly_type", "risk_level"}.issubset(value.keys())
-
-
-def extract_tool_call_payload(message: dict[str, Any]) -> Any:
-    candidates = []
-    if isinstance(message.get("additional_kwargs"), dict):
-        candidates.extend(message["additional_kwargs"].get("tool_calls") or [])
-        function_call = message["additional_kwargs"].get("function_call")
-        if function_call:
-            candidates.append({"function": function_call})
-    candidates.extend(message.get("tool_calls") or [])
-    candidates.extend(message.get("invalid_tool_calls") or [])
-
-    for call in candidates:
-        if not isinstance(call, dict):
-            continue
-        function = call.get("function") if isinstance(call.get("function"), dict) else call
-        if not isinstance(function, dict):
-            continue
-        args = function.get("arguments") or function.get("args")
-        if isinstance(args, dict):
-            return args
-        if isinstance(args, str) and args.strip():
-            parsed = parse_json_payload_text(args)
-            if parsed is not None:
-                return parsed
-    return None
-
-
-def parse_json_payload_text(text: str) -> Any:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
-        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
-    for candidate in (cleaned, extract_json_fragment(cleaned)):
-        if not candidate:
-            continue
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-    return None
-
-
-def extract_json_fragment(text: str) -> str | None:
-    object_start = text.find("{")
-    array_start = text.find("[")
-    starts = [index for index in (object_start, array_start) if index >= 0]
-    if not starts:
-        return None
-    start = min(starts)
-    end = max(text.rfind("}"), text.rfind("]"))
-    if end <= start:
-        return None
-    return text[start : end + 1]
 
 
 def model_to_dict(value: Any) -> Any:
@@ -603,24 +467,24 @@ def load_llm_settings() -> dict[str, Any]:
             ),
             name="LLM max_tokens",
         ),
-        "include_raw_response": parse_bool(
+        "structured_method": parse_structured_method(
             first_non_empty(
-                os.environ.get("LLM_INCLUDE_RAW_RESPONSE"),
-                secret_settings.get("include_raw_response"),
-                False,
+                os.environ.get("LLM_STRUCTURED_METHOD"),
+                secret_settings.get("structured_method"),
+                "function_calling",
             )
         ),
         "source": secret_settings.get("_source", "env/default"),
     }
     logger.info(
-        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s include_raw=%s client=langchain_structured",
+        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s structured_method=%s client=langchain_structured",
         mask_url(str(settings["base_url"])),
         settings["model"],
         llm_key_source(secret_settings),
         settings["timeout_seconds"],
         settings["max_retries"],
         settings["max_tokens"],
-        settings["include_raw_response"],
+        settings["structured_method"],
     )
     return settings
 
@@ -704,6 +568,14 @@ def parse_bool(value: Any) -> bool:
         return False
     text = str(value).strip().lower()
     return text in {"1", "true", "yes", "y", "on", "evet"}
+
+
+def parse_structured_method(value: Any) -> str:
+    method = str(value or "").strip().lower()
+    allowed = {"function_calling", "json_mode", "json_schema"}
+    if method not in allowed:
+        raise RuntimeError(f"Invalid LLM structured_method value: {value}. Allowed: {', '.join(sorted(allowed))}")
+    return method
 
 
 def llm_key_source(secret_settings: dict[str, Any]) -> str:
