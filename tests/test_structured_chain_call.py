@@ -1,7 +1,9 @@
 import os
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from llm import llm_anomaly
@@ -85,6 +87,26 @@ class StructuredChainCallTests(unittest.TestCase):
 
         self.assertIsNone(settings["timeout_seconds"])
         self.assertFalse(settings["http_trust_env"])
+        self.assertFalse(settings["ssl_verify"])
+        self.assertIn("ca_bundle", settings)
+
+    def test_load_settings_uses_explicit_ca_bundle(self):
+        with tempfile.NamedTemporaryFile() as handle:
+            ca_path = Path(handle.name)
+            with patch.dict(os.environ, {"LLM_CA_BUNDLE": str(ca_path)}, clear=False), patch.object(
+                llm_anomaly, "load_local_env_files"
+            ), patch.object(
+                llm_anomaly,
+                "load_llm_secret_settings",
+                return_value={
+                    "base_url": "https://manavgat.yzyonetim.zb/v1",
+                    "api_key": "test-key",
+                    "model": "gpt-oss-20b",
+                },
+            ):
+                settings = llm_anomaly.load_llm_settings()
+
+        self.assertEqual(settings["ca_bundle"], str(ca_path))
 
     def test_structured_chain_uses_source_compatible_methodless_call(self):
         FakeChatOpenAI.last_instance = None
@@ -97,6 +119,8 @@ class StructuredChainCallTests(unittest.TestCase):
             "max_retries": 0,
             "max_tokens": None,
             "http_trust_env": False,
+            "ssl_verify": False,
+            "ca_bundle": None,
         }
 
         with patch.dict(sys.modules, self.fake_langchain_modules()), patch.object(
@@ -112,6 +136,7 @@ class StructuredChainCallTests(unittest.TestCase):
         self.assertEqual(FakeChatOpenAI.last_instance.kwargs["http_client"], FakeHttpxClient.last_instance)
         self.assertEqual(FakeHttpxClient.last_instance.kwargs["trust_env"], False)
         self.assertIsNone(FakeHttpxClient.last_instance.kwargs["timeout"])
+        self.assertEqual(FakeHttpxClient.last_instance.kwargs["verify"], False)
         self.assertEqual(FakeChatOpenAI.last_instance.structured_schema, object)
         self.assertEqual(FakeChatOpenAI.last_instance.structured_kwargs, {})
 
@@ -126,6 +151,8 @@ class StructuredChainCallTests(unittest.TestCase):
             "max_retries": 0,
             "max_tokens": None,
             "http_trust_env": False,
+            "ssl_verify": True,
+            "ca_bundle": "/tmp/internal-ca.pem",
         }
 
         with patch.dict(sys.modules, self.fake_langchain_modules()), patch.object(
@@ -139,6 +166,7 @@ class StructuredChainCallTests(unittest.TestCase):
         self.assertNotIn("timeout", FakeChatOpenAI.last_instance.kwargs)
         self.assertIsNotNone(FakeHttpxClient.last_instance)
         self.assertFalse(FakeHttpxClient.last_instance.kwargs["trust_env"])
+        self.assertEqual(FakeHttpxClient.last_instance.kwargs["verify"], "/tmp/internal-ca.pem")
 
     def test_first_customer_payload_preview_is_logged(self):
         evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1, 2, 3]}]

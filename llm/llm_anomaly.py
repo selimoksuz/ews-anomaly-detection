@@ -35,6 +35,13 @@ LLM_PAYLOAD_PREVIEW_CUSTOMERS = 3
 LLM_PAYLOAD_PREVIEW_CHARS = 50000
 LLM_ERROR_PAYLOAD_PREVIEW_CHARS = 8000
 PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+CA_BUNDLE_ENV_VARS = ("LLM_CA_BUNDLE", "LLM_SSL_CERT_FILE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+COMMON_CA_BUNDLE_PATHS = (
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/ssl/cert.pem",
+    "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+)
 
 SYSTEM_PROMPT = """Sen deneyimli bir banka risk yoneticisi ve finansal anomali uzmanisin.
 Sana secilen scoring ayina ait musteri snapshot kayitlari verilecek.
@@ -170,7 +177,6 @@ def build_langchain_structured_chain() -> Any:
     validate_llm_settings(settings)
     schema = anomaly_batch_schema()
     try:
-        import httpx
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_openai import ChatOpenAI
     except ImportError as exc:
@@ -179,7 +185,7 @@ def build_langchain_structured_chain() -> Any:
             "Install requirements.txt or pip install langchain-openai langchain-core pydantic httpx."
         ) from exc
 
-    http_client = httpx.Client(trust_env=bool(settings["http_trust_env"]), timeout=None)
+    http_client = build_llm_http_client(settings)
     llm = ChatOpenAI(
         base_url=str(settings["base_url"]).rstrip("/"),
         api_key=str(settings["api_key"]),
@@ -197,13 +203,34 @@ def build_langchain_structured_chain() -> Any:
         ]
     )
     logger.info(
-        "LangChain structured LLM chain initialized: model=%s structured_call=with_structured_output_schema_only max_retries=%s max_tokens=%s http_trust_env=%s",
+        "LangChain structured LLM chain initialized: model=%s structured_call=with_structured_output_schema_only max_retries=%s max_tokens=%s http_trust_env=%s ssl_verify=%s ca_bundle=%s",
         settings["model"],
         settings["max_retries"],
         settings.get("max_tokens"),
         settings["http_trust_env"],
+        settings.get("ssl_verify", True),
+        settings.get("ca_bundle"),
     )
     return prompt | structured_llm
+
+
+def build_llm_http_client(settings: dict[str, Any]) -> Any:
+    try:
+        import httpx
+    except ImportError as exc:
+        raise RuntimeError("httpx is required for the LLM client. Install requirements.txt or pip install httpx.") from exc
+
+    verify: bool | str
+    if not bool(settings.get("ssl_verify", True)):
+        verify = False
+        logger.info("LLM SSL verification disabled: ssl_verify=False")
+    else:
+        verify = str(settings["ca_bundle"]) if settings.get("ca_bundle") else True
+    return httpx.Client(
+        trust_env=bool(settings["http_trust_env"]),
+        timeout=None,
+        verify=verify,
+    )
 
 
 def anomaly_batch_schema() -> type:
@@ -518,10 +545,19 @@ def load_llm_settings() -> dict[str, Any]:
             ),
             name="LLM http_trust_env",
         ),
+        "ssl_verify": parse_bool(
+            first_non_empty(
+                os.environ.get("LLM_SSL_VERIFY"),
+                secret_settings.get("ssl_verify"),
+                False,
+            ),
+            name="LLM ssl_verify",
+        ),
+        "ca_bundle": resolve_ca_bundle(secret_settings),
         "source": secret_settings.get("_source", "env/default"),
     }
     logger.info(
-        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s http_trust_env=%s proxy_env_present=%s structured_call=with_structured_output_schema_only client=langchain_structured",
+        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s http_trust_env=%s proxy_env_present=%s ssl_verify=%s ca_bundle=%s structured_call=with_structured_output_schema_only client=langchain_structured",
         mask_url(str(settings["base_url"])),
         settings["model"],
         llm_key_source(secret_settings),
@@ -530,6 +566,8 @@ def load_llm_settings() -> dict[str, Any]:
         settings["max_tokens"],
         settings["http_trust_env"],
         proxy_env_present(),
+        settings["ssl_verify"],
+        settings["ca_bundle"],
     )
     return settings
 
@@ -583,13 +621,42 @@ def parse_bool(value: Any, *, name: str) -> bool:
         normalized = value.strip().lower()
         if normalized in {"1", "true", "yes", "y", "on", "evet"}:
             return True
-        if normalized in {"0", "false", "no", "n", "off", "hayir", "hayır"}:
+        if normalized in {"0", "false", "no", "n", "off", "hayir"}:
             return False
     raise RuntimeError(f"Invalid {name} value: {value}")
 
 
 def proxy_env_present() -> bool:
     return any(bool(os.environ.get(name)) for name in PROXY_ENV_VARS)
+
+
+def resolve_ca_bundle(secret_settings: dict[str, Any]) -> str | None:
+    explicit = first_non_empty(
+        os.environ.get("LLM_CA_BUNDLE"),
+        os.environ.get("LLM_SSL_CERT_FILE"),
+        secret_settings.get("ca_bundle"),
+        secret_settings.get("ssl_ca_bundle"),
+    )
+    if explicit:
+        return require_existing_path(explicit, name="LLM CA bundle")
+
+    for env_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        candidate = os.environ.get(env_name)
+        if candidate and Path(str(candidate)).expanduser().exists():
+            return str(Path(str(candidate)).expanduser())
+
+    for candidate in COMMON_CA_BUNDLE_PATHS:
+        path = Path(candidate)
+        if path.exists():
+            return str(path)
+    return None
+
+
+def require_existing_path(value: Any, *, name: str) -> str:
+    path = Path(str(value)).expanduser()
+    if not path.exists():
+        raise RuntimeError(f"{name} file not found: {value}")
+    return str(path)
 
 
 def parse_non_negative_int(value: Any, *, name: str) -> int:

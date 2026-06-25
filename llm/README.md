@@ -100,6 +100,9 @@ llm:
       model: "gpt-oss-20b"
       # Sadece LLM endpoint'e proxy uzerinden gitmek zorundaysan true yap.
       # http_trust_env: false
+      # Kurum/internal CA bundle path'i. Bos birakilirsa env ve yaygin Linux path'leri denenir.
+      # ca_bundle: "/etc/pki/tls/certs/ca-bundle.crt"
+      ssl_verify: false
 ```
 
 Baska bir LLM section secmek icin:
@@ -128,11 +131,13 @@ Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text 
 
 `httpcore/_sync/http_proxy.py` ve `[SSL: UNEXPECTED_EOF_WHILE_READING]` gorulurse request env proxy uzerinden gitmis olabilir. Varsayilan `http_trust_env=False` bunu kapatir. Gercekten proxy gerekiyorsa `LLM_HTTP_TRUST_ENV=true` veya secret altinda `http_trust_env: true` kullan.
 
+Internal endpoint icin `ssl_verify` varsayilan olarak `false` gelir; sertifika zinciri dogrulamasi yapilmaz. Daha sonra kurum CA'si ile dogrulama acilmak istenirse `ssl_verify: true` ve gerekirse `ca_bundle: "/path/to/kurum-ca.pem"` verilebilir. Kod sirasiyla `LLM_CA_BUNDLE`, `LLM_SSL_CERT_FILE`, secret `ca_bundle`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` ve yaygin Linux CA path'lerini dener.
+
 Logda su satirlar gorulmelidir:
 
 ```text
-LLM settings resolved: ... timeout_seconds=None max_retries=0 max_tokens=None http_trust_env=False proxy_env_present=True structured_call=with_structured_output_schema_only client=langchain_structured
-LangChain structured LLM chain initialized: model=gpt-oss-20b structured_call=with_structured_output_schema_only max_retries=0 max_tokens=None http_trust_env=False
+LLM settings resolved: ... timeout_seconds=None max_retries=0 max_tokens=None http_trust_env=False proxy_env_present=True ssl_verify=False ca_bundle=... structured_call=with_structured_output_schema_only client=langchain_structured
+LangChain structured LLM chain initialized: model=gpt-oss-20b structured_call=with_structured_output_schema_only max_retries=0 max_tokens=None http_trust_env=False ssl_verify=False ca_bundle=...
 LLM request payload prepared: mono_id=... decision_items=... formatter=compact_text
 ========== LLM PAYLOAD PREVIEW 1/3 START | mono_id=... chars=... ==========
 period_position=0 | mono_id=... | cohort_dt=... | context=... | decision_contract=... | peer_definition=... | data_quality=...

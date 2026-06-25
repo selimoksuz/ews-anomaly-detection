@@ -945,6 +945,15 @@ def build_series_reference_frame(*frames: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def concat_non_empty_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    parts = [frame.copy() for frame in frames if frame is not None and not frame.empty]
+    if not parts:
+        return pd.DataFrame()
+    if len(parts) == 1:
+        return parts[0]
+    return pd.concat(parts, ignore_index=True)
+
+
 def snapshot_series(
     *,
     feature: str,
@@ -1002,7 +1011,7 @@ def customer_snapshot_series(
         }
     )
     series = (
-        pd.concat([history_frame, current_frame], ignore_index=True)
+        concat_non_empty_frames([history_frame, current_frame])
         .dropna(subset=["cohort_dt"])
         .drop_duplicates(subset=["cohort_dt"], keep="last")
         .sort_values("cohort_dt")
