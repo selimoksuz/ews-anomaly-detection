@@ -134,6 +134,7 @@ class EvidenceConfig:
     max_customers: int | None = None
     top_features: int = 12
     min_history_periods: int = 3
+    series_periods: int = 6
 
 
 @dataclass
@@ -283,7 +284,15 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
         month_of_year=int(scoring_month.month),
     )
     reference_scale_cache = build_reference_scale_cache(train_features, selected_features)
-    logger.info("Peer/context artifacts are ready.")
+    series_reference_df = build_series_reference_frame(train_df, score_df)
+    series_reference_features = build_feature_frame(series_reference_df, numeric_source_columns)
+    series_peer_artifacts = build_peer_artifacts(series_reference_df, series_reference_features, selected_features)
+    logger.info(
+        "Peer/context artifacts are ready: score_peer_rows=%s series_reference_rows=%s series_periods=%s",
+        len(score_df),
+        len(series_reference_df),
+        config.series_periods,
+    )
 
     packages: list[dict[str, Any]] = []
     history_id_series = train_df[ID_COLUMN].astype(str)
@@ -311,6 +320,10 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                 scoring_month=scoring_month,
                 seasonal_peer_cache=seasonal_peer_cache,
                 reference_scale_cache=reference_scale_cache,
+                series_reference_df=series_reference_df,
+                series_peer_artifacts=series_peer_artifacts,
+                customer_id=customer_id,
+                series_periods=config.series_periods,
             )
             feature_evidence.append(item)
 
@@ -511,11 +524,16 @@ def build_evidence_packages_from_prepared_windows(
         month_of_year=int(scoring_month.month),
     )
     reference_scale_cache = build_reference_scale_cache(train_features, selected_features)
+    series_reference_df = build_series_reference_frame(train_df, score_df, selected_history_df)
+    series_reference_features = build_feature_frame(series_reference_df, numeric_source_columns)
+    series_peer_artifacts = build_peer_artifacts(series_reference_df, series_reference_features, selected_features)
     logger.info(
-        "Peer/context artifacts are ready: peer_rows=%s train_context_rows=%s selected_history_rows=%s",
+        "Peer/context artifacts are ready: peer_rows=%s train_context_rows=%s selected_history_rows=%s series_reference_rows=%s series_periods=%s",
         len(score_df),
         len(train_context),
         len(selected_history_df),
+        len(series_reference_df),
+        config.series_periods,
     )
 
     history_id_series = selected_history_df[ID_COLUMN].astype(str) if not selected_history_df.empty else pd.Series(dtype=str)
@@ -559,6 +577,10 @@ def build_evidence_packages_from_prepared_windows(
                 scoring_month=scoring_month,
                 seasonal_peer_cache=seasonal_peer_cache,
                 reference_scale_cache=reference_scale_cache,
+                series_reference_df=series_reference_df,
+                series_peer_artifacts=series_peer_artifacts,
+                customer_id=customer_id,
+                series_periods=config.series_periods,
             )
             feature_evidence.append(item)
 
@@ -620,6 +642,7 @@ def build_evidence_packages_from_oracle(
     max_customers: int | None = None,
     max_train_rows: int | None = 300_000,
     top_features: int = 12,
+    series_periods: int = 6,
     table_key: str = "multivar_input",
     chunk_size: int = 250_000,
     random_state: int = 42,
@@ -748,6 +771,7 @@ def build_evidence_packages_from_oracle(
             scoring_month=selected_month.strftime("%Y-%m-%d"),
             max_customers=max_customers,
             top_features=top_features,
+            series_periods=series_periods,
         ),
     )
 
@@ -823,6 +847,10 @@ def build_feature_evidence(
     scoring_month: pd.Timestamp,
     seasonal_peer_cache: SeasonalPeerMedianCache | None = None,
     reference_scale_cache: dict[str, float] | None = None,
+    series_reference_df: pd.DataFrame | None = None,
+    series_peer_artifacts: Any | None = None,
+    customer_id: str | None = None,
+    series_periods: int = 6,
 ) -> dict[str, Any]:
     current = clean_number(score_features.loc[row_index, feature])
     history_series = (
@@ -856,6 +884,17 @@ def build_feature_evidence(
         seasonal_peer_cache=seasonal_peer_cache,
         reference_scale_cache=reference_scale_cache,
     )
+    snapshot_series_payload = snapshot_series(
+        feature=feature,
+        customer_id=customer_id,
+        scoring_month=scoring_month,
+        current=current,
+        history_dates=history_dates,
+        history_series=history_series,
+        series_reference_df=series_reference_df,
+        series_peer_artifacts=series_peer_artifacts,
+        series_periods=series_periods,
+    )
 
     return {
         "name": feature,
@@ -866,6 +905,7 @@ def build_feature_evidence(
         "history": history_payload,
         "trend": trend_payload,
         "seasonality": seasonality_payload,
+        "snapshot_series": snapshot_series_payload,
         "peer": {
             "peer_definition_level": peer_level,
             "peer_hierarchy": [level for level, _ in peer_hierarchy_for_feature(feature)],
@@ -886,6 +926,142 @@ def selected_scoring_customer_ids(score_df: pd.DataFrame, *, max_customers: int 
     if max_customers is not None:
         ids = ids.head(max_customers)
     return ids.tolist()
+
+
+def build_series_reference_frame(*frames: pd.DataFrame) -> pd.DataFrame:
+    parts = [normalize_columns(frame).copy() for frame in frames if frame is not None and not frame.empty]
+    if not parts:
+        return pd.DataFrame()
+    result = pd.concat(parts, ignore_index=True)
+    if TIME_COLUMN in result.columns:
+        result[TIME_COLUMN] = parse_dates(result[TIME_COLUMN])
+    if ID_COLUMN in result.columns and TIME_COLUMN in result.columns:
+        result = (
+            result.dropna(subset=[TIME_COLUMN])
+            .drop_duplicates(subset=[ID_COLUMN, TIME_COLUMN], keep="last")
+            .sort_values([ID_COLUMN, TIME_COLUMN])
+            .reset_index(drop=True)
+        )
+    return result
+
+
+def snapshot_series(
+    *,
+    feature: str,
+    customer_id: str | None,
+    scoring_month: pd.Timestamp,
+    current: float | None,
+    history_dates: pd.Series,
+    history_series: pd.Series,
+    series_reference_df: pd.DataFrame | None,
+    series_peer_artifacts: Any | None,
+    series_periods: int,
+) -> dict[str, Any]:
+    customer = customer_snapshot_series(
+        scoring_month=scoring_month,
+        current=current,
+        history_dates=history_dates,
+        history_series=history_series,
+        series_periods=series_periods,
+    )
+    peer = peer_snapshot_series(
+        feature=feature,
+        customer_id=customer_id,
+        customer_series=customer,
+        series_reference_df=series_reference_df,
+        series_peer_artifacts=series_peer_artifacts,
+    )
+    return {
+        "window_periods": len(customer),
+        "customer": customer,
+        "peer": peer,
+        "note": "Customer series includes selected scoring snapshot; peer series is recomputed per snapshot month using the same peer hierarchy.",
+    }
+
+
+def customer_snapshot_series(
+    *,
+    scoring_month: pd.Timestamp,
+    current: float | None,
+    history_dates: pd.Series,
+    history_series: pd.Series,
+    series_periods: int,
+) -> list[dict[str, Any]]:
+    history_frame = pd.DataFrame(
+        {
+            "cohort_dt": pd.to_datetime(history_dates, errors="coerce"),
+            "value": pd.to_numeric(history_series, errors="coerce"),
+            "is_current_snapshot": False,
+        }
+    )
+    current_frame = pd.DataFrame(
+        {
+            "cohort_dt": [pd.Timestamp(scoring_month).normalize()],
+            "value": [current],
+            "is_current_snapshot": [True],
+        }
+    )
+    series = (
+        pd.concat([history_frame, current_frame], ignore_index=True)
+        .dropna(subset=["cohort_dt"])
+        .drop_duplicates(subset=["cohort_dt"], keep="last")
+        .sort_values("cohort_dt")
+        .tail(max(int(series_periods or 0), 1))
+    )
+    return [
+        {
+            "cohort_dt": pd.Timestamp(row["cohort_dt"]).strftime("%Y-%m-%d"),
+            "value": clean_number(row["value"]),
+            "is_current_snapshot": bool(row["is_current_snapshot"]),
+        }
+        for _, row in series.iterrows()
+    ]
+
+
+def peer_snapshot_series(
+    *,
+    feature: str,
+    customer_id: str | None,
+    customer_series: list[dict[str, Any]],
+    series_reference_df: pd.DataFrame | None,
+    series_peer_artifacts: Any | None,
+) -> list[dict[str, Any]]:
+    if (
+        not customer_id
+        or series_reference_df is None
+        or series_reference_df.empty
+        or series_peer_artifacts is None
+        or feature not in series_peer_artifacts.median.columns
+    ):
+        return [
+            {
+                "cohort_dt": item.get("cohort_dt"),
+                "peer_available": False,
+            }
+            for item in customer_series
+        ]
+    reference_ids = series_reference_df[ID_COLUMN].astype(str)
+    reference_dates = parse_dates(series_reference_df[TIME_COLUMN])
+    rows = []
+    for item in customer_series:
+        date = pd.Timestamp(item.get("cohort_dt")).normalize()
+        matches = reference_ids.eq(str(customer_id)) & reference_dates.eq(date)
+        if not bool(matches.any()):
+            rows.append({"cohort_dt": item.get("cohort_dt"), "peer_available": False})
+            continue
+        row_index = matches[matches].index[0]
+        rows.append(
+            {
+                "cohort_dt": item.get("cohort_dt"),
+                "peer_available": True,
+                "peer_median": clean_number(series_peer_artifacts.median.loc[row_index, feature]),
+                "peer_z": clean_number(series_peer_artifacts.zscore.loc[row_index, feature]),
+                "peer_support": int(clean_number(series_peer_artifacts.support.loc[row_index, feature]) or 0),
+                "peer_quality": str(series_peer_artifacts.quality.loc[row_index, feature]),
+                "peer_definition_level": str(series_peer_artifacts.level.loc[row_index, feature]),
+            }
+        )
+    return rows
 
 
 def load_selected_customer_history_oracle(
@@ -1094,7 +1270,10 @@ def log_evidence_contract(selected_features: list[str]) -> None:
         "AUDIT SEASONALITY VARIABLES | variables=month_of_year,same_month_last_year_value,yoy_change_pct,same_month_customer_median,same_month_customer_z,seasonal_peer_median,seasonal_peer_z,seasonality_note"
     )
     logger.info(
-        "AUDIT LLM INPUT CONTRACT | one JSON evidence package per customer-period; includes context,data_quality,feature dictionary,current/history/peer/trend/seasonality; excludes model score,target,PD/rating cross-ratios"
+        "AUDIT SNAPSHOT SERIES VARIABLES | variables=snapshot_series.customer(cohort_dt,value,is_current_snapshot),snapshot_series.peer(cohort_dt,peer_median,peer_z,peer_support,peer_quality,peer_definition_level)"
+    )
+    logger.info(
+        "AUDIT LLM INPUT CONTRACT | one JSON evidence package per selected scoring customer snapshot; includes context,data_quality,feature dictionary,current/history/customer_series/peer_series/trend/seasonality; excludes model score,target,PD/rating cross-ratios"
     )
 
 
@@ -1479,6 +1658,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scoring-month")
     parser.add_argument("--max-customers", type=int)
     parser.add_argument("--top-features", type=int, default=12)
+    parser.add_argument("--series-periods", type=int, default=6)
     args = parser.parse_args(argv)
     frame = load_input_frame(args.input_path)
     if args.from_results:
@@ -1490,6 +1670,7 @@ def main(argv: list[str] | None = None) -> int:
                 scoring_month=args.scoring_month,
                 max_customers=args.max_customers,
                 top_features=args.top_features,
+                series_periods=args.series_periods,
             ),
         )
     output_path = write_jsonl(packages, args.output_path)

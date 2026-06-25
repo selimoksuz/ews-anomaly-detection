@@ -6,7 +6,7 @@ Ana farklar:
 
 - API key kodda tutulmaz; `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` env degiskenleri veya `secret/secrets.yaml` kullanilir.
 - LLM'e ham tablo degil, denetlenebilir `evidence JSON` verilir.
-- Evidence icinde veri sozlugu, risk yonu, musteri gecmisi, rolling medyanlar, trend, sezon, peer ve veri kalitesi birlikte bulunur.
+- Evidence icinde veri sozlugu, risk yonu, musteri gecmisi, rolling medyanlar, trend, sezon, cari peer ve tarihsel musteri/peer snapshot serileri birlikte bulunur.
 - Gelecek donemler LLM'e verilmez; skorlanan ay sadece onceki aylarla kiyaslanir.
 - LLM skor motoru degil, dogrudan `is_anomaly` karari veren uzman karar katmani olarak calisir.
 
@@ -27,7 +27,7 @@ python -m llm.llm_anomaly build-evidence runtime/multivar_anomaly/20251231_20260
 Oracle input tablosundan tam history/season/peer evidence uretmek icin:
 
 ```powershell
-python -m llm.llm_anomaly build-oracle runtime/llm/evidence_oracle.jsonl --max-customers 10 --max-train-rows 300000
+python -m llm.llm_anomaly build-oracle runtime/llm/evidence_oracle.jsonl --max-customers 10 --max-train-rows 300000 --series-periods 6
 ```
 
 Bu komut sadece evidence dosyasi uretir. LLM'e gitmez ve Oracle output tablolarina insert yapmaz.
@@ -189,7 +189,8 @@ Linux/OpenShift terminalinde:
 python -m llm.llm_anomaly run-oracle runtime/llm/decisions_oracle_10.jsonl \
   --max-customers 10 \
   --max-train-rows 300000 \
-  --top-features 12
+  --top-features 12 \
+  --series-periods 6
 ```
 
 Belirli bir cohort ayini skorlamak icin `--scoring-month` ver:
@@ -218,10 +219,11 @@ Onemli:
 - `build-oracle`: sadece evidence JSONL uretir, LLM'e gitmez, Oracle output insert yapmaz.
 - `run-oracle`: Oracle'dan okur, evidence uretir, LLM'e gider, structured output'u Oracle tablolarina yazar.
 - `--dry-run`: LLM'e gitmez ve Oracle output insert yapmaz; sadece prompt/evidence kontrolu icindir.
-- `--max-customers 10`: LLM'e gidecek scoring musterisi sayisidir. Her musteri icin kronolojik evidence listesi hazirlanir ve LLM cagrisi musteri bazinda yapilir.
+- `--max-customers 10`: LLM'e gidecek scoring snapshot/musteri sayisidir. Her musteri scoring ayinda 1 karar satiri olarak gider; history satirlari insert edilmez, evidence icinde baglam olarak kullanilir.
 - `--max-train-rows 300000`: LLM'e 300k satir gondermez. History, peer, trend ve seasonality referanslarini hesaplamak icin kullanilan gecmis/reference ust limitidir.
+- `--series-periods 6`: Her feature icin LLM promptuna girecek musteri ve peer snapshot serisi uzunlugudur. Musterinin toplam 5 snapshot'i varsa 5'i de gider; daha uzun pencere icin bu degeri artir.
 - Secilen musterilerin tam gecmisi ayrica cekilir; bu sayede `max_train_rows` sampling'i secilen musterinin history'sini dusurmez.
-- Peer referansi `max-customers` ile secilen 10 musteri uzerinden degil, skorlanan ayin tum scoring cohort'u uzerinden hesaplanir.
+- Cari peer referansi `max-customers` ile secilen 10 musteri uzerinden degil, skorlanan ayin tum scoring cohort'u uzerinden hesaplanir. `snapshot_series.peer` ise her tarihsel snapshot ayi icin ayni peer hiyerarsisiyle tekrar hesaplanan peer median/support/quality bilgisini tasir.
 - Evidence hazirligi Oracle path'te full train/score pencerelerini korur ama artik dev bir `combined` dataframe olusturup tekrar split etmez. Secilen musteri history'si onceden gruplanir, seasonal peer medyanlari ve robust scale degerleri scoring ayina gore cache'lenir. Bu veri veya feature azaltma degildir; ayni referans veriyi tekrar tekrar taramayi azaltir.
 
 Output tablolarini run oncesi olusturmak/kontrol etmek icin:
@@ -247,6 +249,14 @@ STEP 03 START/DONE | Musteri bazli history ve aylik peer gruplariyla LLM evidenc
 STEP 04 START/DONE | LLM modelinden anomali karari aliniyor
 STEP 05 START/DONE | LLM kararlari Oracle output tablolarina yaziliyor
 ```
+
+STEP 03 icinde secilen her musteri icin su ayrim gorulur:
+
+```text
+LLM scoring payload prepared: mono_id=... scoring_cohort_dt=2026-05-31 customer_history_periods=5 history_first_cohort_dt=... history_last_cohort_dt=... output_rows_for_customer=1
+```
+
+STEP 04 icinde `decision_items=1` scoring snapshot karar sayisidir; `customer_history_periods` ise bu tek karar icin prompta giren musteri gecmisini gosterir.
 
 Bir adim yapilamazsa logda `FAILED` veya `SKIPPED` ve nedeni yazilir. Ornek:
 

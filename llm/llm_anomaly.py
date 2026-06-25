@@ -243,9 +243,10 @@ def validate_llm_settings(settings: dict[str, Any]) -> None:
 
 def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
     lines = [
-        "Gorev: Her musteri-donem icin anomali karari ver.",
+        "Gorev: Her secilen musteri snapshot'i icin anomali karari ver.",
         "Cikti: AnomalyBatchResult formatinda JSON; en dis alan results listesi olmali.",
         "Alanlar: period_position, mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence, seasonality_assessment, trend_assessment, peer_assessment, main_reasons, caveat, recommended_action.",
+        "Not: Her kayit tek scoring snapshot'idir; history, customer_series ve peer_series sadece o snapshot'i yorumlama baglamidir.",
         "Kayitlar:",
     ]
     for index, item in enumerate(evidence_items):
@@ -276,6 +277,7 @@ def compact_feature_line(feature: dict[str, Any], index: int) -> str:
     history = feature.get("history") or {}
     trend = feature.get("trend") or {}
     seasonality = feature.get("seasonality") or {}
+    snapshot_series = feature.get("snapshot_series") or {}
     peer = feature.get("peer") or {}
     data_quality = feature.get("data_quality") or {}
     parts = [
@@ -322,6 +324,14 @@ def compact_feature_line(feature: dict[str, Any], index: int) -> str:
                 "seasonality_note": seasonality.get("seasonality_note"),
             }
         ),
+        "snapshot_series="
+        + compact_json(
+            {
+                "window_periods": snapshot_series.get("window_periods"),
+                "customer": snapshot_series.get("customer"),
+                "peer": snapshot_series.get("peer"),
+            }
+        ),
         "peer="
         + compact_json(
             {
@@ -351,7 +361,7 @@ def invoke_langchain_structured_decisions(chain: Any, evidence_items: list[dict[
     input_records = format_evidence_for_langchain(evidence_items)
     first_item = evidence_items[0] if evidence_items else {}
     logger.info(
-        "LLM request payload prepared: mono_id=%s periods=%s first_cohort_dt=%s chars=%s total_features=%s formatter=compact_text",
+        "LLM request payload prepared: mono_id=%s decision_items=%s first_cohort_dt=%s chars=%s total_features=%s formatter=compact_text",
         first_item.get("mono_id"),
         len(evidence_items),
         first_item.get("cohort_dt"),
@@ -674,6 +684,7 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--scoring-month")
     build_parser.add_argument("--max-customers", type=int)
     build_parser.add_argument("--top-features", type=int, default=12)
+    build_parser.add_argument("--series-periods", type=int, default=6)
 
     oracle_parser = subparsers.add_parser("build-oracle")
     oracle_parser.add_argument("output_path")
@@ -681,6 +692,7 @@ def main(argv: list[str] | None = None) -> int:
     oracle_parser.add_argument("--max-customers", type=int)
     oracle_parser.add_argument("--max-train-rows", type=int, default=300_000)
     oracle_parser.add_argument("--top-features", type=int, default=12)
+    oracle_parser.add_argument("--series-periods", type=int, default=6)
     oracle_parser.add_argument("--table-key", default="multivar_input")
 
     run_parser = subparsers.add_parser("run")
@@ -691,6 +703,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--scoring-month")
     run_parser.add_argument("--max-customers", type=int)
     run_parser.add_argument("--top-features", type=int, default=12)
+    run_parser.add_argument("--series-periods", type=int, default=6)
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.add_argument("--persist-oracle", action="store_true")
     run_parser.add_argument("--evidence-source", default="file")
@@ -701,6 +714,7 @@ def main(argv: list[str] | None = None) -> int:
     run_oracle_parser.add_argument("--max-customers", type=int)
     run_oracle_parser.add_argument("--max-train-rows", type=int, default=300_000)
     run_oracle_parser.add_argument("--top-features", type=int, default=12)
+    run_oracle_parser.add_argument("--series-periods", type=int, default=6)
     run_oracle_parser.add_argument("--table-key", default="multivar_input")
     run_oracle_parser.add_argument("--persist-oracle", action="store_true", default=True)
     run_oracle_parser.add_argument("--dry-run", action="store_true")
@@ -722,6 +736,7 @@ def main(argv: list[str] | None = None) -> int:
                     scoring_month=args.scoring_month,
                     max_customers=args.max_customers,
                     top_features=args.top_features,
+                    series_periods=args.series_periods,
                 ),
             )
         output_path = write_jsonl(evidence, args.output_path)
@@ -743,6 +758,7 @@ def main(argv: list[str] | None = None) -> int:
             max_customers=args.max_customers,
             max_train_rows=args.max_train_rows,
             top_features=args.top_features,
+            series_periods=args.series_periods,
             table_key=args.table_key,
         )
         output_path = write_jsonl(evidence, args.output_path)
@@ -770,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
             max_customers=args.max_customers,
             max_train_rows=args.max_train_rows,
             top_features=args.top_features,
+            series_periods=args.series_periods,
             table_key=args.table_key,
         )
         try:
@@ -831,6 +848,7 @@ def main(argv: list[str] | None = None) -> int:
                 scoring_month=args.scoring_month,
                 max_customers=args.max_customers,
                 top_features=args.top_features,
+                series_periods=args.series_periods,
             ),
         )
     try:
