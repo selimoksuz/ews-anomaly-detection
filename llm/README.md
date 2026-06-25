@@ -80,10 +80,12 @@ oracle:
 
 LLM ayarlari su sirayla okunur:
 
-1. Terminal env degiskenleri: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`, `LLM_RESPONSE_FORMAT`
+1. Terminal env degiskenleri: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_SECONDS`
 2. Lokal dosyalar: repo kokundeki `.env` ve `llm/.env.local`
 3. Secret dosyasi: `secret/secrets.yaml`
-4. Default: `base_url=https://api.openai.com/v1`, `model=gpt-4.1-mini`, `timeout_seconds=120`
+4. `timeout_seconds` verilmezse default 120 kullanilir.
+
+`base_url`, `api_key` ve `model` zorunludur. Bu proje on-prem/internal endpoint kullanir; dis `https://api.openai.com/v1` adresine otomatik fallback yapmaz.
 
 Env degiskeni vermek istemiyorsan `secret/secrets.yaml` icine sunu koy:
 
@@ -96,7 +98,6 @@ llm:
       api_key: "<valid-key>"
       model: "gpt-oss-20b"
       timeout_seconds: 120
-      response_format: "json_object"
 ```
 
 Baska bir LLM section secmek icin:
@@ -113,20 +114,7 @@ $env:LLM_SECTION="OPENSHIFT_LLM"
 
 Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/secrets.yaml ...` gibi kaynak bilgisi gorulur.
 
-Kurum ici endpoint `response_format` desteklemiyorsa logda `Invalid parameter: response_format` / `unsupported value` gibi HTTP 400 hata gorulebilir. Kod otomatik fallback yapmaz; bu parametreyi kullanmak istemiyorsan bilincli olarak kapat:
-
-```yaml
-llm:
-  sections:
-    OPENSHIFT_LLM:
-      response_format: "none"
-```
-
-veya:
-
-```bash
-export LLM_RESPONSE_FORMAT=none
-```
+Structured response ilk prototipteki gibi LangChain/Pydantic uzerinden zorlanir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `with_structured_output(...)`, `chain.invoke(...)`.
 
 Endpoint ve key saglik kontrolu icin notebook:
 
@@ -134,7 +122,7 @@ Endpoint ve key saglik kontrolu icin notebook:
 llm/llm_endpoint_healthcheck.ipynb
 ```
 
-Bu notebook sirasiyla repo root bulma, `secret/secrets.yaml` path/section/key varligi kontrolu, config okuma, TCP/TLS handshake, `/models`, repo icindeki chat call ve opsiyonel LangChain call testlerini yapar.
+Bu notebook sirasiyla repo root bulma, `secret/secrets.yaml` path/section/key varligi kontrolu, config okuma, TCP/TLS handshake, `/models`, repo icindeki LangChain/Pydantic structured call ve opsiyonel ham LangChain call testlerini yapar. Ana saglik kontrolu 4. hucredeki structured call'dir; opsiyonel ham LangChain testi varsayilan olarak skip edilir.
 
 ## Promptu Dry Run Gormek
 
@@ -277,13 +265,4 @@ SELECT COUNT(*) FROM ZT_VAR2.EWS_ANOMALY_LLM_REASONS
 WHERE TRUNC(COHORT_DT) = DATE '2026-05-31';
 ```
 
-OpenAI endpoint icin:
-
-```powershell
-$env:LLM_BASE_URL="https://api.openai.com/v1"
-$env:LLM_API_KEY="..."
-$env:LLM_MODEL="gpt-4.1-mini"
-python -m llm.llm_anomaly run runtime/llm/evidence.jsonl runtime/llm/decisions.jsonl --from-evidence
-```
-
-OpenAI-compatible lokal veya kurum ici endpoint kullanilacaksa sadece `LLM_BASE_URL`, `LLM_MODEL` ve key degistirilir.
+Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`.

@@ -7,8 +7,6 @@ import json
 import logging
 import os
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -111,103 +109,124 @@ def load_local_env_files() -> None:
                     os.environ[key] = value
 
 
-def build_messages(evidence: dict[str, Any]) -> list[dict[str, str]]:
-    user_payload = {
-        "task": "Bu musteri-donem kaydi anomali mi? Karari evidence paketinden ver.",
-        "output_contract": OUTPUT_CONTRACT,
-        "evidence": evidence,
-    }
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-    ]
-
-
-def call_openai_compatible_chat(messages: list[dict[str, str]], *, timeout_seconds: int = 120) -> dict[str, Any]:
-    settings = load_llm_settings()
-    base_url = str(settings["base_url"]).rstrip("/")
-    api_key = settings.get("api_key")
-    model = str(settings["model"])
-    timeout_seconds = int(settings.get("timeout_seconds") or timeout_seconds)
-    response_format = str(settings.get("response_format") or "json_object")
-    if not api_key:
+def create_anomaly_batch_model() -> Any:
+    try:
+        from pydantic import BaseModel, Field
+    except ImportError as exc:
         raise RuntimeError(
-            "LLM API key is required. Set LLM_API_KEY/OPENAI_API_KEY env variable "
-            "or secret/secrets.yaml llm.api_key / llm.sections.<section>.api_key."
+            "Pydantic is required for the LLM structured output flow. "
+            "Install requirements.txt or pip install pydantic."
+        ) from exc
+
+    class AnomalyReasonRecord(BaseModel):
+        feature: str = Field(description="Anomali gerekcesindeki degisken adi")
+        evidence: str = Field(description="Current, history, seasonality ve peer sayisal kanit ozeti")
+        interpretation: str = Field(description="Kanita dayali kisa Turkce is yorumu")
+
+    class AnomalyRecord(BaseModel):
+        mono_id: str = Field(description="Musteri tekil numarasi")
+        cohort_dt: str = Field(description="Skorlanan donem tarihi, YYYY-MM-DD")
+        is_anomaly: bool = Field(description="Bu musteri-donem kaydi anomali mi?")
+        anomaly_type: str = Field(
+            description=(
+                "Anomali tipi: ANI_RISK_ARTISI, FINANSAL_BOZULMA, PD_RISKI, KKB_RISKI, "
+                "PEER_UYUMSUZLUGU, DATA_GAP, TREND_KIRILMASI, SEZON_DISI_SAPMA veya NORMAL"
+            )
+        )
+        risk_level: str = Field(description="Risk seviyesi: DUSUK, ORTA, YUKSEK veya KRITIK")
+        confidence: float = Field(description="Guven skoru, 0.0 ile 1.0 arasinda")
+        seasonality_assessment: str = Field(description="Sezon/mevsimsellik yorumu")
+        trend_assessment: str = Field(description="Trend ve kademeli bozulma yorumu")
+        peer_assessment: str = Field(description="Peer grubuna gore ayrisma yorumu")
+        main_reasons: list[AnomalyReasonRecord] = Field(description="Karari aciklayan ana feature gerekceleri")
+        caveat: str | None = Field(default=None, description="Varsa veri kalitesi veya karar kisiti")
+        recommended_action: str = Field(
+            description="Onerilen aksiyon: Izle, Manuel incele, Portfoy yoneticisine gonder, Limit/risk gozden gecir veya Veri kontrolu yap"
         )
 
-    payload = build_chat_payload(model=model, messages=messages, response_format=response_format)
+    class AnomalyBatchResult(BaseModel):
+        results: list[AnomalyRecord] = Field(
+            description="Verilen musteri-donem evidence kayitlari icin kronolojik sira ile karar listesi"
+        )
+
+    return AnomalyBatchResult
+
+
+def build_langchain_structured_chain() -> Any:
+    settings = load_llm_settings()
+    validate_llm_settings(settings)
     try:
-        raw = post_chat_completion(
-            base_url=base_url,
-            api_key=str(api_key),
-            payload=payload,
-            timeout_seconds=timeout_seconds,
-        )
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"LLM call failed: HTTP {exc.code}: {body}") from exc
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_openai import ChatOpenAI
+    except ImportError as exc:
+        raise RuntimeError(
+            "LangChain structured LLM dependencies are required. "
+            "Install requirements.txt or pip install langchain-openai langchain-core pydantic."
+        ) from exc
 
-    parsed = json.loads(raw)
-    content = parsed["choices"][0]["message"]["content"]
-    return parse_llm_json_content(content)
-
-
-def build_chat_payload(*, model: str, messages: list[dict[str, str]], response_format: str) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "model": model,
-        "temperature": 0,
-        "messages": messages,
-    }
-    if llm_response_format_enabled(response_format):
-        payload["response_format"] = {"type": "json_object"}
-    return payload
-
-
-def post_chat_completion(*, base_url: str, api_key: str, payload: dict[str, Any], timeout_seconds: int) -> str:
-    request = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    llm = ChatOpenAI(
+        base_url=str(settings["base_url"]).rstrip("/"),
+        api_key=str(settings["api_key"]),
+        model=str(settings["model"]),
+        temperature=0,
+        timeout=int(settings["timeout_seconds"]),
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-        return response.read().decode("utf-8")
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", SYSTEM_PROMPT),
+            ("human", "Asagidaki musteri-donem evidence kayitlarini analiz et:\n\n{input_records}"),
+        ]
+    )
+    structured_llm = llm.with_structured_output(create_anomaly_batch_model())
+    logger.info("LangChain structured LLM chain initialized: model=%s", settings["model"])
+    return prompt | structured_llm
 
 
-def parse_llm_json_content(content: Any) -> dict[str, Any]:
-    if isinstance(content, dict):
-        return content
-    text = str(content).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        extracted = extract_first_json_object(text)
-        if extracted is not None:
-            return extracted
-        raise RuntimeError(f"LLM response content is not valid JSON: {truncate_text(text, 500)}")
+def validate_llm_settings(settings: dict[str, Any]) -> None:
+    missing = [
+        key
+        for key in ("base_url", "api_key", "model")
+        if not settings.get(key) or (isinstance(settings.get(key), str) and not str(settings.get(key)).strip())
+    ]
+    if missing:
+        raise RuntimeError(
+            "LLM settings are incomplete. Missing: "
+            + ", ".join(missing)
+            + ". Set them in secret/secrets.yaml llm.sections.<section> or env variables."
+        )
 
 
-def extract_first_json_object(text: str) -> dict[str, Any] | None:
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(text):
-        if char != "{":
-            continue
-        try:
-            value, _ = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            return value
-    return None
+def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
+    payload = {
+        "task": "Bu musteri-donem kayitlari anomali mi? Karari evidence paketinden ver.",
+        "output_contract": OUTPUT_CONTRACT,
+        "records": evidence_items,
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
-def llm_response_format_enabled(value: Any) -> bool:
-    normalized = str(value or "").strip().lower()
-    return normalized not in {"", "none", "false", "0", "off", "disabled", "no"}
+def invoke_langchain_structured_decision(chain: Any, evidence: dict[str, Any]) -> dict[str, Any]:
+    response = chain.invoke({"input_records": format_evidence_for_langchain([evidence])})
+    batch = model_to_dict(response)
+    records = batch.get("results") if isinstance(batch, dict) else None
+    if not records:
+        raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(batch), 500)}")
+    decision = model_to_dict(records[0])
+    decision.setdefault("mono_id", evidence.get("mono_id"))
+    decision.setdefault("cohort_dt", evidence.get("cohort_dt"))
+    return decision
+
+
+def model_to_dict(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    if isinstance(value, list):
+        return [model_to_dict(item) for item in value]
+    if isinstance(value, dict):
+        return {key: model_to_dict(item) for key, item in value.items()}
+    return value
 
 
 def truncate_text(text: str, limit: int) -> str:
@@ -226,7 +245,6 @@ def load_llm_settings() -> dict[str, Any]:
             os.environ.get("LLM_BASE_URL"),
             os.environ.get("OPENAI_BASE_URL"),
             secret_settings.get("base_url"),
-            "https://api.openai.com/v1",
         ),
         "api_key": first_non_empty(
             os.environ.get("LLM_API_KEY"),
@@ -237,7 +255,6 @@ def load_llm_settings() -> dict[str, Any]:
         "model": first_non_empty(
             os.environ.get("LLM_MODEL"),
             secret_settings.get("model"),
-            "gpt-4.1-mini",
         ),
         "timeout_seconds": parse_timeout_seconds(
             first_non_empty(
@@ -246,20 +263,14 @@ def load_llm_settings() -> dict[str, Any]:
                 120,
             )
         ),
-        "response_format": first_non_empty(
-            os.environ.get("LLM_RESPONSE_FORMAT"),
-            secret_settings.get("response_format"),
-            "json_object",
-        ),
         "source": secret_settings.get("_source", "env/default"),
     }
     logger.info(
-        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s response_format=%s",
+        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s client=langchain_structured",
         mask_url(str(settings["base_url"])),
         settings["model"],
         llm_key_source(secret_settings),
         settings["timeout_seconds"],
-        settings["response_format"],
     )
     return settings
 
@@ -344,6 +355,7 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
     decisions = []
     total = len(evidence_items)
     logger.info("Starting LLM decision step: evidence_items=%s dry_run=%s", total, dry_run)
+    chain = None if dry_run else build_langchain_structured_chain()
     for index, item in enumerate(evidence_items, start=1):
         logger.info(
             "LLM decision progress: %s/%s mono_id=%s cohort_dt=%s",
@@ -352,19 +364,18 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
             item.get("mono_id"),
             item.get("cohort_dt"),
         )
-        messages = build_messages(item)
         if dry_run:
             decisions.append(
                 {
                     "mono_id": item.get("mono_id"),
                     "cohort_dt": item.get("cohort_dt"),
                     "dry_run": True,
-                    "messages": messages,
+                    "input_records": format_evidence_for_langchain([item]),
                 }
             )
         else:
             try:
-                decisions.append(call_openai_compatible_chat(messages))
+                decisions.append(invoke_langchain_structured_decision(chain, item))
             except Exception as exc:
                 log_step_failed("04", f"LLM decision failed at item {index}/{total}: {exc}")
                 raise
@@ -607,7 +618,7 @@ def log_step_skipped(step_no: str, reason: str) -> None:
 
 
 def current_model_name() -> str:
-    return str(load_llm_settings().get("model") or "gpt-4.1-mini")
+    return str(load_llm_settings().get("model") or "unknown")
 
 
 if __name__ == "__main__":
