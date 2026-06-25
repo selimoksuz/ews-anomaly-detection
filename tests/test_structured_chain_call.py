@@ -33,6 +33,20 @@ class FakeChatOpenAI:
         return "fake_structured_llm"
 
 
+class FakeResponse:
+    results = [{"period_position": 0, "mono_id": "C1", "cohort_dt": "2026-05-31"}]
+
+
+class FakeInvokeChain:
+    def invoke(self, _payload):
+        return FakeResponse()
+
+
+class FailingInvokeChain:
+    def invoke(self, _payload):
+        raise ConnectionError("route closed")
+
+
 class StructuredChainCallTests(unittest.TestCase):
     def fake_langchain_modules(self):
         fake_prompts = types.SimpleNamespace(ChatPromptTemplate=FakePromptTemplate)
@@ -104,6 +118,37 @@ class StructuredChainCallTests(unittest.TestCase):
 
         self.assertIsNotNone(FakeChatOpenAI.last_instance)
         self.assertNotIn("timeout", FakeChatOpenAI.last_instance.kwargs)
+
+    def test_first_customer_payload_preview_is_logged(self):
+        evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1, 2, 3]}]
+        with patch.object(llm_anomaly, "format_evidence_for_langchain", return_value="period_position=0 | mono_id=C1"):
+            with self.assertLogs(llm_anomaly.logger, level="INFO") as captured:
+                llm_anomaly.invoke_langchain_structured_decisions(
+                    FakeInvokeChain(),
+                    evidence,
+                    payload_preview_index=1,
+                )
+
+        log_text = "\n".join(captured.output)
+        self.assertIn("LLM PAYLOAD PREVIEW 1/3 START", log_text)
+        self.assertIn("period_position=0 | mono_id=C1", log_text)
+        self.assertIn("LLM PAYLOAD PREVIEW 1/3 END", log_text)
+
+    def test_connection_error_log_includes_payload_context(self):
+        evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1, 2, 3]}]
+        with patch.object(llm_anomaly, "format_evidence_for_langchain", return_value="period_position=0 | mono_id=C1"):
+            with self.assertLogs(llm_anomaly.logger, level="ERROR") as captured:
+                with self.assertRaises(ConnectionError):
+                    llm_anomaly.invoke_langchain_structured_decisions(
+                        FailingInvokeChain(),
+                        evidence,
+                        payload_preview_index=1,
+                    )
+
+        log_text = "\n".join(captured.output)
+        self.assertIn("exception_type=ConnectionError", log_text)
+        self.assertIn("mono_id=C1", log_text)
+        self.assertIn("payload_preview=period_position=0 | mono_id=C1", log_text)
 
 
 if __name__ == "__main__":

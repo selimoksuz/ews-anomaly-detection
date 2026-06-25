@@ -31,6 +31,9 @@ except ImportError:  # Runtime dependency is checked when the LLM chain is built
 
 
 logger = logging.getLogger(__name__)
+LLM_PAYLOAD_PREVIEW_CUSTOMERS = 3
+LLM_PAYLOAD_PREVIEW_CHARS = 50000
+LLM_ERROR_PAYLOAD_PREVIEW_CHARS = 8000
 
 SYSTEM_PROMPT = """Sen deneyimli bir banka risk yoneticisi ve finansal anomali uzmanisin.
 Sana secilen scoring ayina ait musteri snapshot kayitlari verilecek.
@@ -353,7 +356,12 @@ def invoke_langchain_structured_decision(chain: Any, evidence: dict[str, Any]) -
     return invoke_langchain_structured_decisions(chain, [evidence])[0]
 
 
-def invoke_langchain_structured_decisions(chain: Any, evidence_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def invoke_langchain_structured_decisions(
+    chain: Any,
+    evidence_items: list[dict[str, Any]],
+    *,
+    payload_preview_index: int | None = None,
+) -> list[dict[str, Any]]:
     if not evidence_items:
         return []
     input_records = format_evidence_for_langchain(evidence_items)
@@ -366,7 +374,35 @@ def invoke_langchain_structured_decisions(chain: Any, evidence_items: list[dict[
         len(input_records),
         sum(len(item.get("features") or []) for item in evidence_items),
     )
-    response = chain.invoke({"input_records": input_records})
+    if payload_preview_index is not None and payload_preview_index <= LLM_PAYLOAD_PREVIEW_CUSTOMERS:
+        logger.info(
+            "========== LLM PAYLOAD PREVIEW %s/%s START | mono_id=%s chars=%s ==========\n%s",
+            payload_preview_index,
+            LLM_PAYLOAD_PREVIEW_CUSTOMERS,
+            first_item.get("mono_id"),
+            len(input_records),
+            truncate_text(input_records, LLM_PAYLOAD_PREVIEW_CHARS),
+        )
+        logger.info(
+            "========== LLM PAYLOAD PREVIEW %s/%s END | mono_id=%s ==========",
+            payload_preview_index,
+            LLM_PAYLOAD_PREVIEW_CUSTOMERS,
+            first_item.get("mono_id"),
+        )
+    try:
+        response = chain.invoke({"input_records": input_records})
+    except Exception as exc:
+        logger.exception(
+            "LLM request failed before structured response: mono_id=%s decision_items=%s first_cohort_dt=%s chars=%s exception_type=%s exception=%r payload_preview=%s",
+            first_item.get("mono_id"),
+            len(evidence_items),
+            first_item.get("cohort_dt"),
+            len(input_records),
+            type(exc).__name__,
+            exc,
+            truncate_text(input_records, LLM_ERROR_PAYLOAD_PREVIEW_CHARS),
+        )
+        raise
     records = response.results
     if not records:
         raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(response), 500)}")
@@ -617,7 +653,13 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
             )
         else:
             try:
-                decisions.extend(invoke_langchain_structured_decisions(chain, customer_items))
+                decisions.extend(
+                    invoke_langchain_structured_decisions(
+                        chain,
+                        customer_items,
+                        payload_preview_index=index,
+                    )
+                )
             except Exception as exc:
                 log_step_failed(
                     "04",

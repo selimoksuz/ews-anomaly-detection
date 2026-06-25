@@ -129,7 +129,13 @@ Logda su satirlar gorulmelidir:
 LLM settings resolved: ... timeout_seconds=None max_retries=0 max_tokens=None structured_call=with_structured_output_schema_only client=langchain_structured
 LangChain structured LLM chain initialized: model=gpt-oss-20b structured_call=with_structured_output_schema_only max_retries=0 max_tokens=None
 LLM request payload prepared: mono_id=... decision_items=... formatter=compact_text
+========== LLM PAYLOAD PREVIEW 1/3 START | mono_id=... chars=... ==========
+period_position=0 | mono_id=... | cohort_dt=... | context=... | decision_contract=... | peer_definition=... | data_quality=...
+feature name=... | current=... | history=... | trend=... | seasonality=... | peer=...
+========== LLM PAYLOAD PREVIEW 1/3 END | mono_id=... ==========
 ```
+
+Ilk 3 musteri icin bu preview bloklari loga basilir. Daha sonra `ConnectionError`, route kopmasi veya endpoint hatasi olursa hata satirinda da `mono_id`, `decision_items`, payload `chars` ve kisaltilmis `payload_preview` gorulur.
 
 Endpoint ve key saglik kontrolu icin notebook:
 
