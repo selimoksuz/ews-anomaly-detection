@@ -187,6 +187,17 @@ class StructuredChainCallTests(unittest.TestCase):
         self.assertEqual(FakeChatOpenAI.last_instance.structured_schema, object)
         self.assertEqual(FakeChatOpenAI.last_instance.structured_kwargs, {"include_raw": True})
 
+    def test_prompt_literal_braces_are_escaped_without_breaking_input_placeholder(self):
+        escaped = llm_anomaly.escape_prompt_literal_braces(
+            "dogrudan { ile baslayan ve } ile biten object; veri={input_records}",
+            allowed_variables={"input_records"},
+        )
+
+        self.assertEqual(
+            escaped,
+            "dogrudan {{ ile baslayan ve }} ile biten object; veri={input_records}",
+        )
+
     def test_raw_model_response_is_written_when_langchain_returns_include_raw_payload(self):
         evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1]}]
         with tempfile.TemporaryDirectory() as tmpdir:

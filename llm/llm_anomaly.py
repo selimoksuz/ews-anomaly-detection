@@ -194,8 +194,14 @@ def build_langchain_structured_chain() -> Any:
     structured_llm = llm.with_structured_output(schema, include_raw=True)
     prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", SYSTEM_PROMPT),
-            ("human", "Asagidaki musteri-donem evidence kayitlarini analiz et:\n\n{input_records}"),
+            ("system", escape_prompt_literal_braces(SYSTEM_PROMPT)),
+            (
+                "human",
+                escape_prompt_literal_braces(
+                    "Asagidaki musteri-donem evidence kayitlarini analiz et:\n\n{input_records}",
+                    allowed_variables={"input_records"},
+                ),
+            ),
         ]
     )
     logger.info(
@@ -209,6 +215,15 @@ def build_langchain_structured_chain() -> Any:
         RAW_MODEL_RESPONSE_FILE,
     )
     return prompt | structured_llm
+
+
+def escape_prompt_literal_braces(text: str, *, allowed_variables: set[str] | None = None) -> str:
+    """Escape literal braces so LangChain templates only keep allowed variables."""
+
+    escaped = text.replace("{", "{{").replace("}", "}}")
+    for variable in allowed_variables or set():
+        escaped = escaped.replace("{{" + variable + "}}", "{" + variable + "}")
+    return escaped
 
 
 def build_llm_http_client(settings: dict[str, Any]) -> Any:
