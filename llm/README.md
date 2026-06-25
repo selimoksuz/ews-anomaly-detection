@@ -116,6 +116,28 @@ Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/
 
 Structured response ilk prototipteki gibi LangChain/Pydantic uzerinden zorlanir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `with_structured_output(...)`, `chain.invoke(...)`.
 
+Varsayilan LLM cagri sekli ilk calisan kaynak koda yakin tutulur: `with_structured_output(schema)` kullanilir, `include_raw` kapali gelir ve her musteri-donem icin tek `chain.invoke(...)` atilir. Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, token sismesini ve response timeout riskini azaltmak icindir.
+
+Timeout/retry ayarlari env veya `secret/secrets.yaml` altindan verilebilir:
+
+```yaml
+llm:
+  sections:
+    OPENSHIFT_LLM:
+      timeout_seconds: 300
+      max_retries: 0
+      max_tokens: 1200
+      include_raw_response: false
+```
+
+Logda su satirlar gorulmelidir:
+
+```text
+LLM settings resolved: ... timeout_seconds=300 max_retries=0 max_tokens=1200 include_raw=False client=langchain_structured
+LangChain structured LLM chain initialized: model=gpt-oss-20b include_raw=False max_retries=0 max_tokens=1200
+LLM request payload prepared: ... formatter=compact_text
+```
+
 Endpoint ve key saglik kontrolu icin notebook:
 
 ```text
@@ -270,4 +292,4 @@ Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatP
 
 Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
 
-Eger logda HTTP 200 OK sonrasi `LLM structured response did not include results: None` gorulurse endpoint cevap vermis ama LangChain parser structured objeyi `None` yapmis demektir. Guncel akista `with_structured_output(..., include_raw=True)` kullanilir; ayni model cevabinin `raw.content` veya `tool_calls.function.arguments` alanindan JSON okunur. Bu ikinci LLM cagrisi veya dis endpoint fallback'i degildir.
+Eger logda HTTP 200 OK sonrasi `LLM structured response did not include results: None` gorulurse endpoint cevap vermis ama LangChain parser structured objeyi `None` yapmis demektir. Debug icin gecici olarak `include_raw_response: true` verilebilir; bu ayni model cevabinin `raw.content` veya `tool_calls.function.arguments` alanindan JSON okumayi dener. Bu ikinci LLM cagrisi veya dis endpoint fallback'i degildir.

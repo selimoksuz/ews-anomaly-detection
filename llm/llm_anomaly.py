@@ -171,15 +171,26 @@ def build_langchain_structured_chain() -> Any:
         model=str(settings["model"]),
         temperature=0,
         timeout=int(settings["timeout_seconds"]),
+        max_retries=int(settings["max_retries"]),
+        **optional_llm_kwargs(settings),
     )
-    structured_llm = llm.with_structured_output(schema, include_raw=True)
+    if bool(settings.get("include_raw_response")):
+        structured_llm = llm.with_structured_output(schema, include_raw=True)
+    else:
+        structured_llm = llm.with_structured_output(schema)
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
             ("human", "Asagidaki musteri-donem evidence kayitlarini analiz et:\n\n{input_records}"),
         ]
     )
-    logger.info("LangChain structured LLM chain initialized: model=%s include_raw=True", settings["model"])
+    logger.info(
+        "LangChain structured LLM chain initialized: model=%s include_raw=%s max_retries=%s max_tokens=%s",
+        settings["model"],
+        bool(settings.get("include_raw_response")),
+        settings["max_retries"],
+        settings.get("max_tokens"),
+    )
     return prompt | structured_llm
 
 
@@ -203,6 +214,13 @@ def anomaly_batch_schema() -> type:
     return AnomalyBatchResult
 
 
+def optional_llm_kwargs(settings: dict[str, Any]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if settings.get("max_tokens") is not None:
+        kwargs["max_tokens"] = int(settings["max_tokens"])
+    return kwargs
+
+
 def validate_llm_settings(settings: dict[str, Any]) -> None:
     missing = [
         key
@@ -218,16 +236,114 @@ def validate_llm_settings(settings: dict[str, Any]) -> None:
 
 
 def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
-    payload = {
-        "task": "Bu musteri-donem kayitlari anomali mi? Karari evidence paketinden ver.",
-        "output_contract": OUTPUT_CONTRACT,
-        "records": evidence_items,
-    }
-    return json.dumps(payload, ensure_ascii=False)
+    lines = [
+        "Gorev: Her musteri-donem icin anomali karari ver.",
+        "Cikti: AnomalyBatchResult formatinda JSON; en dis alan results listesi olmali.",
+        "Alanlar: mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence, seasonality_assessment, trend_assessment, peer_assessment, main_reasons, caveat, recommended_action.",
+        "Kayitlar:",
+    ]
+    for index, item in enumerate(evidence_items, start=1):
+        lines.extend(compact_evidence_lines(item, index=index))
+    return "\n".join(lines)
+
+
+def compact_evidence_lines(item: dict[str, Any], *, index: int) -> list[str]:
+    context = item.get("context") or {}
+    data_quality = item.get("data_quality") or {}
+    peer_definition = item.get("peer_definition") or {}
+    lines = [
+        f"--- KAYIT {index} ---",
+        f"mono_id={item.get('mono_id')} | cohort_dt={item.get('cohort_dt')}",
+        "context=" + compact_json(context),
+        "data_quality=" + compact_json(data_quality),
+        "peer_definition=" + compact_json(peer_definition),
+        "features:",
+    ]
+    for feature_index, feature in enumerate(item.get("features") or [], start=1):
+        lines.append(compact_feature_line(feature, feature_index))
+    return lines
+
+
+def compact_feature_line(feature: dict[str, Any], index: int) -> str:
+    dictionary = feature.get("dictionary") or {}
+    history = feature.get("history") or {}
+    trend = feature.get("trend") or {}
+    seasonality = feature.get("seasonality") or {}
+    peer = feature.get("peer") or {}
+    data_quality = feature.get("data_quality") or {}
+    parts = [
+        f"{index}) name={feature.get('name')}",
+        f"label={dictionary.get('label')}",
+        f"category={dictionary.get('category')}",
+        f"formula={dictionary.get('formula')}",
+        f"risk_direction={dictionary.get('risk_direction')}",
+        f"current={feature.get('current_value')}",
+        f"previous={feature.get('previous_value')}",
+        f"change_pct={feature.get('change_pct')}",
+        "history="
+        + compact_json(
+            {
+                "period_count": history.get("period_count"),
+                "median": history.get("median"),
+                "p25": history.get("p25"),
+                "p75": history.get("p75"),
+                "robust_scale": history.get("robust_scale"),
+                "rolling_3m_median": history.get("rolling_3m_median"),
+                "rolling_6m_median": history.get("rolling_6m_median"),
+                "rolling_12m_median": history.get("rolling_12m_median"),
+            }
+        ),
+        "trend="
+        + compact_json(
+            {
+                "slope_6m": trend.get("slope_6m"),
+                "slope_12m": trend.get("slope_12m"),
+                "trend_break_flag": trend.get("trend_break_flag"),
+                "trend_note": trend.get("trend_note"),
+            }
+        ),
+        "seasonality="
+        + compact_json(
+            {
+                "month_of_year": seasonality.get("month_of_year"),
+                "same_month_last_year_value": seasonality.get("same_month_last_year_value"),
+                "yoy_change_pct": seasonality.get("yoy_change_pct"),
+                "same_month_customer_median": seasonality.get("same_month_customer_median"),
+                "same_month_customer_z": seasonality.get("same_month_customer_z"),
+                "seasonal_peer_median": seasonality.get("seasonal_peer_median"),
+                "seasonal_peer_z": seasonality.get("seasonal_peer_z"),
+                "seasonality_note": seasonality.get("seasonality_note"),
+            }
+        ),
+        "peer="
+        + compact_json(
+            {
+                "level": peer.get("peer_definition_level"),
+                "median": peer.get("peer_median"),
+                "z": peer.get("peer_z"),
+                "support": peer.get("peer_support"),
+                "quality": peer.get("peer_quality"),
+            }
+        ),
+        "feature_data_quality=" + compact_json(data_quality),
+    ]
+    return " | ".join(parts)
+
+
+def compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def invoke_langchain_structured_decision(chain: Any, evidence: dict[str, Any]) -> dict[str, Any]:
-    response = chain.invoke({"input_records": format_evidence_for_langchain([evidence])})
+    input_records = format_evidence_for_langchain([evidence])
+    logger.info(
+        "LLM request payload prepared: mono_id=%s cohort_dt=%s chars=%s features=%s formatter=compact_text",
+        evidence.get("mono_id"),
+        evidence.get("cohort_dt"),
+        len(input_records),
+        len(evidence.get("features") or []),
+    )
+    response = chain.invoke({"input_records": input_records})
     batch = normalize_structured_response(response)
     records = extract_decision_records(batch)
     if not records:
@@ -396,14 +512,39 @@ def load_llm_settings() -> dict[str, Any]:
                 120,
             )
         ),
+        "max_retries": parse_non_negative_int(
+            first_non_empty(
+                os.environ.get("LLM_MAX_RETRIES"),
+                secret_settings.get("max_retries"),
+                0,
+            ),
+            name="LLM max_retries",
+        ),
+        "max_tokens": parse_optional_positive_int(
+            first_non_empty(
+                os.environ.get("LLM_MAX_TOKENS"),
+                secret_settings.get("max_tokens"),
+            ),
+            name="LLM max_tokens",
+        ),
+        "include_raw_response": parse_bool(
+            first_non_empty(
+                os.environ.get("LLM_INCLUDE_RAW_RESPONSE"),
+                secret_settings.get("include_raw_response"),
+                False,
+            )
+        ),
         "source": secret_settings.get("_source", "env/default"),
     }
     logger.info(
-        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s client=langchain_structured",
+        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s include_raw=%s client=langchain_structured",
         mask_url(str(settings["base_url"])),
         settings["model"],
         llm_key_source(secret_settings),
         settings["timeout_seconds"],
+        settings["max_retries"],
+        settings["max_tokens"],
+        settings["include_raw_response"],
     )
     return settings
 
@@ -456,6 +597,37 @@ def parse_timeout_seconds(value: Any) -> int:
     if timeout <= 0:
         raise RuntimeError(f"Invalid LLM timeout_seconds value: {value}")
     return timeout
+
+
+def parse_non_negative_int(value: Any, *, name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Invalid {name} value: {value}") from exc
+    if parsed < 0:
+        raise RuntimeError(f"Invalid {name} value: {value}")
+    return parsed
+
+
+def parse_optional_positive_int(value: Any, *, name: str) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Invalid {name} value: {value}") from exc
+    if parsed <= 0:
+        raise RuntimeError(f"Invalid {name} value: {value}")
+    return parsed
+
+
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {"1", "true", "yes", "y", "on", "evet"}
 
 
 def llm_key_source(secret_settings: dict[str, Any]) -> str:
