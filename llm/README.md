@@ -116,7 +116,7 @@ Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/
 
 Structured response ilk prototipteki gibi LangChain/Pydantic uzerinden zorlanir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `with_structured_output(...)`, `chain.invoke(...)`.
 
-Varsayilan LLM cagri sekli ilk calisan kaynak kodun operasyonel kalibiyla aynidir: `llm.with_structured_output(AnomalyBatchResult)`, `prompt | structured_llm`, `chain.invoke({"input_records": ...})`, sonra dogrudan `response.results` okunur. Her musterinin kronolojik donem listesi tek prompt olarak gider; donen `results` listesi `period_position` ile tekrar ilgili doneme baglanir.
+Varsayilan LLM cagri sekli ilk calisan kaynak kodun operasyonel kalibiyla aynidir: `llm.with_structured_output(AnomalyBatchResult)`, `prompt | structured_llm`, `chain.invoke({"input_records": ...})`, sonra dogrudan `response.results` okunur. `method=...` override verilmez; internal endpoint LangChain default structured davranisiyla cagrilir. Her musteri snapshot'i tek prompt olarak gider; donen `results` listesi `period_position` ile tekrar ilgili kayda baglanir.
 
 Cikti tipi sade degildir. `AnomalyBatchResult.results` altinda genis `AnomalyRecord` doner: `period_position`, `mono_id`, `cohort_dt`, `is_anomaly`, `anomaly_type`, `risk_level`, `confidence`, `seasonality_assessment`, `trend_assessment`, `peer_assessment`, `main_reasons`, `caveat`, `recommended_action`. Oracle output tablolari bu genis yapiyi kullanir.
 
@@ -130,16 +130,14 @@ llm:
     OPENSHIFT_LLM:
       timeout_seconds: 300
       max_retries: 0
-      max_tokens: 1200
-      structured_method: function_calling
 ```
 
 Logda su satirlar gorulmelidir:
 
 ```text
-LLM settings resolved: ... timeout_seconds=300 max_retries=0 max_tokens=1200 structured_method=function_calling client=langchain_structured
-LangChain structured LLM chain initialized: model=gpt-oss-20b structured_method=function_calling max_retries=0 max_tokens=1200
-LLM request payload prepared: mono_id=... periods=... formatter=compact_text
+LLM settings resolved: ... timeout_seconds=300 max_retries=0 max_tokens=None structured_call=with_structured_output_schema_only client=langchain_structured
+LangChain structured LLM chain initialized: model=gpt-oss-20b structured_call=with_structured_output_schema_only max_retries=0 max_tokens=None
+LLM request payload prepared: mono_id=... decision_items=... formatter=compact_text
 ```
 
 Endpoint ve key saglik kontrolu icin notebook:
@@ -306,4 +304,4 @@ Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatP
 
 Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
 
-Eger logda HTTP 200 OK sonrasi `LLM structured response did not include results` gorulurse endpoint cevap vermis ama LangChain structured chain `AnomalyBatchResult.results` objesini uretmemis demektir. Bu durumda once `structured_method: function_calling` kullanildigini ve notebook kernelinin guncel kodu import ettigini kontrol et.
+Eger logda HTTP 200 OK sonrasi `LLM structured response did not include results` gorulurse endpoint cevap vermis ama LangChain structured chain `AnomalyBatchResult.results` objesini uretmemis demektir. Bu durumda once notebook kernelinin guncel kodu import ettigini ve logda `structured_call=with_structured_output_schema_only` gorundugunu kontrol et.

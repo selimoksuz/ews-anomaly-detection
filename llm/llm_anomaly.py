@@ -33,15 +33,16 @@ except ImportError:  # Runtime dependency is checked when the LLM chain is built
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """Sen deneyimli bir banka risk yoneticisi ve finansal anomali uzmanisin.
-Sana tek bir musteriye ait birden fazla doneme ait kredi risk kaydi verilecek.
-Kayitlar kronolojik siraya gore siralanmistir.
+Sana secilen scoring ayina ait musteri snapshot kayitlari verilecek.
+Her kayit bir musteri icin tek scoring snapshot'idir; output'ta her input kaydi icin tek karar donmelisin.
 
-Once musterinin tum donemlerini birlikte incele.
-Bir donemin anomali olup olmadigina musterinin kendi tarihsel seyri, peer bilgisi, trend, sezon ve veri kalitesi sinyalleri isiginda karar ver.
+Her snapshot icinde musterinin kendi tarihsel seyri, ayni snapshotlara ait peer serisi, trend, sezon ve veri kalitesi sinyalleri vardir.
+Bu seriler ayrica karar satiri degildir; sadece secilen snapshot'in anomali olup olmadigini yorumlamak icin arka plan bilgisidir.
 
 Kurallar:
 - Degisken sozlugunu oku: is anlami, formul, risk yonu ve birimi dikkate al.
 - Cari degeri musterinin kendi gecmisiyle, ayni sezon gecmisiyle ve peer grubuyla karsilastir.
+- snapshot_series.customer ile musterinin son snapshot degerlerini, snapshot_series.peer ile ayni snapshotlardaki peer median/support/quality bilgisini birlikte oku.
 - Tek donem sicrama, kademeli trend bozulmasi, sezon etkisi ve veri kalitesi problemini ayir.
 - Buyuk tutar tek basina anomali degildir; olcek, peer ve tarihsel davranisla birlikte yorumla.
 - Missing veya stale finansal term sinyalini finansal bozulma gibi yazma; veri kalitesi veya inceleme nedeni olarak ayir.
@@ -50,9 +51,9 @@ Kurallar:
 - PD ve rating ayni risk bilgisinin farkli gosterimleri olabilir; ayni bilgiyi cift kanit gibi sayma.
 - Gelecek donem varsayimi yapma.
 
-Her donem icin period_position, mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence,
+Her input snapshot kaydi icin period_position, mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence,
 seasonality_assessment, trend_assessment, peer_assessment, main_reasons, caveat ve recommended_action dondur.
-Sonuc listesi verilen donem sayisiyla ayni uzunlukta olmali.
+Sonuc listesi verilen scoring snapshot sayisiyla ayni uzunlukta olmali.
 Sadece gecerli JSON dondur. Markdown kullanma."""
 
 OUTPUT_CONTRACT = {
@@ -182,8 +183,7 @@ def build_langchain_structured_chain() -> Any:
         max_retries=int(settings["max_retries"]),
         **optional_llm_kwargs(settings),
     )
-    structured_method = str(settings["structured_method"])
-    structured_llm = llm.with_structured_output(schema, method=structured_method)
+    structured_llm = llm.with_structured_output(schema)
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
@@ -191,9 +191,8 @@ def build_langchain_structured_chain() -> Any:
         ]
     )
     logger.info(
-        "LangChain structured LLM chain initialized: model=%s structured_method=%s max_retries=%s max_tokens=%s",
+        "LangChain structured LLM chain initialized: model=%s structured_call=with_structured_output_schema_only max_retries=%s max_tokens=%s",
         settings["model"],
-        structured_method,
         settings["max_retries"],
         settings.get("max_tokens"),
     )
@@ -477,24 +476,16 @@ def load_llm_settings() -> dict[str, Any]:
             ),
             name="LLM max_tokens",
         ),
-        "structured_method": parse_structured_method(
-            first_non_empty(
-                os.environ.get("LLM_STRUCTURED_METHOD"),
-                secret_settings.get("structured_method"),
-                "function_calling",
-            )
-        ),
         "source": secret_settings.get("_source", "env/default"),
     }
     logger.info(
-        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s structured_method=%s client=langchain_structured",
+        "LLM settings resolved: base_url=%s model=%s key_source=%s timeout_seconds=%s max_retries=%s max_tokens=%s structured_call=with_structured_output_schema_only client=langchain_structured",
         mask_url(str(settings["base_url"])),
         settings["model"],
         llm_key_source(secret_settings),
         settings["timeout_seconds"],
         settings["max_retries"],
         settings["max_tokens"],
-        settings["structured_method"],
     )
     return settings
 
@@ -578,14 +569,6 @@ def parse_bool(value: Any) -> bool:
         return False
     text = str(value).strip().lower()
     return text in {"1", "true", "yes", "y", "on", "evet"}
-
-
-def parse_structured_method(value: Any) -> str:
-    method = str(value or "").strip().lower()
-    allowed = {"function_calling", "json_mode", "json_schema"}
-    if method not in allowed:
-        raise RuntimeError(f"Invalid LLM structured_method value: {value}. Allowed: {', '.join(sorted(allowed))}")
-    return method
 
 
 def llm_key_source(secret_settings: dict[str, Any]) -> str:
