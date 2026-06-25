@@ -44,7 +44,21 @@ class FakeHttpxClient:
 
 
 class FakeResponse:
-    results = [{"period_position": 0, "mono_id": "C1", "cohort_dt": "2026-05-31"}]
+    def model_dump(self):
+        return {
+            "period_position": 0,
+            "is_anomaly": False,
+            "anomaly_type": "NORMAL",
+            "anomaly_score": 0.1,
+            "reason_summary": "Test kaydi normal gorunuyor.",
+            "reason_1": "Belirgin history bozulmasi yok",
+            "reason_1_weight": 1.0,
+            "reason_2": None,
+            "reason_2_weight": 0.0,
+            "reason_3": None,
+            "reason_3_weight": 0.0,
+            "risk_level": "DUSUK",
+        }
 
 
 class FakeInvokeChain:
@@ -53,7 +67,7 @@ class FakeInvokeChain:
 
 
 class FakeRawMessage:
-    content = '{"results":[{"period_position":0,"is_anomaly":false}]}'
+    content = '{"period_position":0,"is_anomaly":false,"anomaly_type":"NORMAL","anomaly_score":0.1,"reason_summary":"Test","reason_1":"History normal","reason_1_weight":1.0,"risk_level":"DUSUK"}'
     additional_kwargs = {"tool_calls": []}
     response_metadata = {"status": "ok"}
     tool_calls = []

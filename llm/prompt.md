@@ -19,17 +19,19 @@ Bu akista hazir anomaly score veya target yoktur. Karari LLM verir; karar sadece
 5. Buyuk tutar tek basina anomali degildir; olcek, peer ve tarihsel davranisla birlikte yorumla.
 6. Missing veya stale finansal term sinyalini finansal bozulma gibi yazma; veri kalitesi veya inceleme nedeni olarak ayir.
 7. Peer kalitesi ZAYIF ise kesin hukum verme, manuel inceleme oner.
-8. Risk azalisi olan sapmalari anomali nedeni yapma.
-9. Rating grubunu risk sinyali olarak kullanabilirsin.
-10. IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
-11. Gelecek donem varsayimi yapma.
+8. Musterinin kendi tarihsel verisi yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.
+9. Peer kaynakli anomali ancak musteri history'si yetersizse veya musteri history'sindeki bozulmayi destekliyorsa kullanilabilir.
+10. Risk azalisi olan sapmalari anomali nedeni yapma.
+11. Rating grubunu risk sinyali olarak kullanabilirsin.
+12. IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
+13. Gelecek donem varsayimi yapma.
 
 ## Anomali Kabul Sinyalleri
 
 Asagidakilerden biri veya birkaci varsa anomali flag'i ver:
 
 - Musteri gecmisine gore risk yonunde belirgin sapma.
-- Peer grubuna gore risk yonunde belirgin sapma ve peer support yeterli.
+- Musteri history kanitiyle desteklenen peer grubuna gore risk yonunde belirgin sapma.
 - Trend kirilmasi veya kademeli bozulma.
 - Ayni sezon / gecen yil davranisina gore beklenmeyen bozulma.
 - Birden fazla bagimsiz risk gostergesinde ayni anda bozulma.
@@ -37,24 +39,29 @@ Asagidakilerden biri veya birkaci varsa anomali flag'i ver:
 
 ## Cikti Kontrati
 
-Her input snapshot kaydi icin bir record dondur.
-Sonuc listesi verilen scoring snapshot sayisiyla ayni uzunlukta olmali.
-Her record, inputtaki `period_position` degerini aynen tasimali.
-Output semasi bilerek sade tutulur. History, peer, trend, sezon ve veri kalitesi yorumlari `explanation` icinde yazilir.
+Her LLM isteginde tek musteri ve tek scoring snapshot vardir.
+Feature'lar, nedenler veya history satirlari icin ayri record dondurme.
+Tum sinyalleri birlestirip tek musteri-snapshot karari dondur.
+`period_position` her zaman `0` olmali.
+`anomaly_score` guven skoru degil, 0.0-1.0 arasi anomali siddet skorudur.
+`reason_summary` tekil kararin birlestirilmis nedenidir.
+`reason_1/2/3` en yuksek etkili uc nedeni, `reason_1_weight/2_weight/3_weight` bu nedenlerin goreli agirligini tasir.
 
 Sadece gecerli JSON dondur. Markdown kullanma.
 
 ```json
 {
-  "results": [
-    {
-      "period_position": 0,
-      "is_anomaly": true,
-      "anomaly_type": "ANI_RISK_ARTISI",
-      "confidence": 0.82,
-      "explanation": "Banka risk/varlik cari degeri 1.20, musteri tarihsel medyani 0.80 ve peer z=2.40 oldugu icin risk yonunde belirgin ayrisma var. Trend son aylarda yukari, sezon etkisi bu artis icin yeterli aciklama saglamiyor.",
-      "risk_level": "YUKSEK"
-    }
-  ]
+  "period_position": 0,
+  "is_anomaly": true,
+  "anomaly_type": "ANI_RISK_ARTISI",
+  "anomaly_score": 0.82,
+  "reason_summary": "Banka risk/varlik cari degeri musteri tarihsel medyaninin belirgin uzerinde ve son aylarda yukari trend var. Peer sapmasi bu bozulmayi destekliyor ancak karar tek basina peer farkina dayanmiyor. Sezon etkisi bu artis icin yeterli aciklama saglamiyor.",
+  "reason_1": "Musteri gecmisine gore risk yonunde belirgin sapma",
+  "reason_1_weight": 0.50,
+  "reason_2": "Trend kirilmasi ve kademeli bozulma",
+  "reason_2_weight": 0.30,
+  "reason_3": "Peer referansi bozulmayi destekliyor",
+  "reason_3_weight": 0.20,
+  "risk_level": "YUKSEK"
 }
 ```

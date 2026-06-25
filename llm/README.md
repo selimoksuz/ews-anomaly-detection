@@ -121,9 +121,11 @@ Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/
 
 Structured response ilk prototipteki gibi LangChain/Pydantic uzerinden zorlanir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `with_structured_output(...)`, `chain.invoke(...)`.
 
-Varsayilan LLM cagri sekli ilk calisan kaynak kodun operasyonel kalibiyla aynidir: `llm.with_structured_output(AnomalyBatchResult)`, `prompt | structured_llm`, `chain.invoke({"input_records": ...})`, sonra `response.results` okunur. `method=...` override verilmez; internal endpoint LangChain default structured davranisiyla cagrilir. Her musteri snapshot'i tek prompt olarak gider; donen `results` listesi `period_position` ile tekrar ilgili kayda baglanir.
+Varsayilan LLM cagri sekli ilk calisan kaynak kodun operasyonel kalibiyla aynidir: `llm.with_structured_output(AnomalyBatchResult)`, `prompt | structured_llm`, `chain.invoke({"input_records": ...})`. `method=...` override verilmez; internal endpoint LangChain default structured davranisiyla cagrilir. Her musteri snapshot'i tek prompt olarak gider ve tek structured karar objesi beklenir.
 
-Cikti tipi ilk calisan prototipe yakin sade tutulur. `AnomalyBatchResult.results` altinda `period_position`, `is_anomaly`, `anomaly_type`, `confidence`, `explanation`, `risk_level` doner. `mono_id`, `cohort_dt` ve Oracle output icin gerekli uyumluluk alanlari kod tarafinda evidence kaydindan doldurulur; `explanation` ayrica reason tablosuna `GENEL_DEGERLENDIRME` olarak yazilir.
+Cikti tipi tek satirlik musteri-snapshot karari olacak sekilde tutulur. Structured obje `period_position`, `is_anomaly`, `anomaly_type`, `anomaly_score`, `reason_summary`, `reason_1/2/3`, `reason_1_weight/2_weight/3_weight`, `risk_level` doner. `mono_id`, `cohort_dt` ve Oracle output icin gerekli uyumluluk alanlari kod tarafinda evidence kaydindan doldurulur.
+
+Model feature veya neden bazinda birden fazla `results` item'i dondurmemelidir. Musteri datasinin history/series bilgisi yeterliyse peer tek basina anomali nedeni olamaz; peer sadece musteri history bozulmasini destekleyen kanit olarak kullanilir.
 
 Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, gereksiz token sismesini azaltmak icindir.
 
@@ -251,8 +253,8 @@ python -m llm.llm_anomaly ensure-output-tables --scoring-month 2026-05-31
 
 LLM karar tablolari:
 
-- `ZT_VAR2.EWS_ANOMALY_LLM_RESULTS`: musteri-donem seviyesinde `IS_ANOMALY`, `ANOMALY_TYPE`, `RISK_LEVEL`, `LLM_CONFIDENCE`, ozet yorumlar ve raw JSON response.
-- `ZT_VAR2.EWS_ANOMALY_LLM_REASONS`: LLM `explanation` alaninin `GENEL_DEGERLENDIRME` reason kaydi ve varsa modelden gelen reason detaylari.
+- `ZT_VAR2.EWS_ANOMALY_LLM_RESULTS`: musteri-donem seviyesinde `IS_ANOMALY`, `ANOMALY_TYPE`, `RISK_LEVEL`, `ANOMALY_SCORE`, `REASON_SUMMARY`, `REASON_1/2/3`, `REASON_1_WEIGHT/2_WEIGHT/3_WEIGHT` ve raw JSON response.
+- `ZT_VAR2.EWS_ANOMALY_LLM_REASONS`: tek karar icindeki top reason alanlarinin detay satirlari.
 
 ## Terminalde Beklenen Akis
 
@@ -319,8 +321,8 @@ SELECT COUNT(*) FROM ZT_VAR2.EWS_ANOMALY_LLM_REASONS
 WHERE TRUNC(COHORT_DT) = DATE '2026-05-31';
 ```
 
-Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`. Basarili cevapta `response.results` okunur. Ek parser veya dis endpoint gecisi yoktur; sadece hata analizinde kullanmak icin LangChain'in raw modeli `runtime/llm/raw_model_responses.jsonl` dosyasina yazilir.
+Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`. Basarili cevap tek structured karar objesi olarak okunur. Ek parser veya dis endpoint gecisi yoktur; sadece hata analizinde kullanmak icin LangChain'in raw modeli `runtime/llm/raw_model_responses.jsonl` dosyasina yazilir.
 
 Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
 
-Eger logda HTTP 200 OK sonrasi `LLM structured response returned None` veya `LLM structured response did not include results` gorulurse endpoint cevap vermis ama LangChain structured chain `AnomalyBatchResult.results` objesini uretmemis demektir. Bu durumda `runtime/llm/raw_model_responses.jsonl` dosyasindaki son satiri paylas; modelin gercekte ne yazdigina gore output kontratini birlikte netlestirebiliriz.
+Eger logda HTTP 200 OK sonrasi `LLM structured response returned None` gorulurse endpoint cevap vermis ama LangChain structured chain tek karar objesini uretmemis demektir. Eger `LLM returned a results list` gorulurse model feature nedenlerini ayri karar gibi dondurmustur; bu durumda `runtime/llm/raw_model_responses.jsonl` dosyasindaki son satiri paylas, prompt/kontrat tarafinda hangi alanin yanlis yorumlandigini gorebiliriz.

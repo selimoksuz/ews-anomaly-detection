@@ -26,11 +26,14 @@ LLM_RESULT_COLUMNS = [
     "is_anomaly",
     "anomaly_type",
     "risk_level",
-    "llm_confidence",
-    "seasonality_assessment",
-    "trend_assessment",
-    "peer_assessment",
-    "caveat",
+    "anomaly_score",
+    "reason_summary",
+    "reason_1",
+    "reason_1_weight",
+    "reason_2",
+    "reason_2_weight",
+    "reason_3",
+    "reason_3_weight",
     "recommended_action",
     "llm_model",
     "evidence_source",
@@ -46,6 +49,39 @@ LLM_REASON_COLUMNS = [
     "evidence_text",
     "interpretation",
 ]
+
+LLM_RESULT_COLUMN_DDLS = {
+    "RUN_ID": "RUN_ID VARCHAR2(64)",
+    TIME_COLUMN.upper(): f"{TIME_COLUMN.upper()} DATE",
+    ID_COLUMN.upper(): f"{ID_COLUMN.upper()} VARCHAR2(128)",
+    "IS_ANOMALY": "IS_ANOMALY NUMBER(1)",
+    "ANOMALY_TYPE": "ANOMALY_TYPE VARCHAR2(64)",
+    "RISK_LEVEL": "RISK_LEVEL VARCHAR2(32)",
+    "ANOMALY_SCORE": "ANOMALY_SCORE NUMBER(6,4)",
+    "REASON_SUMMARY": "REASON_SUMMARY VARCHAR2(4000)",
+    "REASON_1": "REASON_1 VARCHAR2(2000)",
+    "REASON_1_WEIGHT": "REASON_1_WEIGHT NUMBER(6,4)",
+    "REASON_2": "REASON_2 VARCHAR2(2000)",
+    "REASON_2_WEIGHT": "REASON_2_WEIGHT NUMBER(6,4)",
+    "REASON_3": "REASON_3 VARCHAR2(2000)",
+    "REASON_3_WEIGHT": "REASON_3_WEIGHT NUMBER(6,4)",
+    "RECOMMENDED_ACTION": "RECOMMENDED_ACTION VARCHAR2(128)",
+    "LLM_MODEL": "LLM_MODEL VARCHAR2(128)",
+    "EVIDENCE_SOURCE": "EVIDENCE_SOURCE VARCHAR2(64)",
+    "RAW_RESPONSE": "RAW_RESPONSE CLOB",
+    "CREATED_AT": "CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP",
+}
+
+LLM_REASON_COLUMN_DDLS = {
+    "RUN_ID": "RUN_ID VARCHAR2(64)",
+    TIME_COLUMN.upper(): f"{TIME_COLUMN.upper()} DATE",
+    ID_COLUMN.upper(): f"{ID_COLUMN.upper()} VARCHAR2(128)",
+    "REASON_RANK": "REASON_RANK NUMBER(4)",
+    "FEATURE_NAME": "FEATURE_NAME VARCHAR2(128)",
+    "EVIDENCE_TEXT": "EVIDENCE_TEXT VARCHAR2(2000)",
+    "INTERPRETATION": "INTERPRETATION VARCHAR2(2000)",
+    "CREATED_AT": "CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP",
+}
 
 
 def write_llm_outputs_to_oracle(
@@ -325,6 +361,20 @@ def ensure_llm_output_tables(
             cursor.execute(ddl)
             ora.logger.info("Created %s", ora._qualified_table_name(table_key))
     ora.connection.commit()
+    ensure_missing_columns(ora, results_table_key, LLM_RESULT_COLUMN_DDLS)
+    ensure_missing_columns(ora, reasons_table_key, LLM_REASON_COLUMN_DDLS)
+
+
+def ensure_missing_columns(ora: OracleConnector, table_key: str, column_ddls: dict[str, str]) -> None:
+    existing = ora._table_columns(table_key)
+    missing = [(column, ddl) for column, ddl in column_ddls.items() if column not in existing]
+    if not missing:
+        return
+    with ora.connection.cursor() as cursor:
+        for column, ddl in missing:
+            cursor.execute(f"ALTER TABLE {ora._qualified_table_name(table_key)} ADD ({ddl})")
+            ora.logger.info("Added missing LLM output column: table=%s column=%s", ora._qualified_table_name(table_key), column)
+    ora.connection.commit()
 
 
 def delete_llm_output_month(
@@ -391,11 +441,14 @@ def prepare_llm_result_frame(
                 "is_anomaly": 1 if bool(decision.get("is_anomaly")) else 0,
                 "anomaly_type": text_or_none(decision.get("anomaly_type"), 64),
                 "risk_level": text_or_none(decision.get("risk_level"), 32),
-                "llm_confidence": number_or_none(decision.get("confidence")),
-                "seasonality_assessment": text_or_none(decision.get("seasonality_assessment"), 2000),
-                "trend_assessment": text_or_none(decision.get("trend_assessment"), 2000),
-                "peer_assessment": text_or_none(decision.get("peer_assessment"), 2000),
-                "caveat": text_or_none(decision.get("caveat"), 2000),
+                "anomaly_score": number_or_none(decision.get("anomaly_score")),
+                "reason_summary": text_or_none(decision.get("reason_summary"), 4000),
+                "reason_1": text_or_none(decision.get("reason_1"), 2000),
+                "reason_1_weight": number_or_none(decision.get("reason_1_weight")),
+                "reason_2": text_or_none(decision.get("reason_2"), 2000),
+                "reason_2_weight": number_or_none(decision.get("reason_2_weight")),
+                "reason_3": text_or_none(decision.get("reason_3"), 2000),
+                "reason_3_weight": number_or_none(decision.get("reason_3_weight")),
                 "recommended_action": text_or_none(decision.get("recommended_action"), 128),
                 "llm_model": text_or_none(llm_model, 128),
                 "evidence_source": text_or_none(evidence_source, 64),
@@ -478,11 +531,14 @@ def llm_results_table_ddl(ora: OracleConnector, table_key: str) -> str:
             IS_ANOMALY NUMBER(1) NOT NULL,
             ANOMALY_TYPE VARCHAR2(64),
             RISK_LEVEL VARCHAR2(32),
-            LLM_CONFIDENCE NUMBER(6,4),
-            SEASONALITY_ASSESSMENT VARCHAR2(2000),
-            TREND_ASSESSMENT VARCHAR2(2000),
-            PEER_ASSESSMENT VARCHAR2(2000),
-            CAVEAT VARCHAR2(2000),
+            ANOMALY_SCORE NUMBER(6,4),
+            REASON_SUMMARY VARCHAR2(4000),
+            REASON_1 VARCHAR2(2000),
+            REASON_1_WEIGHT NUMBER(6,4),
+            REASON_2 VARCHAR2(2000),
+            REASON_2_WEIGHT NUMBER(6,4),
+            REASON_3 VARCHAR2(2000),
+            REASON_3_WEIGHT NUMBER(6,4),
             RECOMMENDED_ACTION VARCHAR2(128),
             LLM_MODEL VARCHAR2(128),
             EVIDENCE_SOURCE VARCHAR2(64),

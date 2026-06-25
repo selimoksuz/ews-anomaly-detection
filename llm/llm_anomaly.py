@@ -59,22 +59,37 @@ Kurallar:
 - Buyuk tutar tek basina anomali degildir; olcek, peer ve tarihsel davranisla birlikte yorumla.
 - Missing veya stale finansal term sinyalini finansal bozulma gibi yazma; veri kalitesi veya inceleme nedeni olarak ayir.
 - Peer kalitesi ZAYIF ise kesin hukum verme, manuel inceleme oner.
+- Musterinin kendi tarihsel verisi yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.
+- Peer kaynakli anomali ancak musteri history'si yetersizse veya musteri history'sindeki bozulmayi destekliyorsa kullanilabilir.
 - Risk azalisi olan sapmalari anomali nedeni yapma.
 - Rating grubunu risk sinyali olarak kullanabilirsin.
 - IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
 - Gelecek donem varsayimi yapma.
 
-Her input snapshot kaydi icin sadece period_position, is_anomaly, anomaly_type, confidence, explanation ve risk_level dondur.
-explanation icinde musteri gecmisi, peer, trend, sezon ve veri kalitesi kanitlarini kisa ama sayisal referanslarla acikla.
-Sonuc listesi verilen scoring snapshot sayisiyla ayni uzunlukta olmali.
+Her LLM isteginde tek musteri ve tek scoring snapshot vardir.
+Feature'lar veya nedenler icin ayri results item'i uretme.
+Tum feature sinyallerini birlestirip musteri-snapshot icin tek karar dondur.
+
+Sadece su alanlari dondur: period_position, is_anomaly, anomaly_type, anomaly_score, reason_summary, reason_1,
+reason_1_weight, reason_2, reason_2_weight, reason_3, reason_3_weight, risk_level.
+anomaly_score 0.0 ile 1.0 arasinda anomali siddet skorudur; confidence degildir.
+reason_summary tekil karar nedenini birlestirilmis olarak anlatir.
+reason_1/2/3 en yuksek etkili uc nedeni, weight alanlari ise bu nedenlerin toplam karar icindeki goreli agirligini verir.
+Agirliklar 0.0 ile 1.0 arasinda olmali ve mumkunse toplami 1.0'a yakin olmali.
 Sadece gecerli JSON dondur. Markdown kullanma."""
 
 OUTPUT_CONTRACT = {
     "period_position": "0-based integer",
     "is_anomaly": "boolean",
     "anomaly_type": "ANI_RISK_ARTISI | FINANSAL_BOZULMA | PD_RISKI | KKB_RISKI | PEER_UYUMSUZLUGU | DATA_GAP | TREND_KIRILMASI | SEZON_DISI_SAPMA | NORMAL",
-    "confidence": "0.0-1.0",
-    "explanation": "Turkish explanation comparing current snapshot with history, peer, trend, seasonality and data quality",
+    "anomaly_score": "0.0-1.0 anomaly severity score",
+    "reason_summary": "single Turkish explanation combining history, peer, trend, seasonality and data quality",
+    "reason_1": "highest impact reason",
+    "reason_1_weight": "0.0-1.0",
+    "reason_2": "second highest impact reason or empty",
+    "reason_2_weight": "0.0-1.0",
+    "reason_3": "third highest impact reason or empty",
+    "reason_3_weight": "0.0-1.0",
     "risk_level": "DUSUK | ORTA | YUKSEK | KRITIK",
 }
 
@@ -82,7 +97,7 @@ OUTPUT_CONTRACT = {
 if BaseModel is not None and Field is not None:
     class AnomalyRecord(BaseModel):
         period_position: int = Field(
-            description="Musterinin kronolojik donem listesindeki sira numarasi, 0'dan baslar"
+            description="Tek scoring snapshot icin sira numarasi; her request tek snapshot oldugu icin 0 olmali"
         )
         is_anomaly: bool = Field(description="Bu musteri-donem kaydi anomali mi?")
         anomaly_type: str = Field(
@@ -91,16 +106,19 @@ if BaseModel is not None and Field is not None:
                 "PEER_UYUMSUZLUGU, DATA_GAP, TREND_KIRILMASI, SEZON_DISI_SAPMA veya NORMAL"
             )
         )
-        confidence: float = Field(description="Guven skoru, 0.0 ile 1.0 arasinda")
-        explanation: str = Field(
-            description="Anomalinin Turkce aciklamasi; onceki donem, peer, trend, sezon ve veri kalitesiyle kiyaslamali olsun"
+        anomaly_score: float = Field(description="Anomali siddet skoru, 0.0 ile 1.0 arasinda; confidence degildir")
+        reason_summary: str = Field(
+            description="Tekil karar nedeninin Turkce ozeti; history, peer, trend, sezon ve veri kalitesiyle kiyaslamali olsun"
         )
+        reason_1: str = Field(description="Karara en cok etki eden neden")
+        reason_1_weight: float = Field(description="Birinci nedenin goreli agirligi, 0.0 ile 1.0 arasinda")
+        reason_2: Optional[str] = Field(default=None, description="Karara ikinci en cok etki eden neden")
+        reason_2_weight: float = Field(default=0.0, description="Ikinci nedenin goreli agirligi, 0.0 ile 1.0 arasinda")
+        reason_3: Optional[str] = Field(default=None, description="Karara ucuncu en cok etki eden neden")
+        reason_3_weight: float = Field(default=0.0, description="Ucuncu nedenin goreli agirligi, 0.0 ile 1.0 arasinda")
         risk_level: str = Field(description="Risk seviyesi: DUSUK, ORTA, YUKSEK veya KRITIK")
 
-    class AnomalyBatchResult(BaseModel):
-        results: List[AnomalyRecord] = Field(
-            description="Verilen musteri-donem evidence kayitlari icin kronolojik sira ile karar listesi"
-        )
+    AnomalyBatchResult = AnomalyRecord
 else:
     AnomalyRecord = None
     AnomalyBatchResult = None
@@ -251,13 +269,21 @@ def validate_llm_settings(settings: dict[str, Any]) -> None:
 
 
 def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
+    if len(evidence_items) != 1:
+        raise RuntimeError(
+            "LLM prompt contract expects exactly one scoring snapshot per request; "
+            f"got {len(evidence_items)}."
+        )
     lines = [
-        "Gorev: Her secilen musteri snapshot'i icin anomali karari ver.",
-        "Cikti: AnomalyBatchResult formatinda JSON; en dis alan results listesi olmali.",
-        "Alanlar: period_position, is_anomaly, anomaly_type, confidence, explanation, risk_level.",
-        "explanation alaninda history, peer, trend, sezon ve veri kalitesi kanitlarini birlikte acikla.",
-        "Not: Her kayit tek scoring snapshot'idir; history, customer_series ve peer_series sadece o snapshot'i yorumlama baglamidir.",
-        "Kayitlar:",
+        "Gorev: Bu tek musteri ve tek scoring snapshot icin anomali karari ver.",
+        "Cikti: Tek JSON obje olmali; results listesi, feature listesi veya birden fazla karar dondurme.",
+        "Alanlar: period_position, is_anomaly, anomaly_type, anomaly_score, reason_summary, reason_1, reason_1_weight, reason_2, reason_2_weight, reason_3, reason_3_weight, risk_level.",
+        "anomaly_score 0.0-1.0 arasi anomali siddet skorudur; confidence degildir.",
+        "reason_summary tekil karar nedenini birlestirilmis olarak anlatir.",
+        "reason_1/2/3 en yuksek etkili uc nedeni temsil eder; weight alanlari goreli karar agirligidir.",
+        "Musteri history'si yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.",
+        "Not: History, customer_series ve peer_series sadece bu snapshot'i yorumlama baglamidir.",
+        "Kayit:",
     ]
     for index, item in enumerate(evidence_items):
         lines.extend(compact_evidence_lines(item, index=index))
@@ -373,6 +399,11 @@ def invoke_langchain_structured_decisions(
 ) -> list[dict[str, Any]]:
     if not evidence_items:
         return []
+    if len(evidence_items) != 1:
+        raise RuntimeError(
+            "LLM decision contract is one customer snapshot per request; "
+            f"got {len(evidence_items)} evidence items."
+        )
     input_records = format_evidence_for_langchain(evidence_items)
     first_item = evidence_items[0] if evidence_items else {}
     logger.info(
@@ -421,34 +452,31 @@ def invoke_langchain_structured_decisions(
     if response is None:
         raise RuntimeError(
             "LLM structured response returned None after HTTP OK. "
-            "Expected AnomalyBatchResult.results with fields: period_position, is_anomaly, anomaly_type, confidence, explanation, risk_level. "
+            "Expected one structured decision object with fields: period_position, is_anomaly, anomaly_type, anomaly_score, reason_summary, reason_1..3, reason_1_weight..3_weight, risk_level. "
             f"Raw model response was written to {RAW_MODEL_RESPONSE_FILE} if the endpoint returned one."
         )
-    records = response.get("results") if isinstance(response, dict) else getattr(response, "results", None)
-    if not records:
-        raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(response), 500)}")
-    if len(records) != len(evidence_items):
+    if (isinstance(response, dict) and "results" in response) or hasattr(response, "results"):
+        records = response.get("results") if isinstance(response, dict) else getattr(response, "results", None)
+        actual_count = len(records or [])
         raise RuntimeError(
-            "LLM structured response result count mismatch: "
-            f"expected={len(evidence_items)} actual={len(records)} mono_id={first_item.get('mono_id')}"
+            "LLM returned a results list, but the contract is a single customer-snapshot decision object: "
+            f"actual_results={actual_count} mono_id={first_item.get('mono_id')}. "
+            "This usually means the model treated feature reasons as separate decisions; check the raw response file."
         )
-    decisions = []
-    for record in records:
-        decision = normalize_structured_decision(model_to_dict(record))
-        position = int(decision["period_position"])
-        if not 0 <= position < len(evidence_items):
-            raise RuntimeError(
-                "LLM structured response period_position is out of range: "
-                f"period_position={position} expected_range=0..{len(evidence_items) - 1} mono_id={first_item.get('mono_id')}"
-            )
-        evidence = evidence_items[position]
-        decision["period_position"] = position
-        if not decision.get("mono_id"):
-            decision["mono_id"] = evidence.get("mono_id")
-        if not decision.get("cohort_dt"):
-            decision["cohort_dt"] = evidence.get("cohort_dt")
-        decisions.append(decision)
-    return decisions
+    decision = normalize_structured_decision(model_to_dict(response))
+    position = int(decision["period_position"])
+    if position != 0:
+        raise RuntimeError(
+            "LLM structured response period_position must be 0 for single-snapshot request: "
+            f"period_position={position} mono_id={first_item.get('mono_id')}"
+        )
+    evidence = evidence_items[0]
+    decision["period_position"] = 0
+    if not decision.get("mono_id"):
+        decision["mono_id"] = evidence.get("mono_id")
+    if not decision.get("cohort_dt"):
+        decision["cohort_dt"] = evidence.get("cohort_dt")
+    return [decision]
 
 
 def unwrap_structured_response(
@@ -527,40 +555,76 @@ def extract_raw_model_response(raw_response: Any) -> dict[str, Any]:
 
 
 def normalize_structured_decision(decision: dict[str, Any]) -> dict[str, Any]:
-    """Keep the model schema simple while preserving the Oracle output contract."""
+    """Normalize one customer-snapshot decision for Oracle output."""
 
-    explanation = str(decision.get("explanation") or "").strip()
+    required_fields = [
+        "period_position",
+        "is_anomaly",
+        "anomaly_type",
+        "anomaly_score",
+        "reason_summary",
+        "reason_1",
+        "reason_1_weight",
+        "risk_level",
+    ]
+    missing_fields = [field for field in required_fields if field not in decision or decision.get(field) is None]
+    if missing_fields:
+        raise RuntimeError(
+            "LLM structured response is missing required single-decision fields: "
+            f"{','.join(missing_fields)}"
+        )
+
+    reason_summary = str(decision.get("reason_summary") or "").strip()
     decision["anomaly_type"] = str(decision.get("anomaly_type") or "NORMAL").strip() or "NORMAL"
     decision["risk_level"] = str(decision.get("risk_level") or "DUSUK").strip() or "DUSUK"
-    decision["confidence"] = bounded_confidence(decision.get("confidence"))
-    decision["explanation"] = explanation
-    decision.setdefault("seasonality_assessment", None)
-    decision.setdefault("trend_assessment", None)
-    decision.setdefault("peer_assessment", None)
-    decision.setdefault("caveat", None)
+    decision["anomaly_score"] = bounded_unit_float(decision.get("anomaly_score"))
+    decision["reason_summary"] = reason_summary
+    for index in range(1, 4):
+        reason_key = f"reason_{index}"
+        weight_key = f"reason_{index}_weight"
+        reason_value = decision.get(reason_key)
+        decision[reason_key] = str(reason_value).strip() if reason_value is not None else None
+        decision[weight_key] = bounded_unit_float(decision.get(weight_key))
     decision.setdefault("recommended_action", "Manuel incele" if bool(decision.get("is_anomaly")) else "Izle")
-    reasons = decision.get("main_reasons")
-    if not isinstance(reasons, list) or not reasons:
-        decision["main_reasons"] = [
-            {
-                "feature": "GENEL_DEGERLENDIRME",
-                "evidence": "",
-                "interpretation": explanation or "LLM structured karar aciklamasi bos dondu.",
-            }
-        ]
+    decision["main_reasons"] = top_reason_records(decision)
     return decision
 
 
-def bounded_confidence(value: Any) -> float:
+def top_reason_records(decision: dict[str, Any]) -> list[dict[str, Any]]:
+    records = []
+    for index in range(1, 4):
+        reason = decision.get(f"reason_{index}")
+        if not reason:
+            continue
+        weight = bounded_unit_float(decision.get(f"reason_{index}_weight"))
+        records.append(
+            {
+                "feature": f"REASON_{index}",
+                "evidence": f"weight={weight:.4f}",
+                "interpretation": reason,
+            }
+        )
+    if not records:
+        records.append(
+            {
+                "feature": "GENEL_DEGERLENDIRME",
+                "evidence": "",
+                "interpretation": decision.get("reason_summary") or "LLM structured karar aciklamasi bos dondu.",
+            }
+        )
+    return records
+
+
+def bounded_unit_float(value: Any) -> float:
     try:
-        confidence = float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return 0.0
-    if confidence < 0.0:
+    if parsed < 0.0:
         return 0.0
-    if confidence > 1.0:
+    if parsed > 1.0:
         return 1.0
-    return confidence
+    return parsed
 
 
 def group_evidence_by_customer(evidence_items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -811,36 +875,30 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
     log_step("04", "LLM modelinden anomali karari aliniyor")
     decisions = []
     total = len(evidence_items)
-    customer_groups = group_evidence_by_customer(evidence_items)
     logger.info(
-        "Starting LLM decision step: evidence_items=%s customer_groups=%s dry_run=%s call_pattern=one_chain_invoke_per_customer",
+        "Starting LLM decision step: evidence_items=%s dry_run=%s call_pattern=one_chain_invoke_per_customer_snapshot",
         total,
-        len(customer_groups),
         dry_run,
     )
     chain = None if dry_run else build_langchain_structured_chain()
-    for index, (customer_id, customer_items) in enumerate(customer_groups, start=1):
-        history_period_counts = [
-            int((item.get("data_quality") or {}).get("customer_history_periods") or 0)
-            for item in customer_items
-        ]
+    for index, item in enumerate(evidence_items, start=1):
+        customer_id = str(item.get("mono_id") or f"ROW_{index}")
+        history_periods = int((item.get("data_quality") or {}).get("customer_history_periods") or 0)
         logger.info(
-            "LLM customer decision progress: %s/%s mono_id=%s decision_items=%s customer_history_periods=%s first_cohort_dt=%s last_cohort_dt=%s",
+            "LLM customer snapshot decision progress: %s/%s mono_id=%s cohort_dt=%s decision_items=1 customer_history_periods=%s",
             index,
-            len(customer_groups),
+            total,
             customer_id,
-            len(customer_items),
-            max(history_period_counts) if history_period_counts else 0,
-            customer_items[0].get("cohort_dt") if customer_items else None,
-            customer_items[-1].get("cohort_dt") if customer_items else None,
+            item.get("cohort_dt"),
+            history_periods,
         )
         if dry_run:
             decisions.append(
                 {
                     "mono_id": customer_id,
-                    "period_count": len(customer_items),
+                    "cohort_dt": item.get("cohort_dt"),
                     "dry_run": True,
-                    "input_records": format_evidence_for_langchain(customer_items),
+                    "input_records": format_evidence_for_langchain([item]),
                 }
             )
         else:
@@ -848,14 +906,14 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
                 decisions.extend(
                     invoke_langchain_structured_decisions(
                         chain,
-                        customer_items,
+                        [item],
                         payload_preview_index=index,
                     )
                 )
             except Exception as exc:
                 log_step_failed(
                     "04",
-                    f"LLM decision failed at customer {index}/{len(customer_groups)} mono_id={customer_id}: {exc}",
+                    f"LLM decision failed at customer snapshot {index}/{total} mono_id={customer_id} cohort_dt={item.get('cohort_dt')}: {exc}",
                 )
                 raise
     logger.info("Completed LLM decision step: decisions=%s", len(decisions))
