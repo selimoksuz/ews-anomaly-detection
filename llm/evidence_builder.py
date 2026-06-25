@@ -533,6 +533,15 @@ def build_evidence_packages_from_prepared_windows(
         customer_feature_history = (
             selected_history_features.loc[customer_history.index] if len(customer_history) else pd.DataFrame()
         )
+        history_dates = parse_dates(customer_history[TIME_COLUMN]) if len(customer_history) else pd.Series(dtype="datetime64[ns]")
+        logger.info(
+            "LLM scoring payload prepared: mono_id=%s scoring_cohort_dt=%s customer_history_periods=%s history_first_cohort_dt=%s history_last_cohort_dt=%s output_rows_for_customer=1",
+            customer_id,
+            scoring_month.date(),
+            len(customer_history),
+            history_dates.min().date() if len(history_dates.dropna()) else None,
+            history_dates.max().date() if len(history_dates.dropna()) else None,
+        )
         score_context_row = score_context.loc[row_index]
         feature_evidence = []
         for feature in selected_features:

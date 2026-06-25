@@ -616,12 +616,17 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
     )
     chain = None if dry_run else build_langchain_structured_chain()
     for index, (customer_id, customer_items) in enumerate(customer_groups, start=1):
+        history_period_counts = [
+            int((item.get("data_quality") or {}).get("customer_history_periods") or 0)
+            for item in customer_items
+        ]
         logger.info(
-            "LLM customer decision progress: %s/%s mono_id=%s periods=%s first_cohort_dt=%s last_cohort_dt=%s",
+            "LLM customer decision progress: %s/%s mono_id=%s decision_items=%s customer_history_periods=%s first_cohort_dt=%s last_cohort_dt=%s",
             index,
             len(customer_groups),
             customer_id,
             len(customer_items),
+            max(history_period_counts) if history_period_counts else 0,
             customer_items[0].get("cohort_dt") if customer_items else None,
             customer_items[-1].get("cohort_dt") if customer_items else None,
         )
