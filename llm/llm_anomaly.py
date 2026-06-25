@@ -33,10 +33,12 @@ except ImportError:  # Runtime dependency is checked when the LLM chain is built
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """Sen banka kredi riski ve erken uyari anomalisi degerlendiren uzman bir analistsin.
+SYSTEM_PROMPT = """Sen deneyimli bir banka risk yoneticisi ve finansal anomali uzmanisin.
+Sana tek bir musteriye ait birden fazla doneme ait kredi risk kaydi verilecek.
+Kayitlar kronolojik siraya gore siralanmistir.
 
-Gorevin verilen musteri-donem evidence paketine gore kaydin anomali olup olmadigini belirlemektir.
-Hazir anomaly score veya target yoktur. Karari sen vereceksin, ancak sadece verilen kanit paketine dayanacaksin.
+Once musterinin tum donemlerini birlikte incele.
+Bir donemin anomali olup olmadigina musterinin kendi tarihsel seyri, peer bilgisi, trend, sezon ve veri kalitesi sinyalleri isiginda karar ver.
 
 Kurallar:
 - Degisken sozlugunu oku: is anlami, formul, risk yonu ve birimi dikkate al.
@@ -49,9 +51,13 @@ Kurallar:
 - PD ve rating ayni risk bilgisinin farkli gosterimleri olabilir; ayni bilgiyi cift kanit gibi sayma.
 - Gelecek donem varsayimi yapma.
 
+Her donem icin period_position, mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence,
+seasonality_assessment, trend_assessment, peer_assessment, main_reasons, caveat ve recommended_action dondur.
+Sonuc listesi verilen donem sayisiyla ayni uzunlukta olmali.
 Sadece gecerli JSON dondur. Markdown kullanma."""
 
 OUTPUT_CONTRACT = {
+    "period_position": "0-based integer",
     "mono_id": "string",
     "cohort_dt": "YYYY-MM-DD",
     "is_anomaly": "boolean",
@@ -81,6 +87,9 @@ if BaseModel is not None and Field is not None:
         interpretation: str = Field(description="Kanita dayali kisa Turkce is yorumu")
 
     class AnomalyRecord(BaseModel):
+        period_position: int = Field(
+            description="Musterinin kronolojik donem listesindeki sira numarasi, 0'dan baslar"
+        )
         mono_id: str = Field(description="Musteri tekil numarasi")
         cohort_dt: str = Field(description="Skorlanan donem tarihi, YYYY-MM-DD")
         is_anomaly: bool = Field(description="Bu musteri-donem kaydi anomali mi?")
@@ -239,10 +248,10 @@ def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
     lines = [
         "Gorev: Her musteri-donem icin anomali karari ver.",
         "Cikti: AnomalyBatchResult formatinda JSON; en dis alan results listesi olmali.",
-        "Alanlar: mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence, seasonality_assessment, trend_assessment, peer_assessment, main_reasons, caveat, recommended_action.",
+        "Alanlar: period_position, mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence, seasonality_assessment, trend_assessment, peer_assessment, main_reasons, caveat, recommended_action.",
         "Kayitlar:",
     ]
-    for index, item in enumerate(evidence_items, start=1):
+    for index, item in enumerate(evidence_items):
         lines.extend(compact_evidence_lines(item, index=index))
     return "\n".join(lines)
 
@@ -252,7 +261,8 @@ def compact_evidence_lines(item: dict[str, Any], *, index: int) -> list[str]:
     data_quality = item.get("data_quality") or {}
     peer_definition = item.get("peer_definition") or {}
     lines = [
-        f"--- KAYIT {index} ---",
+        f"--- DONEM {index} ---",
+        f"period_position={index}",
         f"mono_id={item.get('mono_id')} | cohort_dt={item.get('cohort_dt')}",
         "context=" + compact_json(context),
         "data_quality=" + compact_json(data_quality),
@@ -335,23 +345,89 @@ def compact_json(value: Any) -> str:
 
 
 def invoke_langchain_structured_decision(chain: Any, evidence: dict[str, Any]) -> dict[str, Any]:
-    input_records = format_evidence_for_langchain([evidence])
+    return invoke_langchain_structured_decisions(chain, [evidence])[0]
+
+
+def invoke_langchain_structured_decisions(chain: Any, evidence_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not evidence_items:
+        return []
+    input_records = format_evidence_for_langchain(evidence_items)
+    first_item = evidence_items[0] if evidence_items else {}
     logger.info(
-        "LLM request payload prepared: mono_id=%s cohort_dt=%s chars=%s features=%s formatter=compact_text",
-        evidence.get("mono_id"),
-        evidence.get("cohort_dt"),
+        "LLM request payload prepared: mono_id=%s periods=%s first_cohort_dt=%s chars=%s total_features=%s formatter=compact_text",
+        first_item.get("mono_id"),
+        len(evidence_items),
+        first_item.get("cohort_dt"),
         len(input_records),
-        len(evidence.get("features") or []),
+        sum(len(item.get("features") or []) for item in evidence_items),
     )
     response = chain.invoke({"input_records": input_records})
-    batch = normalize_structured_response(response)
-    records = extract_decision_records(batch)
+    records = response_results(response)
     if not records:
-        raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(batch), 500)}")
-    decision = model_to_dict(records[0])
-    decision.setdefault("mono_id", evidence.get("mono_id"))
-    decision.setdefault("cohort_dt", evidence.get("cohort_dt"))
-    return decision
+        batch = normalize_structured_response(response)
+        records = extract_decision_records(batch)
+    if not records:
+        raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(model_to_dict(response)), 500)}")
+    if len(records) != len(evidence_items):
+        raise RuntimeError(
+            "LLM structured response result count mismatch: "
+            f"expected={len(evidence_items)} actual={len(records)} mono_id={first_item.get('mono_id')}"
+        )
+    decisions = []
+    for fallback_position, record in enumerate(records):
+        decision = model_to_dict(record)
+        position = period_position_from_decision(decision, fallback_position)
+        evidence = evidence_items[position] if 0 <= position < len(evidence_items) else evidence_items[min(fallback_position, len(evidence_items) - 1)]
+        decision["period_position"] = position
+        if not decision.get("mono_id"):
+            decision["mono_id"] = evidence.get("mono_id")
+        if not decision.get("cohort_dt"):
+            decision["cohort_dt"] = evidence.get("cohort_dt")
+        decisions.append(decision)
+    return decisions
+
+
+def response_results(response: Any) -> list[Any] | None:
+    if hasattr(response, "results"):
+        results = getattr(response, "results")
+        if isinstance(results, list) and results:
+            return results
+    response_dict = model_to_dict(response)
+    if isinstance(response_dict, dict):
+        results = response_dict.get("results")
+        if isinstance(results, list) and results:
+            return results
+        parsed = response_dict.get("parsed")
+        if parsed is not None:
+            return response_results(parsed)
+    return None
+
+
+def period_position_from_decision(decision: dict[str, Any], fallback: int) -> int:
+    try:
+        return int(decision.get("period_position"))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def group_evidence_by_customer(evidence_items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    group_map: dict[str, list[dict[str, Any]]] = {}
+    for row_index, item in enumerate(evidence_items):
+        customer_id = str(item.get("mono_id") or f"ROW_{row_index}")
+        group = group_map.get(customer_id)
+        if group is None:
+            group = []
+            group_map[customer_id] = group
+            groups.append((customer_id, group))
+        group.append(item)
+    for _, group in groups:
+        group.sort(key=evidence_period_sort_key)
+    return groups
+
+
+def evidence_period_sort_key(item: dict[str, Any]) -> tuple[str, str]:
+    return (str(item.get("cohort_dt") or ""), str(item.get("mono_id") or ""))
 
 
 def normalize_structured_response(response: Any) -> Any:
@@ -659,30 +735,41 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
     log_step("04", "LLM modelinden anomali karari aliniyor")
     decisions = []
     total = len(evidence_items)
-    logger.info("Starting LLM decision step: evidence_items=%s dry_run=%s", total, dry_run)
+    customer_groups = group_evidence_by_customer(evidence_items)
+    logger.info(
+        "Starting LLM decision step: evidence_items=%s customer_groups=%s dry_run=%s call_pattern=one_chain_invoke_per_customer",
+        total,
+        len(customer_groups),
+        dry_run,
+    )
     chain = None if dry_run else build_langchain_structured_chain()
-    for index, item in enumerate(evidence_items, start=1):
+    for index, (customer_id, customer_items) in enumerate(customer_groups, start=1):
         logger.info(
-            "LLM decision progress: %s/%s mono_id=%s cohort_dt=%s",
+            "LLM customer decision progress: %s/%s mono_id=%s periods=%s first_cohort_dt=%s last_cohort_dt=%s",
             index,
-            total,
-            item.get("mono_id"),
-            item.get("cohort_dt"),
+            len(customer_groups),
+            customer_id,
+            len(customer_items),
+            customer_items[0].get("cohort_dt") if customer_items else None,
+            customer_items[-1].get("cohort_dt") if customer_items else None,
         )
         if dry_run:
             decisions.append(
                 {
-                    "mono_id": item.get("mono_id"),
-                    "cohort_dt": item.get("cohort_dt"),
+                    "mono_id": customer_id,
+                    "period_count": len(customer_items),
                     "dry_run": True,
-                    "input_records": format_evidence_for_langchain([item]),
+                    "input_records": format_evidence_for_langchain(customer_items),
                 }
             )
         else:
             try:
-                decisions.append(invoke_langchain_structured_decision(chain, item))
+                decisions.extend(invoke_langchain_structured_decisions(chain, customer_items))
             except Exception as exc:
-                log_step_failed("04", f"LLM decision failed at item {index}/{total}: {exc}")
+                log_step_failed(
+                    "04",
+                    f"LLM decision failed at customer {index}/{len(customer_groups)} mono_id={customer_id}: {exc}",
+                )
                 raise
     logger.info("Completed LLM decision step: decisions=%s", len(decisions))
     log_step_done("04", f"llm_decisions={len(decisions)} dry_run={dry_run}")

@@ -116,7 +116,11 @@ Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/
 
 Structured response ilk prototipteki gibi LangChain/Pydantic uzerinden zorlanir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `with_structured_output(...)`, `chain.invoke(...)`.
 
-Varsayilan LLM cagri sekli ilk calisan kaynak koda yakin tutulur: `with_structured_output(schema)` kullanilir, `include_raw` kapali gelir ve her musteri-donem icin tek `chain.invoke(...)` atilir. Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, token sismesini ve response timeout riskini azaltmak icindir.
+Varsayilan LLM cagri sekli ilk calisan kaynak kodun operasyonel kalibiyla aynidir: `llm.with_structured_output(AnomalyBatchResult)`, `prompt | structured_llm`, `chain.invoke({"input_records": ...})`, sonra dogrudan `response.results` okunur. Her musterinin kronolojik donem listesi tek prompt olarak gider; donen `results` listesi `period_position` ile tekrar ilgili doneme baglanir.
+
+Cikti tipi sade degildir. `AnomalyBatchResult.results` altinda genis `AnomalyRecord` doner: `period_position`, `mono_id`, `cohort_dt`, `is_anomaly`, `anomaly_type`, `risk_level`, `confidence`, `seasonality_assessment`, `trend_assessment`, `peer_assessment`, `main_reasons`, `caveat`, `recommended_action`. Oracle output tablolari bu genis yapiyi kullanir.
+
+Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, token sismesini ve response timeout riskini azaltmak icindir.
 
 Timeout/retry ayarlari env veya `secret/secrets.yaml` altindan verilebilir:
 
@@ -135,7 +139,7 @@ Logda su satirlar gorulmelidir:
 ```text
 LLM settings resolved: ... timeout_seconds=300 max_retries=0 max_tokens=1200 include_raw=False client=langchain_structured
 LangChain structured LLM chain initialized: model=gpt-oss-20b include_raw=False max_retries=0 max_tokens=1200
-LLM request payload prepared: ... formatter=compact_text
+LLM request payload prepared: mono_id=... periods=... formatter=compact_text
 ```
 
 Endpoint ve key saglik kontrolu icin notebook:
@@ -214,7 +218,7 @@ Onemli:
 - `build-oracle`: sadece evidence JSONL uretir, LLM'e gitmez, Oracle output insert yapmaz.
 - `run-oracle`: Oracle'dan okur, evidence uretir, LLM'e gider, structured output'u Oracle tablolarina yazar.
 - `--dry-run`: LLM'e gitmez ve Oracle output insert yapmaz; sadece prompt/evidence kontrolu icindir.
-- `--max-customers 10`: LLM'e gidecek musteri-donem payload sayisidir. 10 verilirse LLM'e 10 evidence package gider.
+- `--max-customers 10`: LLM'e gidecek scoring musterisi sayisidir. Her musteri icin kronolojik evidence listesi hazirlanir ve LLM cagrisi musteri bazinda yapilir.
 - `--max-train-rows 300000`: LLM'e 300k satir gondermez. History, peer, trend ve seasonality referanslarini hesaplamak icin kullanilan gecmis/reference ust limitidir.
 - Secilen musterilerin tam gecmisi ayrica cekilir; bu sayede `max_train_rows` sampling'i secilen musterinin history'sini dusurmez.
 - Peer referansi `max-customers` ile secilen 10 musteri uzerinden degil, skorlanan ayin tum scoring cohort'u uzerinden hesaplanir.
@@ -288,7 +292,7 @@ SELECT COUNT(*) FROM ZT_VAR2.EWS_ANOMALY_LLM_REASONS
 WHERE TRUNC(COHORT_DT) = DATE '2026-05-31';
 ```
 
-Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`.
+Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`. Basarili cevapta once `response.results` okunur; fallback parser sadece endpoint/LangChain cevabi farkli sekilde sardiginda devreye girer.
 
 Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
 
