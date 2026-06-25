@@ -127,6 +127,8 @@ Cikti tipi tek satirlik musteri-snapshot karari olacak sekilde tutulur. Structur
 
 Model feature veya neden bazinda birden fazla `results` item'i dondurmemelidir. Musteri datasinin history/series bilgisi yeterliyse peer tek basina anomali nedeni olamaz; peer sadece musteri history bozulmasini destekleyen kanit olarak kullanilir.
 
+Output format parse edilebilir olmak zorundadir: tek satir JSON object, markdown/code fence yok, JSON string wrapper yok, Python repr yok. Internal endpoint bazen structured parser'a tool-call objesi vermek yerine JSON'u `AIMessage.content` icinde duz metin olarak dondurur; kod bu durumda raw content icindeki JSON objeyi okuyup ayni tek satir karar kontratina sokar.
+
 Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, gereksiz token sismesini azaltmak icindir.
 
 `timeout_seconds` eski config/secret dosyalarinda kalsa bile LLM scoring cagrisina aktarilmaz. Bu bilerek yapildi; onceki calisan notebook `ChatOpenAI` icine timeout vermedigi icin uzun structured cevaplarda client tarafinda erken kesme olmuyordu.
@@ -149,7 +151,7 @@ feature name=... | current=... | history=... | trend=... | seasonality=... | pee
 
 Ilk 3 musteri icin bu preview bloklari loga basilir. Daha sonra `ConnectionError`, route kopmasi veya endpoint hatasi olursa hata satirinda da `mono_id`, `decision_items`, payload `chars` ve kisaltilmis `payload_preview` gorulur.
 
-Model HTTP 200 donup structured parse basarisiz olursa ham model cevabi su dosyaya append edilir:
+Model HTTP 200 donup structured parse basarisiz olursa ham model cevabi su dosyaya append edilir. `parsed=None` ama `raw_response.content` icinde gecerli tek JSON object varsa kod bunu parse edip devam eder:
 
 ```text
 runtime/llm/raw_model_responses.jsonl
@@ -325,4 +327,4 @@ Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatP
 
 Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
 
-Eger logda HTTP 200 OK sonrasi `LLM structured response returned None` gorulurse endpoint cevap vermis ama LangChain structured chain tek karar objesini uretmemis demektir. Eger `LLM returned a results list` gorulurse model feature nedenlerini ayri karar gibi dondurmustur; bu durumda `runtime/llm/raw_model_responses.jsonl` dosyasindaki son satiri paylas, prompt/kontrat tarafinda hangi alanin yanlis yorumlandigini gorebiliriz.
+Eger logda HTTP 200 OK sonrasi `LLM structured response returned None` gorulurse endpoint cevap vermis ama ne LangChain parser ne de raw content JSON parser tek karar objesi uretmemis demektir. Eger `LLM returned a results list` gorulurse model feature nedenlerini ayri karar gibi dondurmustur; bu durumda `runtime/llm/raw_model_responses.jsonl` dosyasindaki son satiri paylas, prompt/kontrat tarafinda hangi alanin yanlis yorumlandigini gorebiliriz.

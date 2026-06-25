@@ -46,22 +46,13 @@ Tum sinyalleri birlestirip tek musteri-snapshot karari dondur.
 `anomaly_score` guven skoru degil, 0.0-1.0 arasi anomali siddet skorudur.
 `reason_summary` tekil kararin birlestirilmis nedenidir.
 `reason_1/2/3` en yuksek etkili uc nedeni, `reason_1_weight/2_weight/3_weight` bu nedenlerin goreli agirligini tasir.
+`reason_summary` en fazla 600 karakter, `reason_1/2/3` her biri en fazla 220 karakter olsun.
+String degerlerinde satir sonu kullanma.
 
-Sadece gecerli JSON dondur. Markdown kullanma.
+Sadece tek satir gecerli JSON object dondur.
+Markdown, kod blogu, aciklama metni, Python repr veya JSON string wrapper kullanma.
+JSON'u tirnak icine alinmis string olarak dondurme; dogrudan `{` ile baslayan ve `}` ile biten object yaz.
 
-```json
-{
-  "period_position": 0,
-  "is_anomaly": true,
-  "anomaly_type": "ANI_RISK_ARTISI",
-  "anomaly_score": 0.82,
-  "reason_summary": "Banka risk/varlik cari degeri musteri tarihsel medyaninin belirgin uzerinde ve son aylarda yukari trend var. Peer sapmasi bu bozulmayi destekliyor ancak karar tek basina peer farkina dayanmiyor. Sezon etkisi bu artis icin yeterli aciklama saglamiyor.",
-  "reason_1": "Musteri gecmisine gore risk yonunde belirgin sapma",
-  "reason_1_weight": 0.50,
-  "reason_2": "Trend kirilmasi ve kademeli bozulma",
-  "reason_2_weight": 0.30,
-  "reason_3": "Peer referansi bozulmayi destekliyor",
-  "reason_3_weight": 0.20,
-  "risk_level": "YUKSEK"
-}
-```
+Ornek tek satir:
+
+{"period_position":0,"is_anomaly":true,"anomaly_type":"ANI_RISK_ARTISI","anomaly_score":0.82,"reason_summary":"Banka risk/varlik cari degeri musteri tarihsel medyaninin belirgin uzerinde ve son aylarda yukari trend var. Peer sapmasi bu bozulmayi destekliyor ancak karar tek basina peer farkina dayanmiyor. Sezon etkisi bu artis icin yeterli aciklama saglamiyor.","reason_1":"Musteri gecmisine gore risk yonunde belirgin sapma","reason_1_weight":0.50,"reason_2":"Trend kirilmasi ve kademeli bozulma","reason_2_weight":0.30,"reason_3":"Peer referansi bozulmayi destekliyor","reason_3_weight":0.20,"risk_level":"YUKSEK"}

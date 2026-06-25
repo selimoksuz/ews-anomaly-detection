@@ -76,7 +76,10 @@ anomaly_score 0.0 ile 1.0 arasinda anomali siddet skorudur; confidence degildir.
 reason_summary tekil karar nedenini birlestirilmis olarak anlatir.
 reason_1/2/3 en yuksek etkili uc nedeni, weight alanlari ise bu nedenlerin toplam karar icindeki goreli agirligini verir.
 Agirliklar 0.0 ile 1.0 arasinda olmali ve mumkunse toplami 1.0'a yakin olmali.
-Sadece gecerli JSON dondur. Markdown kullanma."""
+reason_summary en fazla 600 karakter, reason_1/2/3 her biri en fazla 220 karakter olsun.
+String degerlerinde satir sonu kullanma.
+Sadece tek satir gecerli JSON object dondur. Markdown, kod blogu, aciklama metni, Python repr veya JSON string wrapper kullanma.
+JSON'u tirnak icine alinmis string olarak dondurme; dogrudan { ile baslayan ve } ile biten object yaz."""
 
 OUTPUT_CONTRACT = {
     "period_position": "0-based integer",
@@ -276,12 +279,15 @@ def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
         )
     lines = [
         "Gorev: Bu tek musteri ve tek scoring snapshot icin anomali karari ver.",
-        "Cikti: Tek JSON obje olmali; results listesi, feature listesi veya birden fazla karar dondurme.",
+        "Cikti: Tek satir JSON object olmali; results listesi, feature listesi veya birden fazla karar dondurme.",
+        "JSON disinda metin yazma. Markdown/code fence/Python repr kullanma. JSON'u string icine gomerek dondurme.",
         "Alanlar: period_position, is_anomaly, anomaly_type, anomaly_score, reason_summary, reason_1, reason_1_weight, reason_2, reason_2_weight, reason_3, reason_3_weight, risk_level.",
         "anomaly_score 0.0-1.0 arasi anomali siddet skorudur; confidence degildir.",
         "reason_summary tekil karar nedenini birlestirilmis olarak anlatir.",
         "reason_1/2/3 en yuksek etkili uc nedeni temsil eder; weight alanlari goreli karar agirligidir.",
+        "reason_summary en fazla 600 karakter, reason_1/2/3 her biri en fazla 220 karakter olsun. String degerlerinde satir sonu kullanma.",
         "Musteri history'si yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.",
+        'Ornek output sekli: {"period_position":0,"is_anomaly":false,"anomaly_type":"NORMAL","anomaly_score":0.0,"reason_summary":"...","reason_1":"...","reason_1_weight":1.0,"reason_2":"","reason_2_weight":0.0,"reason_3":"","reason_3_weight":0.0,"risk_level":"DUSUK"}',
         "Not: History, customer_series ve peer_series sadece bu snapshot'i yorumlama baglamidir.",
         "Kayit:",
     ]
@@ -498,11 +504,13 @@ def unwrap_structured_response(
         input_chars=input_chars,
         parsing_error=parsing_error,
     )
+    parsed_from_raw_content = None if parsed is not None else parse_raw_structured_decision(raw_response)
     logger.info(
-        "LLM raw model response captured: path=%s mono_id=%s parsed=%s parsing_error=%s",
+        "LLM raw model response captured: path=%s mono_id=%s parsed=%s parsed_from_raw_content=%s parsing_error=%s",
         raw_path,
         first_item.get("mono_id"),
         parsed is not None,
+        parsed_from_raw_content is not None,
         type(parsing_error).__name__ if parsing_error else None,
     )
     if parsing_error:
@@ -512,7 +520,133 @@ def unwrap_structured_response(
             parsing_error,
             raw_path,
         )
-    return parsed
+    return parsed if parsed is not None else parsed_from_raw_content
+
+
+def parse_raw_structured_decision(raw_response: Any) -> dict[str, Any] | None:
+    """Parse plain JSON content when LangChain include_raw returns parsed=None."""
+
+    for candidate in raw_response_json_candidates(raw_response):
+        parsed = parse_json_like(candidate)
+        if parsed is None:
+            continue
+        parsed = model_to_dict(parsed)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):
+            return {"results": parsed}
+    return None
+
+
+def raw_response_json_candidates(raw_response: Any) -> list[Any]:
+    candidates: list[Any] = []
+    if raw_response is None:
+        return candidates
+    content = raw_response.get("content") if isinstance(raw_response, dict) else getattr(raw_response, "content", None)
+    candidates.extend(content_to_text_candidates(content))
+
+    additional_kwargs = (
+        raw_response.get("additional_kwargs")
+        if isinstance(raw_response, dict)
+        else getattr(raw_response, "additional_kwargs", None)
+    )
+    tool_calls = raw_response.get("tool_calls") if isinstance(raw_response, dict) else getattr(raw_response, "tool_calls", None)
+    candidates.extend(tool_call_argument_candidates(tool_calls))
+    if isinstance(additional_kwargs, dict):
+        candidates.extend(tool_call_argument_candidates(additional_kwargs.get("tool_calls")))
+    return [candidate for candidate in candidates if candidate not in (None, "")]
+
+
+def content_to_text_candidates(content: Any) -> list[Any]:
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, dict):
+        return [content.get("text") or content.get("content") or content]
+    if isinstance(content, list):
+        candidates: list[Any] = []
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                candidates.append(part)
+                text_parts.append(part)
+            elif isinstance(part, dict):
+                value = part.get("text") or part.get("content") or part.get("input")
+                if value is not None:
+                    candidates.append(value)
+                    if isinstance(value, str):
+                        text_parts.append(value)
+        if text_parts:
+            candidates.append("\n".join(text_parts))
+        return candidates
+    return [str(content)]
+
+
+def tool_call_argument_candidates(tool_calls: Any) -> list[Any]:
+    if not tool_calls:
+        return []
+    candidates: list[Any] = []
+    for call in tool_calls:
+        if isinstance(call, dict):
+            args = call.get("args")
+            function = call.get("function")
+            if isinstance(function, dict):
+                args = args or function.get("arguments")
+            candidates.append(args)
+            continue
+        args = getattr(call, "args", None)
+        function = getattr(call, "function", None)
+        if function is not None:
+            args = args or getattr(function, "arguments", None)
+        candidates.append(args)
+    return candidates
+
+
+def parse_json_like(value: Any) -> Any | None:
+    if isinstance(value, (dict, list)):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    text = strip_markdown_json_fence(text)
+    for _ in range(3):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = parse_first_json_object(text)
+        if isinstance(parsed, str):
+            text = strip_markdown_json_fence(parsed.strip())
+            continue
+        return parsed
+    return None
+
+
+def strip_markdown_json_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def parse_first_json_object(text: str) -> Any | None:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "[{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        return parsed
+    return None
 
 
 def write_raw_model_response(

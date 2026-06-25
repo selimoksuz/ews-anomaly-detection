@@ -78,6 +78,27 @@ class RawIncludedInvokeChain:
         return {"raw": FakeRawMessage(), "parsed": FakeResponse(), "parsing_error": None}
 
 
+class RawContentOnlyInvokeChain:
+    def invoke(self, _payload):
+        return {"raw": FakeRawMessage(), "parsed": None, "parsing_error": None}
+
+
+class RawFencedMessage:
+    content = """
+```json
+{"period_position":0,"is_anomaly":true,"anomaly_type":"FINANSAL_BOZULMA","anomaly_score":0.78,"reason_summary":"History bozulmasi var.","reason_1":"Musteri history sapmasi","reason_1_weight":0.7,"reason_2":"Trend kirilmasi","reason_2_weight":0.3,"reason_3":"","reason_3_weight":0.0,"risk_level":"YUKSEK"}
+```
+"""
+    additional_kwargs = {"tool_calls": []}
+    response_metadata = {"status": "ok"}
+    tool_calls = []
+
+
+class RawFencedOnlyInvokeChain:
+    def invoke(self, _payload):
+        return {"raw": RawFencedMessage(), "parsed": None, "parsing_error": None}
+
+
 class FailingInvokeChain:
     def invoke(self, _payload):
         raise ConnectionError("route closed")
@@ -180,6 +201,33 @@ class StructuredChainCallTests(unittest.TestCase):
             raw_text = raw_path.read_text(encoding="utf-8")
             self.assertIn('"mono_id": "C1"', raw_text)
             self.assertIn("FakeRawMessage", raw_text)
+
+    def test_raw_content_json_is_parsed_when_langchain_parsed_is_none(self):
+        evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1]}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_path = Path(tmpdir) / "raw.jsonl"
+            with patch.object(llm_anomaly, "RAW_MODEL_RESPONSE_FILE", raw_path), patch.object(
+                llm_anomaly, "format_evidence_for_langchain", return_value="period_position=0 | mono_id=C1"
+            ):
+                decisions = llm_anomaly.invoke_langchain_structured_decisions(RawContentOnlyInvokeChain(), evidence)
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["mono_id"], "C1")
+        self.assertEqual(decisions[0]["anomaly_score"], 0.1)
+        self.assertEqual(decisions[0]["reason_1"], "History normal")
+
+    def test_raw_content_json_fence_is_parsed_when_present(self):
+        evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1]}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_path = Path(tmpdir) / "raw.jsonl"
+            with patch.object(llm_anomaly, "RAW_MODEL_RESPONSE_FILE", raw_path), patch.object(
+                llm_anomaly, "format_evidence_for_langchain", return_value="period_position=0 | mono_id=C1"
+            ):
+                decisions = llm_anomaly.invoke_langchain_structured_decisions(RawFencedOnlyInvokeChain(), evidence)
+
+        self.assertEqual(decisions[0]["is_anomaly"], True)
+        self.assertEqual(decisions[0]["anomaly_type"], "FINANSAL_BOZULMA")
+        self.assertEqual(decisions[0]["risk_level"], "YUKSEK")
 
     def test_structured_chain_ignores_configured_timeout_for_source_compatibility(self):
         FakeChatOpenAI.last_instance = None
