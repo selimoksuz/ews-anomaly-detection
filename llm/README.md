@@ -269,3 +269,5 @@ WHERE TRUNC(COHORT_DT) = DATE '2026-05-31';
 Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`.
 
 Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
+
+Eger logda HTTP 200 OK sonrasi `LLM structured response did not include results: None` gorulurse endpoint cevap vermis ama LangChain parser structured objeyi `None` yapmis demektir. Guncel akista `with_structured_output(..., include_raw=True)` kullanilir; ayni model cevabinin `raw.content` veya `tool_calls.function.arguments` alanindan JSON okunur. Bu ikinci LLM cagrisi veya dis endpoint fallback'i degildir.

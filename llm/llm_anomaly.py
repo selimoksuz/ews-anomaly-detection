@@ -172,14 +172,14 @@ def build_langchain_structured_chain() -> Any:
         temperature=0,
         timeout=int(settings["timeout_seconds"]),
     )
-    structured_llm = llm.with_structured_output(schema)
+    structured_llm = llm.with_structured_output(schema, include_raw=True)
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
             ("human", "Asagidaki musteri-donem evidence kayitlarini analiz et:\n\n{input_records}"),
         ]
     )
-    logger.info("LangChain structured LLM chain initialized: model=%s", settings["model"])
+    logger.info("LangChain structured LLM chain initialized: model=%s include_raw=True", settings["model"])
     return prompt | structured_llm
 
 
@@ -251,6 +251,9 @@ def normalize_structured_response(response: Any) -> Any:
             parsed = parse_json_payload_text(content)
             if parsed is not None:
                 return parsed
+        tool_payload = extract_tool_call_payload(batch)
+        if tool_payload is not None:
+            return tool_payload
         raw = batch.get("raw")
         if raw is not None:
             raw_batch = normalize_structured_response(raw)
@@ -267,6 +270,11 @@ def extract_decision_records(batch: Any) -> list[Any] | None:
             return results
         if is_single_decision(batch):
             return [batch]
+        tool_payload = extract_tool_call_payload(batch)
+        if tool_payload is not None:
+            nested = extract_decision_records(tool_payload)
+            if nested:
+                return nested
         for key in ("parsed", "raw", "message"):
             if key in batch:
                 nested = extract_decision_records(batch[key])
@@ -286,6 +294,32 @@ def extract_decision_records(batch: Any) -> list[Any] | None:
 
 def is_single_decision(value: dict[str, Any]) -> bool:
     return {"is_anomaly", "anomaly_type", "risk_level"}.issubset(value.keys())
+
+
+def extract_tool_call_payload(message: dict[str, Any]) -> Any:
+    candidates = []
+    if isinstance(message.get("additional_kwargs"), dict):
+        candidates.extend(message["additional_kwargs"].get("tool_calls") or [])
+        function_call = message["additional_kwargs"].get("function_call")
+        if function_call:
+            candidates.append({"function": function_call})
+    candidates.extend(message.get("tool_calls") or [])
+    candidates.extend(message.get("invalid_tool_calls") or [])
+
+    for call in candidates:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function") if isinstance(call.get("function"), dict) else call
+        if not isinstance(function, dict):
+            continue
+        args = function.get("arguments") or function.get("args")
+        if isinstance(args, dict):
+            return args
+        if isinstance(args, str) and args.strip():
+            parsed = parse_json_payload_text(args)
+            if parsed is not None:
+                return parsed
+    return None
 
 
 def parse_json_payload_text(text: str) -> Any:
