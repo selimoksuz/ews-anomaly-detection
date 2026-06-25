@@ -121,9 +121,9 @@ Logda key yazilmaz; sadece `key_source=env:LLM_API_KEY` veya `key_source=secret/
 
 Structured response ilk prototipteki gibi LangChain/Pydantic uzerinden zorlanir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `with_structured_output(...)`, `chain.invoke(...)`.
 
-Varsayilan LLM cagri sekli ilk calisan kaynak kodun operasyonel kalibiyla aynidir: `llm.with_structured_output(AnomalyBatchResult)`, `prompt | structured_llm`, `chain.invoke({"input_records": ...})`, sonra dogrudan `response.results` okunur. `method=...` override verilmez; internal endpoint LangChain default structured davranisiyla cagrilir. Her musteri snapshot'i tek prompt olarak gider; donen `results` listesi `period_position` ile tekrar ilgili kayda baglanir.
+Varsayilan LLM cagri sekli ilk calisan kaynak kodun operasyonel kalibiyla aynidir: `llm.with_structured_output(AnomalyBatchResult)`, `prompt | structured_llm`, `chain.invoke({"input_records": ...})`, sonra `response.results` okunur. `method=...` override verilmez; internal endpoint LangChain default structured davranisiyla cagrilir. Her musteri snapshot'i tek prompt olarak gider; donen `results` listesi `period_position` ile tekrar ilgili kayda baglanir.
 
-Cikti tipi sade degildir. `AnomalyBatchResult.results` altinda genis `AnomalyRecord` doner: `period_position`, `mono_id`, `cohort_dt`, `is_anomaly`, `anomaly_type`, `risk_level`, `confidence`, `seasonality_assessment`, `trend_assessment`, `peer_assessment`, `main_reasons`, `caveat`, `recommended_action`. Oracle output tablolari bu genis yapiyi kullanir.
+Cikti tipi ilk calisan prototipe yakin sade tutulur. `AnomalyBatchResult.results` altinda `period_position`, `is_anomaly`, `anomaly_type`, `confidence`, `explanation`, `risk_level` doner. `mono_id`, `cohort_dt` ve Oracle output icin gerekli uyumluluk alanlari kod tarafinda evidence kaydindan doldurulur; `explanation` ayrica reason tablosuna `GENEL_DEGERLENDIRME` olarak yazilir.
 
 Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, gereksiz token sismesini azaltmak icindir.
 
@@ -137,7 +137,7 @@ Logda su satirlar gorulmelidir:
 
 ```text
 LLM settings resolved: ... timeout_seconds=None max_retries=0 max_tokens=None http_trust_env=False proxy_env_present=True ssl_verify=False ca_bundle=... structured_call=with_structured_output_schema_only client=langchain_structured
-LangChain structured LLM chain initialized: model=gpt-oss-20b structured_call=with_structured_output_schema_only max_retries=0 max_tokens=None http_trust_env=False ssl_verify=False ca_bundle=...
+LangChain structured LLM chain initialized: model=gpt-oss-20b structured_call=with_structured_output_schema_only include_raw=True max_retries=0 max_tokens=None http_trust_env=False ssl_verify=False ca_bundle=... raw_response_file=runtime/llm/raw_model_responses.jsonl
 LLM request payload prepared: mono_id=... decision_items=... formatter=compact_text
 ========== LLM PAYLOAD PREVIEW 1/3 START | mono_id=... chars=... ==========
 period_position=0 | mono_id=... | cohort_dt=... | context=... | decision_contract=... | peer_definition=... | data_quality=...
@@ -146,6 +146,18 @@ feature name=... | current=... | history=... | trend=... | seasonality=... | pee
 ```
 
 Ilk 3 musteri icin bu preview bloklari loga basilir. Daha sonra `ConnectionError`, route kopmasi veya endpoint hatasi olursa hata satirinda da `mono_id`, `decision_items`, payload `chars` ve kisaltilmis `payload_preview` gorulur.
+
+Model HTTP 200 donup structured parse basarisiz olursa ham model cevabi su dosyaya append edilir:
+
+```text
+runtime/llm/raw_model_responses.jsonl
+```
+
+Farkli dosya icin:
+
+```bash
+export LLM_RAW_RESPONSE_FILE="runtime/llm/raw_model_responses_debug.jsonl"
+```
 
 Endpoint ve key saglik kontrolu icin notebook:
 
@@ -240,7 +252,7 @@ python -m llm.llm_anomaly ensure-output-tables --scoring-month 2026-05-31
 LLM karar tablolari:
 
 - `ZT_VAR2.EWS_ANOMALY_LLM_RESULTS`: musteri-donem seviyesinde `IS_ANOMALY`, `ANOMALY_TYPE`, `RISK_LEVEL`, `LLM_CONFIDENCE`, ozet yorumlar ve raw JSON response.
-- `ZT_VAR2.EWS_ANOMALY_LLM_REASONS`: LLM'in `main_reasons` listesindeki feature bazli reason detaylari.
+- `ZT_VAR2.EWS_ANOMALY_LLM_REASONS`: LLM `explanation` alaninin `GENEL_DEGERLENDIRME` reason kaydi ve varsa modelden gelen reason detaylari.
 
 ## Terminalde Beklenen Akis
 
@@ -278,14 +290,14 @@ Loglarda ham ve turetilmis degiskenler kategoriyle yazilir:
 - `bank_risk`: banka toplam risk ve banka risk oranlari.
 - `financial`: mali tablo, L1Y ve ara donem finansal alanlar.
 - `internal_kkb`: TKN/TBE/KKB tabanli internal sinyaller.
-- `pd_rating`: `irb_rating_pd`, `irb_model_pd`, `rating_group` gibi direkt PD/rating sinyalleri.
+- `pd_rating`: rating grubu ve PD alanlari. LLM feature setinde rating kullanilir; PD numeric degerleri kullanilmaz.
 - `context`: segment, sektor, NACE, referans donem gibi gruplama/aciklama alanlari.
 - `technical`: `data_time`, `created_at`, teknik yukleme alanlari.
 
 PD/rating notu:
 
-- `irb_rating_pd`, `irb_model_pd`, `rating_group` exclude edilmez; direkt sinyal olarak kullanilabilir.
-- `pd_ratio`, `pd_to_rating_group` gibi PD/rating alanlarini kendi arasinda oranlayan veya dogrudan karsilastiran turetilmis feature'lar kullanilmaz.
+- `rating_group` ve varsa ham `irb_rating` sinyali kullanilabilir.
+- `irb_rating_pd`, `irb_model_pd`, `pd_ratio`, `pd_to_rating_group` gibi PD degeri veya PD karsilastirmasi iceren feature'lar LLM inputundan cikarilir.
 - Peer grubu rating ile daraltilmaz; ana hiyerarsi ay + segment + sektor + aylik buyukluk sirasidir.
 
 ## Output Insert Kontrolu
@@ -307,8 +319,8 @@ SELECT COUNT(*) FROM ZT_VAR2.EWS_ANOMALY_LLM_REASONS
 WHERE TRUNC(COHORT_DT) = DATE '2026-05-31';
 ```
 
-Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`. Basarili cevapta dogrudan `response.results` okunur. Ek parser, raw response parser veya dis endpoint gecisi yoktur.
+Model cagrisi ilk prototipteki operasyonel kalipla yapilir: `ChatOpenAI`, `ChatPromptTemplate`, Pydantic `BaseModel/Field`, `llm.with_structured_output(...)` ve `chain.invoke(...)`. Basarili cevapta `response.results` okunur. Ek parser veya dis endpoint gecisi yoktur; sadece hata analizinde kullanmak icin LangChain'in raw modeli `runtime/llm/raw_model_responses.jsonl` dosyasina yazilir.
 
 Eger healthcheck'te `TypeError('issubclass() arg 1 must be a class')` gorursen once repo kodunun guncel oldugunu ve kernelin yeniden baslatildigini kontrol et. Guncel kod schema'yi `with_structured_output` oncesi class olarak dogrular; hata devam ederse notebook 4. hucrede `STRUCTURED SCHEMA OK AnomalyBatchResult` satiri gorunmez.
 
-Eger logda HTTP 200 OK sonrasi `LLM structured response did not include results` gorulurse endpoint cevap vermis ama LangChain structured chain `AnomalyBatchResult.results` objesini uretmemis demektir. Bu durumda once notebook kernelinin guncel kodu import ettigini ve logda `structured_call=with_structured_output_schema_only` gorundugunu kontrol et.
+Eger logda HTTP 200 OK sonrasi `LLM structured response returned None` veya `LLM structured response did not include results` gorulurse endpoint cevap vermis ama LangChain structured chain `AnomalyBatchResult.results` objesini uretmemis demektir. Bu durumda `runtime/llm/raw_model_responses.jsonl` dosyasindaki son satiri paylas; modelin gercekte ne yazdigina gore output kontratini birlikte netlestirebiliriz.

@@ -94,6 +94,10 @@ class EvidencePeriodPayloadTests(unittest.TestCase):
         self.assertTrue(
             any((feature.get("history") or {}).get("period_count") == 2 for feature in packages[0]["features"])
         )
+        feature_names = {feature["name"] for feature in packages[0]["features"]}
+        self.assertNotIn("irb_rating_pd", feature_names)
+        self.assertNotIn("irb_model_pd", feature_names)
+        self.assertNotIn("pd_ratio", feature_names)
         for feature in packages[0]["features"]:
             series = feature.get("snapshot_series") or {}
             self.assertEqual([item["cohort_dt"] for item in series.get("customer", [])], ["2026-03-31", "2026-04-30", "2026-05-31"])

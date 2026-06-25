@@ -52,6 +52,18 @@ class FakeInvokeChain:
         return FakeResponse()
 
 
+class FakeRawMessage:
+    content = '{"results":[{"period_position":0,"is_anomaly":false}]}'
+    additional_kwargs = {"tool_calls": []}
+    response_metadata = {"status": "ok"}
+    tool_calls = []
+
+
+class RawIncludedInvokeChain:
+    def invoke(self, _payload):
+        return {"raw": FakeRawMessage(), "parsed": FakeResponse(), "parsing_error": None}
+
+
 class FailingInvokeChain:
     def invoke(self, _payload):
         raise ConnectionError("route closed")
@@ -138,7 +150,22 @@ class StructuredChainCallTests(unittest.TestCase):
         self.assertIsNone(FakeHttpxClient.last_instance.kwargs["timeout"])
         self.assertEqual(FakeHttpxClient.last_instance.kwargs["verify"], False)
         self.assertEqual(FakeChatOpenAI.last_instance.structured_schema, object)
-        self.assertEqual(FakeChatOpenAI.last_instance.structured_kwargs, {})
+        self.assertEqual(FakeChatOpenAI.last_instance.structured_kwargs, {"include_raw": True})
+
+    def test_raw_model_response_is_written_when_langchain_returns_include_raw_payload(self):
+        evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1]}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_path = Path(tmpdir) / "raw.jsonl"
+            with patch.object(llm_anomaly, "RAW_MODEL_RESPONSE_FILE", raw_path), patch.object(
+                llm_anomaly, "format_evidence_for_langchain", return_value="period_position=0 | mono_id=C1"
+            ):
+                decisions = llm_anomaly.invoke_langchain_structured_decisions(RawIncludedInvokeChain(), evidence)
+
+            self.assertEqual(len(decisions), 1)
+            self.assertTrue(raw_path.exists())
+            raw_text = raw_path.read_text(encoding="utf-8")
+            self.assertIn('"mono_id": "C1"', raw_text)
+            self.assertIn("FakeRawMessage", raw_text)
 
     def test_structured_chain_ignores_configured_timeout_for_source_compatibility(self):
         FakeChatOpenAI.last_instance = None

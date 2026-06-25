@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,11 @@ from engine.oracle_io import OracleConnector
 
 
 logger = logging.getLogger(__name__)
+warnings.filterwarnings(
+    "ignore",
+    message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
+    category=FutureWarning,
+)
 
 RAW_COLUMN_LABELS = {
     "cohort_dt": "Kaydin ait oldugu ay sonu / skorlanan donem",
@@ -120,6 +126,17 @@ TECHNICAL_COLUMNS = {
     "yukleme_zmn",
     "data_time",
     "created_at",
+}
+
+LLM_ALLOWED_RATING_FEATURES = {
+    "rating_group",
+}
+
+LLM_EXCLUDED_PD_VALUE_FEATURES = {
+    "irb_rating_pd",
+    "irb_model_pd",
+    "pd_ratio",
+    "pd_to_rating_group",
 }
 
 FORBIDDEN_PD_RATING_COMPARISON_SIGNALS = {
@@ -260,7 +277,7 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
     train_features = build_feature_frame(train_df, numeric_source_columns)
     score_features = build_feature_frame(score_df, numeric_source_columns)
     selected_features = select_model_features(train_features, score_features)
-    selected_features = [feature for feature in selected_features if feature not in FORBIDDEN_DERIVED_FEATURES]
+    selected_features = [feature for feature in selected_features if is_allowed_llm_feature(feature)]
     if not selected_features:
         raise ValueError("No usable transformed features could be selected.")
     logger.info("Selected transformed features: %s", len(selected_features))
@@ -343,7 +360,7 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                 "peer_definition": {
                     "base": "same cohort month plus segment/sector/size hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
-                    "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
+                    "note": "rating_group/IRB rating sinyali kullanilir; irb_rating_pd, irb_model_pd ve PD oranlari LLM feature setinden cikarilir.",
                 },
                 "data_quality": data_quality_payload(
                     row=row,
@@ -384,7 +401,7 @@ def build_evidence_from_result_rows(frame: pd.DataFrame, *, max_customers: int |
         features = [
             feature_evidence_from_detail(detail)
             for detail in details
-            if not is_forbidden_pd_rating_comparison(detail.get("feature") or detail.get("feature_name"))
+            if is_allowed_llm_feature(detail.get("feature") or detail.get("feature_name"))
         ]
         packages.append(
             {
@@ -401,7 +418,7 @@ def build_evidence_from_result_rows(frame: pd.DataFrame, *, max_customers: int |
                 "peer_definition": {
                     "base": "same cohort month plus segment/sector/size hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
-                    "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
+                    "note": "rating_group/IRB rating sinyali kullanilir; irb_rating_pd, irb_model_pd ve PD oranlari LLM feature setinden cikarilir.",
                 },
                 "data_quality": {
                     "coverage_ratio": clean_number(row.get("coverage_ratio")),
@@ -500,7 +517,7 @@ def build_evidence_packages_from_prepared_windows(
         else pd.DataFrame(index=selected_history_df.index)
     )
     selected_features = select_model_features(train_features, score_features)
-    selected_features = [feature for feature in selected_features if feature not in FORBIDDEN_DERIVED_FEATURES]
+    selected_features = [feature for feature in selected_features if is_allowed_llm_feature(feature)]
     if not selected_features:
         raise ValueError("No usable transformed features could be selected.")
     logger.info("Selected transformed features: %s", len(selected_features))
@@ -600,7 +617,7 @@ def build_evidence_packages_from_prepared_windows(
                 "peer_definition": {
                     "base": "same cohort month plus segment/sector/size hierarchy",
                     "min_support": PEER_MIN_SUPPORT,
-                    "note": "IRB PD, model PD and rating_group are direct PD/rating signals; only PD/rating cross-ratios such as pd_ratio are excluded.",
+                    "note": "rating_group/IRB rating sinyali kullanilir; irb_rating_pd, irb_model_pd ve PD oranlari LLM feature setinden cikarilir.",
                 },
                 "data_quality": data_quality_payload(
                     row=row,
@@ -1162,6 +1179,19 @@ def is_forbidden_pd_rating_comparison(feature: Any) -> bool:
     return str(feature).strip().lower() in FORBIDDEN_PD_RATING_COMPARISON_SIGNALS
 
 
+def is_allowed_llm_feature(feature: Any) -> bool:
+    if feature is None:
+        return False
+    name = str(feature).strip().lower()
+    if not name:
+        return False
+    if name in FORBIDDEN_DERIVED_FEATURES:
+        return False
+    if name in LLM_EXCLUDED_PD_VALUE_FEATURES:
+        return False
+    return True
+
+
 def log_step(step_no: str, title: str) -> None:
     logger.info("========== STEP %s START | %s ==========", step_no, title)
 
@@ -1183,8 +1213,12 @@ def raw_column_role(column: str) -> str:
         return "id"
     if column == TIME_COLUMN:
         return "time"
+    if column in LLM_ALLOWED_RATING_FEATURES:
+        return "direct_rating_signal_allowed"
+    if column in LLM_EXCLUDED_PD_VALUE_FEATURES:
+        return "pd_value_excluded_from_llm_features"
     if variable_category(column) == "pd_rating":
-        return "direct_pd_rating_signal"
+        return "pd_rating_signal"
     if column in CONTEXT_COLUMNS:
         return "context_or_peer"
     if column in TECHNICAL_COLUMNS:
@@ -1261,8 +1295,8 @@ def log_evidence_contract(selected_features: list[str]) -> None:
     logger.info(
         "AUDIT PIPELINE CONTRACT | raw_input=Oracle raw monthly rows generated_features=%s peer_grouping=%s excluded_signals=%s",
         len(selected_features),
-        "cohort_dt + musteri_segment + sector + monthly_size hierarchy; direct PD/rating signals allowed; PD/rating cross-ratios forbidden",
-        ",".join(sorted(FORBIDDEN_PD_RATING_COMPARISON_SIGNALS)),
+        "cohort_dt + musteri_segment + sector + monthly_size hierarchy; rating_group/IRB rating allowed; PD numeric values and PD cross-ratios forbidden",
+        ",".join(sorted(LLM_EXCLUDED_PD_VALUE_FEATURES | FORBIDDEN_PD_RATING_COMPARISON_SIGNALS)),
     )
     logger.info(
         "AUDIT PEER VARIABLES | variables=peer_definition_level,peer_hierarchy,peer_median,peer_z,peer_support,peer_quality"
@@ -1280,7 +1314,7 @@ def log_evidence_contract(selected_features: list[str]) -> None:
         "AUDIT SNAPSHOT SERIES VARIABLES | variables=snapshot_series.customer(cohort_dt,value,is_current_snapshot),snapshot_series.peer(cohort_dt,peer_median,peer_z,peer_support,peer_quality,peer_definition_level)"
     )
     logger.info(
-        "AUDIT LLM INPUT CONTRACT | one JSON evidence package per selected scoring customer snapshot; includes context,data_quality,feature dictionary,current/history/customer_series/peer_series/trend/seasonality; excludes model score,target,PD/rating cross-ratios"
+        "AUDIT LLM INPUT CONTRACT | one JSON evidence package per selected scoring customer snapshot; includes context,data_quality,feature dictionary,current/history/customer_series/peer_series/trend/seasonality; excludes model score,target,PD numeric values,PD/rating cross-ratios"
     )
 
 
@@ -1357,8 +1391,10 @@ def risk_direction(feature: str) -> str:
 
 def interpretation_note(feature: str) -> str:
     lower = feature.lower()
+    if lower == "rating_group" or lower == "irb_rating":
+        return "Rating sinyali kullanilabilir; PD degerleri karar kaniti olarak kullanilmaz."
     if lower.startswith("pd_") or "pd" in lower:
-        return "PD sinyali rating_group ile cift kanit gibi sayilmamali."
+        return "PD degeri LLM feature setinde kullanilmamali."
     if lower.startswith("l1y_") or lower.endswith("_l1y"):
         return "L1Y finansal term kontrolu ile okunmali."
     if "memzuc" in lower:

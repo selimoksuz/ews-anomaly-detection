@@ -20,8 +20,9 @@ Bu akista hazir anomaly score veya target yoktur. Karari LLM verir; karar sadece
 6. Missing veya stale finansal term sinyalini finansal bozulma gibi yazma; veri kalitesi veya inceleme nedeni olarak ayir.
 7. Peer kalitesi ZAYIF ise kesin hukum verme, manuel inceleme oner.
 8. Risk azalisi olan sapmalari anomali nedeni yapma.
-9. PD ve rating ayni risk bilgisinin farkli gosterimleri olabilir; ayni bilgiyi cift kanit gibi sayma.
-10. Gelecek donem varsayimi yapma.
+9. Rating grubunu risk sinyali olarak kullanabilirsin.
+10. IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
+11. Gelecek donem varsayimi yapma.
 
 ## Anomali Kabul Sinyalleri
 
@@ -39,6 +40,7 @@ Asagidakilerden biri veya birkaci varsa anomali flag'i ver:
 Her input snapshot kaydi icin bir record dondur.
 Sonuc listesi verilen scoring snapshot sayisiyla ayni uzunlukta olmali.
 Her record, inputtaki `period_position` degerini aynen tasimali.
+Output semasi bilerek sade tutulur. History, peer, trend, sezon ve veri kalitesi yorumlari `explanation` icinde yazilir.
 
 Sadece gecerli JSON dondur. Markdown kullanma.
 
@@ -47,24 +49,11 @@ Sadece gecerli JSON dondur. Markdown kullanma.
   "results": [
     {
       "period_position": 0,
-      "mono_id": "123",
-      "cohort_dt": "2026-05-31",
       "is_anomaly": true,
       "anomaly_type": "ANI_RISK_ARTISI",
-      "risk_level": "YUKSEK",
       "confidence": 0.82,
-      "seasonality_assessment": "Kisa sezon yorumu",
-      "trend_assessment": "Kisa trend yorumu",
-      "peer_assessment": "Kisa peer yorumu",
-      "main_reasons": [
-        {
-          "feature": "bank_risk_to_assets",
-          "evidence": "current=1.20, history_median=0.80, peer_z=2.40",
-          "interpretation": "Banka riski varliga gore musterinin gecmisine ve peer grubuna kiyasla yukselmis."
-        }
-      ],
-      "caveat": null,
-      "recommended_action": "Portfoy yoneticisine gonder"
+      "explanation": "Banka risk/varlik cari degeri 1.20, musteri tarihsel medyani 0.80 ve peer z=2.40 oldugu icin risk yonunde belirgin ayrisma var. Trend son aylarda yukari, sezon etkisi bu artis icin yeterli aciklama saglamiyor.",
+      "risk_level": "YUKSEK"
     }
   ]
 }

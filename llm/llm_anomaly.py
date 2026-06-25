@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 LLM_PAYLOAD_PREVIEW_CUSTOMERS = 3
 LLM_PAYLOAD_PREVIEW_CHARS = 50000
 LLM_ERROR_PAYLOAD_PREVIEW_CHARS = 8000
+RAW_MODEL_RESPONSE_FILE = Path(os.environ.get("LLM_RAW_RESPONSE_FILE", "runtime/llm/raw_model_responses.jsonl"))
 PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
 CA_BUNDLE_ENV_VARS = ("LLM_CA_BUNDLE", "LLM_SSL_CERT_FILE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
 COMMON_CA_BUNDLE_PATHS = (
@@ -59,50 +60,30 @@ Kurallar:
 - Missing veya stale finansal term sinyalini finansal bozulma gibi yazma; veri kalitesi veya inceleme nedeni olarak ayir.
 - Peer kalitesi ZAYIF ise kesin hukum verme, manuel inceleme oner.
 - Risk azalisi olan sapmalari anomali nedeni yapma.
-- PD ve rating ayni risk bilgisinin farkli gosterimleri olabilir; ayni bilgiyi cift kanit gibi sayma.
+- Rating grubunu risk sinyali olarak kullanabilirsin.
+- IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
 - Gelecek donem varsayimi yapma.
 
-Her input snapshot kaydi icin period_position, mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence,
-seasonality_assessment, trend_assessment, peer_assessment, main_reasons, caveat ve recommended_action dondur.
+Her input snapshot kaydi icin sadece period_position, is_anomaly, anomaly_type, confidence, explanation ve risk_level dondur.
+explanation icinde musteri gecmisi, peer, trend, sezon ve veri kalitesi kanitlarini kisa ama sayisal referanslarla acikla.
 Sonuc listesi verilen scoring snapshot sayisiyla ayni uzunlukta olmali.
 Sadece gecerli JSON dondur. Markdown kullanma."""
 
 OUTPUT_CONTRACT = {
     "period_position": "0-based integer",
-    "mono_id": "string",
-    "cohort_dt": "YYYY-MM-DD",
     "is_anomaly": "boolean",
     "anomaly_type": "ANI_RISK_ARTISI | FINANSAL_BOZULMA | PD_RISKI | KKB_RISKI | PEER_UYUMSUZLUGU | DATA_GAP | TREND_KIRILMASI | SEZON_DISI_SAPMA | NORMAL",
-    "risk_level": "DUSUK | ORTA | YUKSEK | KRITIK",
     "confidence": "0.0-1.0",
-    "seasonality_assessment": "string",
-    "trend_assessment": "string",
-    "peer_assessment": "string",
-    "main_reasons": [
-        {
-            "feature": "string",
-            "evidence": "current, history, seasonality, peer numeric evidence",
-            "interpretation": "short Turkish business interpretation",
-        }
-    ],
-    "caveat": "string or null",
-    "recommended_action": "Izle | Manuel incele | Portfoy yoneticisine gonder | Limit/risk gozden gecir | Veri kontrolu yap",
+    "explanation": "Turkish explanation comparing current snapshot with history, peer, trend, seasonality and data quality",
+    "risk_level": "DUSUK | ORTA | YUKSEK | KRITIK",
 }
 
 
 if BaseModel is not None and Field is not None:
-
-    class AnomalyReasonRecord(BaseModel):
-        feature: str = Field(description="Anomali gerekcesindeki degisken adi")
-        evidence: str = Field(description="Current, history, seasonality ve peer sayisal kanit ozeti")
-        interpretation: str = Field(description="Kanita dayali kisa Turkce is yorumu")
-
     class AnomalyRecord(BaseModel):
         period_position: int = Field(
             description="Musterinin kronolojik donem listesindeki sira numarasi, 0'dan baslar"
         )
-        mono_id: str = Field(description="Musteri tekil numarasi")
-        cohort_dt: str = Field(description="Skorlanan donem tarihi, YYYY-MM-DD")
         is_anomaly: bool = Field(description="Bu musteri-donem kaydi anomali mi?")
         anomaly_type: str = Field(
             description=(
@@ -110,23 +91,17 @@ if BaseModel is not None and Field is not None:
                 "PEER_UYUMSUZLUGU, DATA_GAP, TREND_KIRILMASI, SEZON_DISI_SAPMA veya NORMAL"
             )
         )
-        risk_level: str = Field(description="Risk seviyesi: DUSUK, ORTA, YUKSEK veya KRITIK")
         confidence: float = Field(description="Guven skoru, 0.0 ile 1.0 arasinda")
-        seasonality_assessment: str = Field(description="Sezon/mevsimsellik yorumu")
-        trend_assessment: str = Field(description="Trend ve kademeli bozulma yorumu")
-        peer_assessment: str = Field(description="Peer grubuna gore ayrisma yorumu")
-        main_reasons: List[AnomalyReasonRecord] = Field(description="Karari aciklayan ana feature gerekceleri")
-        caveat: Optional[str] = Field(default=None, description="Varsa veri kalitesi veya karar kisiti")
-        recommended_action: str = Field(
-            description="Onerilen aksiyon: Izle, Manuel incele, Portfoy yoneticisine gonder, Limit/risk gozden gecir veya Veri kontrolu yap"
+        explanation: str = Field(
+            description="Anomalinin Turkce aciklamasi; onceki donem, peer, trend, sezon ve veri kalitesiyle kiyaslamali olsun"
         )
+        risk_level: str = Field(description="Risk seviyesi: DUSUK, ORTA, YUKSEK veya KRITIK")
 
     class AnomalyBatchResult(BaseModel):
         results: List[AnomalyRecord] = Field(
             description="Verilen musteri-donem evidence kayitlari icin kronolojik sira ile karar listesi"
         )
 else:
-    AnomalyReasonRecord = None
     AnomalyRecord = None
     AnomalyBatchResult = None
 
@@ -195,7 +170,7 @@ def build_langchain_structured_chain() -> Any:
         http_client=http_client,
         **optional_llm_kwargs(settings),
     )
-    structured_llm = llm.with_structured_output(schema)
+    structured_llm = llm.with_structured_output(schema, include_raw=True)
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
@@ -203,13 +178,14 @@ def build_langchain_structured_chain() -> Any:
         ]
     )
     logger.info(
-        "LangChain structured LLM chain initialized: model=%s structured_call=with_structured_output_schema_only max_retries=%s max_tokens=%s http_trust_env=%s ssl_verify=%s ca_bundle=%s",
+        "LangChain structured LLM chain initialized: model=%s structured_call=with_structured_output_schema_only include_raw=True max_retries=%s max_tokens=%s http_trust_env=%s ssl_verify=%s ca_bundle=%s raw_response_file=%s",
         settings["model"],
         settings["max_retries"],
         settings.get("max_tokens"),
         settings["http_trust_env"],
         settings.get("ssl_verify", True),
         settings.get("ca_bundle"),
+        RAW_MODEL_RESPONSE_FILE,
     )
     return prompt | structured_llm
 
@@ -278,7 +254,8 @@ def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
     lines = [
         "Gorev: Her secilen musteri snapshot'i icin anomali karari ver.",
         "Cikti: AnomalyBatchResult formatinda JSON; en dis alan results listesi olmali.",
-        "Alanlar: period_position, mono_id, cohort_dt, is_anomaly, anomaly_type, risk_level, confidence, seasonality_assessment, trend_assessment, peer_assessment, main_reasons, caveat, recommended_action.",
+        "Alanlar: period_position, is_anomaly, anomaly_type, confidence, explanation, risk_level.",
+        "explanation alaninda history, peer, trend, sezon ve veri kalitesi kanitlarini birlikte acikla.",
         "Not: Her kayit tek scoring snapshot'idir; history, customer_series ve peer_series sadece o snapshot'i yorumlama baglamidir.",
         "Kayitlar:",
     ]
@@ -435,7 +412,19 @@ def invoke_langchain_structured_decisions(
             truncate_text(input_records, LLM_ERROR_PAYLOAD_PREVIEW_CHARS),
         )
         raise
-    records = response.results
+    response = unwrap_structured_response(
+        response,
+        first_item=first_item,
+        decision_items=len(evidence_items),
+        input_chars=len(input_records),
+    )
+    if response is None:
+        raise RuntimeError(
+            "LLM structured response returned None after HTTP OK. "
+            "Expected AnomalyBatchResult.results with fields: period_position, is_anomaly, anomaly_type, confidence, explanation, risk_level. "
+            f"Raw model response was written to {RAW_MODEL_RESPONSE_FILE} if the endpoint returned one."
+        )
+    records = response.get("results") if isinstance(response, dict) else getattr(response, "results", None)
     if not records:
         raise RuntimeError(f"LLM structured response did not include results: {truncate_text(str(response), 500)}")
     if len(records) != len(evidence_items):
@@ -445,7 +434,7 @@ def invoke_langchain_structured_decisions(
         )
     decisions = []
     for record in records:
-        decision = model_to_dict(record)
+        decision = normalize_structured_decision(model_to_dict(record))
         position = int(decision["period_position"])
         if not 0 <= position < len(evidence_items):
             raise RuntimeError(
@@ -460,6 +449,118 @@ def invoke_langchain_structured_decisions(
             decision["cohort_dt"] = evidence.get("cohort_dt")
         decisions.append(decision)
     return decisions
+
+
+def unwrap_structured_response(
+    response: Any,
+    *,
+    first_item: dict[str, Any],
+    decision_items: int,
+    input_chars: int,
+) -> Any:
+    if not isinstance(response, dict) or ("parsed" not in response and "raw" not in response):
+        return response
+    raw_response = response.get("raw")
+    parsed = response.get("parsed")
+    parsing_error = response.get("parsing_error")
+    raw_path = write_raw_model_response(
+        raw_response,
+        first_item=first_item,
+        decision_items=decision_items,
+        input_chars=input_chars,
+        parsing_error=parsing_error,
+    )
+    logger.info(
+        "LLM raw model response captured: path=%s mono_id=%s parsed=%s parsing_error=%s",
+        raw_path,
+        first_item.get("mono_id"),
+        parsed is not None,
+        type(parsing_error).__name__ if parsing_error else None,
+    )
+    if parsing_error:
+        logger.warning(
+            "LLM structured parsing error: mono_id=%s error=%r raw_response_file=%s",
+            first_item.get("mono_id"),
+            parsing_error,
+            raw_path,
+        )
+    return parsed
+
+
+def write_raw_model_response(
+    raw_response: Any,
+    *,
+    first_item: dict[str, Any],
+    decision_items: int,
+    input_chars: int,
+    parsing_error: Any,
+) -> Path:
+    RAW_MODEL_RESPONSE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "mono_id": first_item.get("mono_id"),
+        "first_cohort_dt": first_item.get("cohort_dt"),
+        "decision_items": decision_items,
+        "input_chars": input_chars,
+        "parsing_error": repr(parsing_error) if parsing_error else None,
+        "raw_response": extract_raw_model_response(raw_response),
+    }
+    with RAW_MODEL_RESPONSE_FILE.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    return RAW_MODEL_RESPONSE_FILE
+
+
+def extract_raw_model_response(raw_response: Any) -> dict[str, Any]:
+    if raw_response is None:
+        return {"type": None, "content": None}
+    content = getattr(raw_response, "content", None)
+    additional_kwargs = getattr(raw_response, "additional_kwargs", None)
+    response_metadata = getattr(raw_response, "response_metadata", None)
+    tool_calls = getattr(raw_response, "tool_calls", None)
+    return {
+        "type": type(raw_response).__name__,
+        "content": content,
+        "additional_kwargs": additional_kwargs,
+        "response_metadata": response_metadata,
+        "tool_calls": tool_calls,
+        "repr": repr(raw_response),
+    }
+
+
+def normalize_structured_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    """Keep the model schema simple while preserving the Oracle output contract."""
+
+    explanation = str(decision.get("explanation") or "").strip()
+    decision["anomaly_type"] = str(decision.get("anomaly_type") or "NORMAL").strip() or "NORMAL"
+    decision["risk_level"] = str(decision.get("risk_level") or "DUSUK").strip() or "DUSUK"
+    decision["confidence"] = bounded_confidence(decision.get("confidence"))
+    decision["explanation"] = explanation
+    decision.setdefault("seasonality_assessment", None)
+    decision.setdefault("trend_assessment", None)
+    decision.setdefault("peer_assessment", None)
+    decision.setdefault("caveat", None)
+    decision.setdefault("recommended_action", "Manuel incele" if bool(decision.get("is_anomaly")) else "Izle")
+    reasons = decision.get("main_reasons")
+    if not isinstance(reasons, list) or not reasons:
+        decision["main_reasons"] = [
+            {
+                "feature": "GENEL_DEGERLENDIRME",
+                "evidence": "",
+                "interpretation": explanation or "LLM structured karar aciklamasi bos dondu.",
+            }
+        ]
+    return decision
+
+
+def bounded_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if confidence < 0.0:
+        return 0.0
+    if confidence > 1.0:
+        return 1.0
+    return confidence
 
 
 def group_evidence_by_customer(evidence_items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
