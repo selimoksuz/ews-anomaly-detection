@@ -186,13 +186,56 @@ raw_variables:
           definition: Ara donem ozkaynak tutaridir.
           role: raw_amount
 
-    kkb:
-      category: kkb
-      description: KKB sorgu ve dis kredi kayit bilgileri.
+    memzuc:
+      category: memzuc
+      description: Memzuc/sistem geneli risk ve limit kolonlari.
       source:
         backend: oracle
         table_key: multivar_input
       variables:
+        memzuc_total_risk:
+          source_column: MEMZUC_TOTAL_RISK
+          data_type: numeric_tl
+          label: Memzuc toplam risk
+          definition: Musterinin bankacilik sistemindeki toplam riskidir.
+          role: raw_amount
+          linguistic: "Memzuc toplam risk, musterinin banka disi sistem geneli borclanma baskisini temsil eder."
+        memzuc_total_limit:
+          source_column: MEMZUC_TOTAL_LIMIT
+          data_type: numeric_tl
+          label: Memzuc toplam limit
+          definition: Musterinin bankacilik sistemindeki toplam limitidir.
+          role: raw_amount
+          linguistic: "Memzuc toplam limit, sistem geneli kredi limit kapasitesini gosterir."
+        memzuc_st_mt_cash_risk:
+          source_column: MEMZUC_ST_MT_CASH_RISK
+          data_type: numeric_tl
+          label: Memzuc KV/OV nakdi risk
+          definition: Kisa/orta vadeli nakdi risk tutaridir.
+          role: raw_amount
+          linguistic: "KV/OV nakdi risk payi, borcun vade ve nakdi risk yogunlugunu gosterir."
+
+    kkb:
+      category: kkb
+      description: KKB sorgu, TKN/TBE ve veri yukleme/guncellik bilgileri.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        gunceltkn_dgr:
+          source_column: GUNCELTKN_DGR
+          data_type: numeric_tl
+          label: Guncel TKN degeri
+          definition: Guncel bireysel KKB/TKN borc degeridir.
+          role: raw_amount
+          linguistic: "Guncel TKN degeri bireysel KKB borc baskisini temsil eder."
+        gunceltbe_dgr:
+          source_column: GUNCELTBE_DGR
+          data_type: numeric_tl
+          label: Guncel TBE degeri
+          definition: Guncel ticari KKB/TBE borc degeridir.
+          role: raw_amount
+          linguistic: "Guncel TBE degeri ticari KKB borc baskisini temsil eder."
         kkbguncelsorgu_no:
           source_column: KKBGUNCELSORGU_NO
           data_type: numeric
@@ -205,6 +248,12 @@ raw_variables:
           label: KKB sorgu tarihi
           definition: En son KKB sorgu tarihidir; inputta varsa veri guncelligi icin kullanilir.
           role: data_freshness
+        yukleme_zmn:
+          source_column: YUKLEME_ZMN
+          data_type: timestamp
+          label: Yukleme zamani
+          definition: Kaydin sisteme yuklendigi zamandir; KKB/input guncelligi kontrolunde kullanilir.
+          role: technical
 
     pd_rating:
       category: pd_rating
@@ -236,7 +285,7 @@ raw_variables:
 
     internal_other:
       category: internal
-      description: Banka riski, memzuc, varlik ve internal KKB/TKN/TBE kolonlari.
+      description: Banka riski, varlik ve diger internal teknik kolonlar.
       source:
         backend: oracle
         table_key: multivar_input
@@ -259,24 +308,6 @@ raw_variables:
           label: Nakdi ve gayri nakdi risk
           definition: Kredi risk tutari icin alternatif kolon adidir.
           role: raw_amount
-        memzuc_total_risk:
-          source_column: MEMZUC_TOTAL_RISK
-          data_type: numeric_tl
-          label: Memzuc toplam risk
-          definition: Musterinin bankacilik sistemindeki toplam riskidir.
-          role: raw_amount
-        memzuc_total_limit:
-          source_column: MEMZUC_TOTAL_LIMIT
-          data_type: numeric_tl
-          label: Memzuc toplam limit
-          definition: Musterinin bankacilik sistemindeki toplam limitidir.
-          role: raw_amount
-        memzuc_st_mt_cash_risk:
-          source_column: MEMZUC_ST_MT_CASH_RISK
-          data_type: numeric_tl
-          label: Memzuc KV/OV nakdi risk
-          definition: Kisa/orta vadeli nakdi risk tutaridir.
-          role: raw_amount
         toplam_varlik_ttr:
           source_column: TOPLAM_VARLIK_TTR
           data_type: numeric_tl
@@ -289,24 +320,6 @@ raw_variables:
           label: Varlik referans donemi
           definition: Varlik bilgisinin ait oldugu referans donemdir.
           role: reference_period
-        gunceltkn_dgr:
-          source_column: GUNCELTKN_DGR
-          data_type: numeric_tl
-          label: Guncel TKN degeri
-          definition: Guncel bireysel KKB/TKN borc degeridir.
-          role: raw_amount
-        gunceltbe_dgr:
-          source_column: GUNCELTBE_DGR
-          data_type: numeric_tl
-          label: Guncel TBE degeri
-          definition: Guncel ticari KKB/TBE borc degeridir.
-          role: raw_amount
-        yukleme_zmn:
-          source_column: YUKLEME_ZMN
-          data_type: timestamp
-          label: Yukleme zamani
-          definition: Kaydin sisteme yuklendigi zamandir; teknik kolondur.
-          role: technical
         data_time:
           source_column: DATA_TIME
           data_type: timestamp

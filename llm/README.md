@@ -14,7 +14,7 @@ Ana farklar:
 
 Degisken sozlugu ve feature deneme noktasi `config/dictionaries.yaml` dosyasidir.
 
-- `raw_variables.groups`: ham kolonlari grup grup tutar (`current_snapshot`, `l1_term_financial`, `q_financial`, `kkb`, `pd_rating`, `internal_other`). Her kolon icin kaynak, tanim, rol ve okunabilir aciklama vardir.
+- `raw_variables.groups`: ham kolonlari grup grup tutar (`current_snapshot`, `l1_term_financial`, `q_financial`, `memzuc`, `kkb`, `pd_rating`, `internal_other`). Her kolon icin kaynak, tanim, rol ve okunabilir aciklama vardir.
 - `generated_variables.variables`: ham kolonlardan uretilen oran/transform feature'larini tutar. `formula` alaninda `+`, `-`, `*`, `/` ve parantez kullanilabilir. `/` islemi pipeline'in `safe_divide` kuralini kullanir.
 - `final_llm_features.include`: LLM'e gitmesini istedigin final feature listesidir.
 - `final_llm_features.exclude` ve `forbidden`: LLM'e gitmeyecek degiskenlerdir. Numeric PD degerleri ve PD/rating oranlari burada kapali tutulur.

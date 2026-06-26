@@ -20,9 +20,14 @@ class VariableDictionaryTests(unittest.TestCase):
         self.assertIn("current_snapshot", groups)
         self.assertIn("l1_term_financial", groups)
         self.assertIn("q_financial", groups)
+        self.assertIn("memzuc", groups)
         self.assertIn("kkb", groups)
         self.assertIn("pd_rating", groups)
         self.assertIn("internal_other", groups)
+        self.assertEqual(raw_metadata["memzuc_total_risk"]["group"], "memzuc")
+        self.assertEqual(raw_metadata["gunceltkn_dgr"]["group"], "kkb")
+        self.assertEqual(raw_metadata["gunceltbe_dgr"]["group"], "kkb")
+        self.assertEqual(raw_metadata["yukleme_zmn"]["group"], "kkb")
         self.assertEqual(raw_metadata["rating_group"]["role"], "direct_rating_signal_allowed")
         self.assertIn("memzuc_limit_utilization", generated_feature_names())
         self.assertIn("rating_group", final_llm_include_features())
@@ -60,8 +65,12 @@ class VariableDictionaryTests(unittest.TestCase):
         frame = pd.DataFrame({"a": [10.0], "b": [2.0], "c": [3.0]})
 
         result = evaluate_feature_formula("(a / b) * c + 1", frame)
+        multiply_divide = evaluate_feature_formula("a * b / c", frame)
+        mixed_precedence = evaluate_feature_formula("a + b * a + c / c", frame)
 
         self.assertAlmostEqual(result.iloc[0], 16.0)
+        self.assertAlmostEqual(multiply_divide.iloc[0], 20.0 / 3.0)
+        self.assertAlmostEqual(mixed_precedence.iloc[0], 31.0)
 
     def test_llm_feature_gate_uses_dictionary_include_exclude(self):
         self.assertTrue(is_allowed_llm_feature("memzuc_limit_utilization"))
