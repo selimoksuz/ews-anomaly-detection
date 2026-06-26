@@ -23,8 +23,8 @@ import pandas as pd
 from engine.config_loader import load_config, load_secrets
 from engine.multivar_anomaly import (
     CONTEXT_COLUMNS,
+    EXCLUDED_DERIVED_FEATURES,
     FEATURE_LABELS,
-    FORBIDDEN_DERIVED_FEATURES,
     ID_COLUMN,
     INCREASE_IS_RISK_TOKENS,
     PEER_MIN_SUPPORT,
@@ -44,9 +44,9 @@ from engine.multivar_anomaly import (
 from engine.oracle_io import OracleConnector
 from engine.variable_dictionary import (
     feature_formula_map,
+    final_llm_direct_features,
     final_llm_include_features,
     generated_feature_inputs,
-    llm_direct_allowed_features,
     llm_excluded_feature_names,
     raw_variable_label_map,
     variable_metadata,
@@ -139,7 +139,7 @@ TECHNICAL_COLUMNS = {
     "created_at",
 }
 
-LLM_ALLOWED_RATING_FEATURES = llm_direct_allowed_features() or {"rating_group"}
+LLM_ALLOWED_RATING_FEATURES = final_llm_direct_features() or {"rating_group"}
 
 DEFAULT_LLM_EXCLUDED_PD_VALUE_FEATURES = {
     "irb_rating_pd",
@@ -150,7 +150,7 @@ DEFAULT_LLM_EXCLUDED_PD_VALUE_FEATURES = {
 LLM_EXCLUDED_PD_VALUE_FEATURES = llm_excluded_feature_names() or DEFAULT_LLM_EXCLUDED_PD_VALUE_FEATURES
 FINAL_LLM_INCLUDE_FEATURES = final_llm_include_features()
 
-FORBIDDEN_PD_RATING_COMPARISON_SIGNALS = {
+EXCLUDED_PD_RATING_COMPARISON_SIGNALS = {
     "pd_ratio",
     "pd_to_rating_group",
 }
@@ -736,7 +736,7 @@ def build_evidence_packages_from_oracle(
     )
     log_step_done(
         "02",
-        f"raw_columns={len(sample_frame.columns)} used_input_columns={len(keep_columns)} numeric_source_columns={len(numeric_source_columns)} forbidden_pd_rating_comparisons={','.join(sorted(FORBIDDEN_PD_RATING_COMPARISON_SIGNALS))}",
+        f"raw_columns={len(sample_frame.columns)} used_input_columns={len(keep_columns)} numeric_source_columns={len(numeric_source_columns)} excluded_pd_rating_comparisons={','.join(sorted(EXCLUDED_PD_RATING_COMPARISON_SIGNALS))}",
     )
     logger.info(
         "Loading Oracle reference/score windows: reference_rows_limit=%s chunk_size=%s note='reference rows are used for feature/trend/seasonality statistics; they are not sent to the LLM'",
@@ -1176,6 +1176,7 @@ def infer_numeric_source_columns(frame: pd.DataFrame) -> list[str]:
 
 def feature_dictionary(feature: str) -> dict[str, Any]:
     metadata = variable_metadata(feature)
+    resolved_risk_direction = metadata.get("risk_direction") or risk_direction(feature)
     return {
         "label": metadata.get("label") or FEATURE_LABELS.get(feature, feature),
         "category": metadata.get("category") or variable_category(feature),
@@ -1185,15 +1186,17 @@ def feature_dictionary(feature: str) -> dict[str, Any]:
         "source_column": metadata.get("source_column"),
         "definition": metadata.get("definition"),
         "source": metadata.get("source"),
-        "risk_direction": metadata.get("risk_direction") or risk_direction(feature),
+        "risk_direction": resolved_risk_direction,
+        "opposite_direction_meaning": metadata.get("opposite_direction_meaning")
+        or opposite_direction_meaning(resolved_risk_direction),
         "interpretation_note": metadata.get("linguistic") or interpretation_note(feature),
     }
 
 
-def is_forbidden_pd_rating_comparison(feature: Any) -> bool:
+def is_excluded_pd_rating_comparison(feature: Any) -> bool:
     if feature is None:
         return False
-    return str(feature).strip().lower() in FORBIDDEN_PD_RATING_COMPARISON_SIGNALS
+    return str(feature).strip().lower() in EXCLUDED_PD_RATING_COMPARISON_SIGNALS
 
 
 def is_allowed_llm_feature(feature: Any) -> bool:
@@ -1202,7 +1205,7 @@ def is_allowed_llm_feature(feature: Any) -> bool:
     name = str(feature).strip().lower()
     if not name:
         return False
-    if name in FORBIDDEN_DERIVED_FEATURES:
+    if name in EXCLUDED_DERIVED_FEATURES:
         return False
     if name in LLM_EXCLUDED_PD_VALUE_FEATURES:
         return False
@@ -1320,13 +1323,13 @@ def log_evidence_contract(selected_features: list[str]) -> None:
         len(RAW_COLUMN_LABELS),
         len(FEATURE_FORMULAS),
         ",".join(sorted(FINAL_LLM_INCLUDE_FEATURES)) or "not_configured",
-        ",".join(sorted(LLM_EXCLUDED_PD_VALUE_FEATURES | FORBIDDEN_PD_RATING_COMPARISON_SIGNALS)),
+        ",".join(sorted(LLM_EXCLUDED_PD_VALUE_FEATURES | EXCLUDED_PD_RATING_COMPARISON_SIGNALS)),
     )
     logger.info(
         "AUDIT PIPELINE CONTRACT | raw_input=Oracle raw monthly rows generated_features=%s peer_grouping=%s excluded_signals=%s",
         len(selected_features),
-        "cohort_dt + musteri_segment + sector + monthly_size hierarchy; rating_group/IRB rating allowed; PD numeric values and PD cross-ratios forbidden",
-        ",".join(sorted(LLM_EXCLUDED_PD_VALUE_FEATURES | FORBIDDEN_PD_RATING_COMPARISON_SIGNALS)),
+        "cohort_dt + musteri_segment + sector + monthly_size hierarchy; rating_group included when configured; PD numeric values and PD cross-ratios excluded",
+        ",".join(sorted(LLM_EXCLUDED_PD_VALUE_FEATURES | EXCLUDED_PD_RATING_COMPARISON_SIGNALS)),
     )
     logger.info(
         "AUDIT PEER VARIABLES | variables=peer_definition_level,peer_hierarchy,peer_median,peer_z,peer_support,peer_quality"
@@ -1426,6 +1429,15 @@ def risk_direction(feature: str) -> str:
     if any(token in lower for token in INCREASE_IS_RISK_TOKENS):
         return "HIGHER_IS_RISKY"
     return "UNKNOWN"
+
+
+def opposite_direction_meaning(direction: str | None) -> str:
+    normalized = str(direction or "").strip().upper()
+    if normalized == "HIGHER_IS_RISKY":
+        return "Degerin dusmesi risk azalisi/iyilesme yonudur; tek basina riskli anomali sayilmaz."
+    if normalized == "LOWER_IS_RISKY":
+        return "Degerin artmasi risk azalisi/iyilesme yonudur; tek basina riskli anomali sayilmaz."
+    return "Risk yonu tanimli degil; yorum icin history, trend, peer ve veri kalitesi birlikte okunur."
 
 
 def interpretation_note(feature: str) -> str:

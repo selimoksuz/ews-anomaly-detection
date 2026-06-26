@@ -12,6 +12,7 @@ from engine.multivar_anomaly import (
     build_peer_artifacts,
     build_feature_frame,
     calibration_sample,
+    direction_text,
     is_riskier,
     operational_band_thresholds,
     peer_diagnostic_payload,
@@ -20,6 +21,7 @@ from engine.multivar_anomaly import (
     prepare_multivar_oracle_details,
     prepare_multivar_oracle_results,
     rank_reason_details_for_review,
+    risk_direction_for_feature,
     run_multivar_anomaly,
     safe_divide,
 )
@@ -211,7 +213,7 @@ class MultivarAnomalyTests(unittest.TestCase):
             ]
         )
         features = build_feature_frame(frame, [column for column in frame.columns if column not in {"cohort_dt", "mono_id"}])
-        forbidden_names = [
+        excluded_names = [
             "cross_",
             "weighted_by_pd",
             "pd_gap",
@@ -248,7 +250,7 @@ class MultivarAnomalyTests(unittest.TestCase):
         ]
         generated = [column for column in features.columns if column not in {"cohort_dt", "mono_id"}]
         self.assertFalse(
-            [column for column in generated if any(token in column for token in forbidden_names)]
+            [column for column in generated if any(token in column for token in excluded_names)]
         )
         self.assertNotIn("pd_to_rating_group", features.columns)
         self.assertNotIn("pd_ratio", features.columns)
@@ -324,6 +326,13 @@ class MultivarAnomalyTests(unittest.TestCase):
         self.assertTrue(is_riskier("memzuc_st_mt_cash_share", 0.9, 0.5))
         self.assertFalse(is_riskier("memzuc_st_mt_cash_share", 0.2, 0.5))
         self.assertFalse(is_riskier("unknown_behavior_ratio", 2.0, 1.0))
+
+    def test_risk_direction_uses_dictionary_for_improving_opposite_moves(self):
+        self.assertEqual(risk_direction_for_feature("l1y_equity_to_assets"), "LOWER_IS_RISKY")
+        self.assertTrue(is_riskier("l1y_equity_to_assets", 0.2, 0.5))
+        self.assertFalse(is_riskier("l1y_equity_to_assets", 0.8, 0.5))
+        self.assertIn("risk artisi", direction_text("l1y_equity_to_assets", 0.2, "peer medyan", 0.5))
+        self.assertIn("risk azalisi", direction_text("l1y_equity_to_assets", 0.8, "peer medyan", 0.5))
 
     def test_reason_ranking_prioritizes_risk_increase_for_review(self):
         details = [

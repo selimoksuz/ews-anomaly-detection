@@ -19,12 +19,13 @@ from engine.config_loader import load_config, load_secrets, resolve_project_path
 from engine.oracle_io import OracleConnector
 from engine.variable_dictionary import (
     feature_label_map,
+    final_llm_direct_features,
     final_llm_include_features,
     generated_feature_names,
     generated_source_columns,
     generated_variable_metadata,
-    llm_direct_allowed_features,
     llm_excluded_feature_names,
+    variable_metadata,
 )
 
 
@@ -103,7 +104,7 @@ PEER_MEANINGFULNESS_THRESHOLDS = {
     "min_median_support": 100.0,
     "min_narrow_peer_pct": 75.0,
 }
-DEFAULT_FORBIDDEN_DERIVED_FEATURES = {
+DEFAULT_EXCLUDED_DERIVED_FEATURES = {
     "pd_ratio",
     "pd_to_rating_group",
     "q_equity_to_assets",
@@ -112,13 +113,13 @@ DEFAULT_FORBIDDEN_DERIVED_FEATURES = {
     "q_trade_receivables_to_assets",
     "q_notes_receivable_to_assets",
 }
-_DICTIONARY_FORBIDDEN_FEATURES = llm_excluded_feature_names()
+_DICTIONARY_EXCLUDED_FEATURES = llm_excluded_feature_names()
 _DICTIONARY_GENERATED_FEATURES = generated_feature_names(enabled_only=False)
-FORBIDDEN_DERIVED_FEATURES = (
-    _DICTIONARY_FORBIDDEN_FEATURES & _DICTIONARY_GENERATED_FEATURES
-) or DEFAULT_FORBIDDEN_DERIVED_FEATURES
+EXCLUDED_DERIVED_FEATURES = (
+    _DICTIONARY_EXCLUDED_FEATURES & _DICTIONARY_GENERATED_FEATURES
+) or DEFAULT_EXCLUDED_DERIVED_FEATURES
 
-DIRECT_PD_RATING_SIGNAL_FEATURES = llm_direct_allowed_features() or {"rating_group"}
+DIRECT_PD_RATING_SIGNAL_FEATURES = final_llm_direct_features() or {"rating_group"}
 
 MULTIVAR_DETAIL_EXTRA_COLUMNS = {
     "PEER_LEVEL": "VARCHAR2(64)",
@@ -1063,7 +1064,7 @@ def build_feature_frame(frame: pd.DataFrame, source_columns: Iterable[str]) -> p
                 exc,
             )
             result[feature_name] = pd.Series(np.nan, index=result.index, dtype=float)
-    result = result.drop(columns=[column for column in FORBIDDEN_DERIVED_FEATURES if column in result.columns])
+    result = result.drop(columns=[column for column in EXCLUDED_DERIVED_FEATURES if column in result.columns])
     return result.replace([np.inf, -np.inf], np.nan)
 
 
@@ -1326,7 +1327,7 @@ def select_model_features(
         for column in train_features.columns
         if column not in {ID_COLUMN, TIME_COLUMN}
         and (column not in RAW_MODEL_EXCLUDE_COLUMNS or column in DIRECT_PD_RATING_SIGNAL_FEATURES)
-        and column not in FORBIDDEN_DERIVED_FEATURES
+        and column not in EXCLUDED_DERIVED_FEATURES
         and (
             column in GENERATED_FEATURE_NAMES
             or column.startswith(DERIVED_FEATURE_PREFIXES)
@@ -2599,12 +2600,24 @@ def is_riskier(feature: str, actual, reference) -> bool:
     if actual is None or reference is None or pd.isna(actual) or pd.isna(reference):
         return False
     delta = float(actual) - float(reference)
-    lower = feature.lower()
-    if any(token in lower for token in INCREASE_IS_RISK_TOKENS):
+    direction = risk_direction_for_feature(feature)
+    if direction == "HIGHER_IS_RISKY":
         return delta > 0
-    if any(token in lower for token in DECREASE_IS_RISK_TOKENS):
+    if direction == "LOWER_IS_RISKY":
         return delta < 0
     return False
+
+
+def risk_direction_for_feature(feature: str) -> str:
+    configured = str(variable_metadata(feature).get("risk_direction") or "").strip().upper()
+    if configured in {"HIGHER_IS_RISKY", "LOWER_IS_RISKY"}:
+        return configured
+    lower = feature.lower()
+    if any(token in lower for token in INCREASE_IS_RISK_TOKENS):
+        return "HIGHER_IS_RISKY"
+    if any(token in lower for token in DECREASE_IS_RISK_TOKENS):
+        return "LOWER_IS_RISKY"
+    return "UNKNOWN"
 
 
 def classify_alert_type(
@@ -2646,10 +2659,10 @@ def direction_text(feature: str, actual, reference_label: str | None, reference_
         return f"{reference_label} ile ayni seviyede"
     movement = "artmis" if delta > 0 else "azalmis"
     risk_direction = "yon etkisi tanimsiz"
-    lower = feature.lower()
-    if any(token in lower for token in INCREASE_IS_RISK_TOKENS):
+    configured_direction = risk_direction_for_feature(feature)
+    if configured_direction == "HIGHER_IS_RISKY":
         risk_direction = "risk artisi" if delta > 0 else "risk azalisi"
-    elif any(token in lower for token in DECREASE_IS_RISK_TOKENS):
+    elif configured_direction == "LOWER_IS_RISKY":
         risk_direction = "risk artisi" if delta < 0 else "risk azalisi"
     return f"{reference_label} gore {movement}; {risk_direction}"
 

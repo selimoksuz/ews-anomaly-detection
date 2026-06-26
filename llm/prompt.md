@@ -21,10 +21,12 @@ Bu akista hazir anomaly score veya target yoktur. Karari LLM verir; karar sadece
 7. Peer kalitesi ZAYIF ise kesin hukum verme, manuel inceleme oner.
 8. Musterinin kendi tarihsel verisi yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.
 9. Peer kaynakli anomali ancak musteri history'si yetersizse veya musteri history'sindeki bozulmayi destekliyorsa kullanilabilir.
-10. Risk azalisi olan sapmalari anomali nedeni yapma.
-11. Rating grubunu risk sinyali olarak kullanabilirsin.
-12. IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
-13. Gelecek donem varsayimi yapma.
+10. `risk_direction=HIGHER_IS_RISKY` ise artis risk bozulmasi, azalis risk azalisi/iyilesmedir.
+11. `risk_direction=LOWER_IS_RISKY` ise azalis risk bozulmasi, artis risk azalisi/iyilesmedir.
+12. Risk yonunun tersine giden sapmalari riskli anomali nedeni yapma; gerekiyorsa olumlu/iyilesen sapma olarak not et ama riskli anomali flag'i verme.
+13. Rating grubunu risk sinyali olarak kullanabilirsin.
+14. IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
+15. Gelecek donem varsayimi yapma.
 
 ## Anomali Kabul Sinyalleri
 

@@ -17,17 +17,24 @@ class VariableDictionaryTests(unittest.TestCase):
         groups = raw_variable_groups()
         raw_metadata = raw_variable_metadata()
 
-        self.assertIn("current_snapshot", groups)
-        self.assertIn("l1_term_financial", groups)
-        self.assertIn("q_financial", groups)
-        self.assertIn("memzuc", groups)
-        self.assertIn("kkb", groups)
-        self.assertIn("pd_rating", groups)
-        self.assertIn("internal_other", groups)
-        self.assertEqual(raw_metadata["memzuc_total_risk"]["group"], "memzuc")
-        self.assertEqual(raw_metadata["gunceltkn_dgr"]["group"], "kkb")
-        self.assertEqual(raw_metadata["gunceltbe_dgr"]["group"], "kkb")
-        self.assertEqual(raw_metadata["yukleme_zmn"]["group"], "kkb")
+        for group in (
+            "time_var",
+            "id_var",
+            "demographic_var",
+            "internal_risk_var",
+            "financial_l1_var",
+            "financial_q_var",
+            "memzuc_var",
+            "internal_rate_var",
+            "varlik_var",
+            "kkb_var",
+        ):
+            self.assertIn(group, groups)
+        self.assertEqual(raw_metadata["memzuc_total_risk"]["group"], "memzuc_var")
+        self.assertEqual(raw_metadata["gunceltkn_dgr"]["group"], "kkb_var")
+        self.assertEqual(raw_metadata["gunceltbe_dgr"]["group"], "kkb_var")
+        self.assertEqual(raw_metadata["yukleme_zmn"]["group"], "kkb_var")
+        self.assertEqual(raw_metadata["rating_group"]["group"], "internal_rate_var")
         self.assertEqual(raw_metadata["rating_group"]["role"], "direct_rating_signal_allowed")
         self.assertIn("memzuc_limit_utilization", generated_feature_names())
         self.assertIn("rating_group", final_llm_include_features())

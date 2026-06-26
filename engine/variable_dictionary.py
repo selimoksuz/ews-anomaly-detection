@@ -152,25 +152,21 @@ def generated_source_columns(dictionary: dict[str, Any] | None = None) -> set[st
     return result
 
 
-def llm_direct_allowed_features(dictionary: dict[str, Any] | None = None) -> set[str]:
-    policy = final_feature_policy(dictionary)
-    values = policy.get("direct_allowed", []) or []
-    return {_normalize_name(item) for item in values if str(item).strip()}
-
-
 def llm_excluded_feature_names(dictionary: dict[str, Any] | None = None) -> set[str]:
     policy = final_feature_policy(dictionary)
-    result = set()
-    for key in ("exclude", "forbidden"):
-        values = policy.get(key, []) or []
-        result.update(_normalize_name(item) for item in values if str(item).strip())
-    return result
+    values = policy.get("exclude", []) or []
+    return {_normalize_name(item) for item in values if str(item).strip()}
 
 
 def final_llm_include_features(dictionary: dict[str, Any] | None = None) -> set[str]:
     policy = final_feature_policy(dictionary)
     values = policy.get("include", []) or []
     return {_normalize_name(item) for item in values if str(item).strip()}
+
+
+def final_llm_direct_features(dictionary: dict[str, Any] | None = None) -> set[str]:
+    generated = set(generated_variable_metadata(dictionary))
+    return final_llm_include_features(dictionary) - generated
 
 
 def variable_metadata(name: str, dictionary: dict[str, Any] | None = None) -> dict[str, Any]:

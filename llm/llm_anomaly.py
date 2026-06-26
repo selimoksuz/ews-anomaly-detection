@@ -61,7 +61,9 @@ Kurallar:
 - Peer kalitesi ZAYIF ise kesin hukum verme, manuel inceleme oner.
 - Musterinin kendi tarihsel verisi yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.
 - Peer kaynakli anomali ancak musteri history'si yetersizse veya musteri history'sindeki bozulmayi destekliyorsa kullanilabilir.
-- Risk azalisi olan sapmalari anomali nedeni yapma.
+- risk_direction=HIGHER_IS_RISKY ise artis risk bozulmasi, azalis risk azalisi/iyilesmedir.
+- risk_direction=LOWER_IS_RISKY ise azalis risk bozulmasi, artis risk azalisi/iyilesmedir.
+- Risk yonunun tersine giden sapmalari riskli anomali nedeni yapma; gerekiyorsa olumlu/iyilesen sapma olarak not et ama riskli anomali flag'i verme.
 - Rating grubunu risk sinyali olarak kullanabilirsin.
 - IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
 - Gelecek donem varsayimi yapma.
@@ -343,6 +345,7 @@ def compact_feature_line(feature: dict[str, Any], index: int) -> str:
         f"category={dictionary.get('category')}",
         f"formula={dictionary.get('formula')}",
         f"risk_direction={dictionary.get('risk_direction')}",
+        f"opposite_direction_meaning={dictionary.get('opposite_direction_meaning')}",
         f"current={feature.get('current_value')}",
         f"previous={feature.get('previous_value')}",
         f"change_pct={feature.get('change_pct')}",

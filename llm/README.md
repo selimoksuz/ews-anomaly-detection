@@ -14,10 +14,11 @@ Ana farklar:
 
 Degisken sozlugu ve feature deneme noktasi `config/dictionaries.yaml` dosyasidir.
 
-- `raw_variables.groups`: ham kolonlari grup grup tutar (`current_snapshot`, `l1_term_financial`, `q_financial`, `memzuc`, `kkb`, `pd_rating`, `internal_other`). Her kolon icin kaynak, tanim, rol ve okunabilir aciklama vardir.
+- `raw_variables.groups`: ham kolonlari kaynak basliklarina gore tutar (`time_var`, `id_var`, `demographic_var`, `internal_risk_var`, `financial_l1_var`, `financial_q_var`, `memzuc_var`, `internal_rate_var`, `varlik_var`, `kkb_var`, `technical_var`). Her kolon icin kaynak, tanim, rol ve okunabilir aciklama vardir.
 - `generated_variables.variables`: ham kolonlardan uretilen oran/transform feature'larini tutar. `formula` alaninda `+`, `-`, `*`, `/` ve parantez kullanilabilir. `/` islemi pipeline'in `safe_divide` kuralini kullanir.
 - `final_llm_features.include`: LLM'e gitmesini istedigin final feature listesidir.
-- `final_llm_features.exclude` ve `forbidden`: LLM'e gitmeyecek degiskenlerdir. Numeric PD degerleri ve PD/rating oranlari burada kapali tutulur.
+- `final_llm_features.exclude`: LLM'e gitmeyecek degiskenlerdir. Numeric PD degerleri ve PD/rating oranlari burada kapali tutulur.
+- `risk_direction`: `HIGHER_IS_RISKY` ise artan deger risk bozulmasi, azalan deger iyilesme; `LOWER_IS_RISKY` ise azalan deger risk bozulmasi, artan deger iyilesme olarak yorumlanir.
 
 Yeni bir deneme icin once `generated_variables.variables` altina feature ekle, sonra LLM'e gitsin istiyorsan ayni feature adini `final_llm_features.include` listesine ekle.
 

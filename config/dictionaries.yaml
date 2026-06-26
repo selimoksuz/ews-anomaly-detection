@@ -21,9 +21,9 @@ raw_variables:
     table_key: multivar_input
     module: engine.multivar_anomaly.load_windows_oracle
   groups:
-    current_snapshot:
-      category: current
-      description: Skorlanan ay ve musteri kimlik/baglam kolonlari.
+    time_var:
+      category: time
+      description: Zaman/snapshot kolonu.
       source:
         backend: oracle
         table_key: multivar_input
@@ -35,6 +35,14 @@ raw_variables:
           definition: Kaydin ait oldugu ay sonu tarihidir; zaman serisi eksenidir.
           role: time_key
           linguistic: "Kayit, cohort_dt ay sonu snapshotinda degerlendirilir."
+
+    id_var:
+      category: identity
+      description: Musteri tekil anahtar kolonu.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
         mono_id:
           source_column: MONO_ID
           data_type: string
@@ -42,6 +50,14 @@ raw_variables:
           definition: Musteriyi tekil takip etmek icin kullanilan anonim musteri id kolonudur.
           role: entity_key
           linguistic: "mono_id, degerlendirilen musteriyi temsil eder."
+
+    demographic_var:
+      category: demographic
+      description: Musteri segmenti, bilanco ve sektor/NACE baglam kolonlari.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
         musteri_segment:
           source_column: MUSTERI_SEGMENT
           data_type: numeric
@@ -74,7 +90,45 @@ raw_variables:
           definition: Musterinin faaliyet NACE kod id degeridir.
           role: peer_key
 
-    l1_term_financial:
+    internal_risk_var:
+      category: internal_risk
+      description: Banka kredi/risk tutari ve risk tarihi kolonlari.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        bank_total_risk:
+          source_column: BANK_TOTAL_RISK
+          data_type: numeric_tl
+          label: Banka toplam risk
+          definition: Bankanin musterideki toplam kredi/risk tutaridir.
+          role: raw_amount
+        krd_toplam_risk:
+          source_column: KRD_TOPLAM_RISK
+          data_type: numeric_tl
+          label: Kredi toplam risk
+          definition: Kredi toplam risk tutaridir; kaynakta bu adla gelirse banka risk contexti olarak kullanilir.
+          role: raw_amount
+        kred_top_am_risk:
+          source_column: KRED_TOP_AM_RISK
+          data_type: numeric_tl
+          label: Nakdi ve gayri nakdi risk
+          definition: Anapara ve islemis faiz dahil kredi risk tutaridir; inputta varsa banka riski contextidir.
+          role: raw_amount
+        krd_top_am_risk:
+          source_column: KRD_TOP_AM_RISK
+          data_type: numeric_tl
+          label: Nakdi ve gayri nakdi risk
+          definition: Kredi risk tutari icin alternatif kolon adidir.
+          role: raw_amount
+        krd_risk_tarihi:
+          source_column: KRD_RISK_TARIHI
+          data_type: date
+          label: Kredi risk tarihi
+          definition: Kredi riskinin olculdugu tarihtir; veri guncelligi ve snapshot uyumu icin kullanilir.
+          role: reference_date
+
+    financial_l1_var:
       category: financial
       description: Son 12 ay/yillik mali tablo kolonlari.
       source:
@@ -124,7 +178,7 @@ raw_variables:
           definition: Son 12 ay net kar tutaridir; zarar veya sert dusus risk sinyali olabilir.
           role: raw_amount
 
-    q_financial:
+    financial_q_var:
       category: financial
       description: Ara donem/ceyrek mali tablo kolonlari.
       source:
@@ -186,7 +240,7 @@ raw_variables:
           definition: Ara donem ozkaynak tutaridir.
           role: raw_amount
 
-    memzuc:
+    memzuc_var:
       category: memzuc
       description: Memzuc/sistem geneli risk ve limit kolonlari.
       source:
@@ -215,7 +269,55 @@ raw_variables:
           role: raw_amount
           linguistic: "KV/OV nakdi risk payi, borcun vade ve nakdi risk yogunlugunu gosterir."
 
-    kkb:
+    internal_rate_var:
+      category: pd_rating
+      description: PD/rating sinyalleri. Numeric PD degerleri LLM feature setine alinmaz.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        irb_rating_pd:
+          source_column: IRB_RATING_PD
+          data_type: numeric
+          label: IRB rating PD
+          definition: Rating notuna karsilik gelen temerrut olasiligi; LLM karar kaniti olarak kullanilmaz.
+          role: pd_value_excluded_from_llm
+        irb_model_pd:
+          source_column: IRB_MODEL_PD
+          data_type: numeric
+          label: IRB model PD
+          definition: Istatistiksel model bazli temerrut olasiligi; LLM karar kaniti olarak kullanilmaz.
+          role: pd_value_excluded_from_llm
+        rating_group:
+          source_column: RATING_GROUP
+          data_type: numeric
+          label: Rating grup
+          definition: Derecelendirme/rating grubu; dogrudan rating sinyali olarak kullanilabilir.
+          role: direct_rating_signal_allowed
+          risk_direction: HIGHER_IS_RISKY
+          linguistic: "Rating grup yukselirse kredi riski artmis olabilir."
+
+    varlik_var:
+      category: asset
+      description: Varlik buyuklugu ve varlik referans donemi kolonlari.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        toplam_varlik_ttr:
+          source_column: TOPLAM_VARLIK_TTR
+          data_type: numeric_tl
+          label: Toplam varlik
+          definition: Musterinin toplam varlik degeridir; riskleri olceklendirmek icin kullanilir.
+          role: denominator
+        ref_donem_id:
+          source_column: REF_DONEM_ID
+          data_type: numeric
+          label: Varlik referans donemi
+          definition: Varlik bilgisinin ait oldugu referans donemdir.
+          role: reference_period
+
+    kkb_var:
       category: kkb
       description: KKB sorgu, TKN/TBE ve veri yukleme/guncellik bilgileri.
       source:
@@ -255,71 +357,13 @@ raw_variables:
           definition: Kaydin sisteme yuklendigi zamandir; KKB/input guncelligi kontrolunde kullanilir.
           role: technical
 
-    pd_rating:
-      category: pd_rating
-      description: PD/rating sinyalleri. Numeric PD degerleri LLM feature setine alinmaz.
+    technical_var:
+      category: technical
+      description: Kaynak tablo teknik izleme kolonlari.
       source:
         backend: oracle
         table_key: multivar_input
       variables:
-        irb_rating_pd:
-          source_column: IRB_RATING_PD
-          data_type: numeric
-          label: IRB rating PD
-          definition: Rating notuna karsilik gelen temerrut olasiligi; LLM karar kaniti olarak kullanilmaz.
-          role: pd_value_excluded_from_llm
-        irb_model_pd:
-          source_column: IRB_MODEL_PD
-          data_type: numeric
-          label: IRB model PD
-          definition: Istatistiksel model bazli temerrut olasiligi; LLM karar kaniti olarak kullanilmaz.
-          role: pd_value_excluded_from_llm
-        rating_group:
-          source_column: RATING_GROUP
-          data_type: numeric
-          label: Rating grup
-          definition: Derecelendirme/rating grubu; dogrudan rating sinyali olarak kullanilabilir.
-          role: direct_rating_signal_allowed
-          risk_direction: HIGHER_IS_RISKY
-          linguistic: "Rating grup yukselirse kredi riski artmis olabilir."
-
-    internal_other:
-      category: internal
-      description: Banka riski, varlik ve diger internal teknik kolonlar.
-      source:
-        backend: oracle
-        table_key: multivar_input
-      variables:
-        bank_total_risk:
-          source_column: BANK_TOTAL_RISK
-          data_type: numeric_tl
-          label: Banka toplam risk
-          definition: Bankanin musterideki toplam kredi/risk tutaridir.
-          role: raw_amount
-        kred_top_am_risk:
-          source_column: KRED_TOP_AM_RISK
-          data_type: numeric_tl
-          label: Nakdi ve gayri nakdi risk
-          definition: Anapara ve islemis faiz dahil kredi risk tutaridir; inputta varsa banka riski contextidir.
-          role: raw_amount
-        krd_top_am_risk:
-          source_column: KRD_TOP_AM_RISK
-          data_type: numeric_tl
-          label: Nakdi ve gayri nakdi risk
-          definition: Kredi risk tutari icin alternatif kolon adidir.
-          role: raw_amount
-        toplam_varlik_ttr:
-          source_column: TOPLAM_VARLIK_TTR
-          data_type: numeric_tl
-          label: Toplam varlik
-          definition: Musterinin toplam varlik degeridir; riskleri olceklendirmek icin kullanilir.
-          role: denominator
-        ref_donem_id:
-          source_column: REF_DONEM_ID
-          data_type: numeric
-          label: Varlik referans donemi
-          definition: Varlik bilgisinin ait oldugu referans donemdir.
-          role: reference_period
         data_time:
           source_column: DATA_TIME
           data_type: timestamp
@@ -527,13 +571,11 @@ generated_variables:
       category: pd_rating
       formula: irb_rating_pd / irb_model_pd
       inputs: [irb_rating_pd, irb_model_pd]
-      definition: Numeric PD degerlerinin orani; LLM karar kaniti olarak yasaktir.
+      definition: Numeric PD degerlerinin orani; LLM karar setine alinmaz.
       risk_direction: UNKNOWN
 
 final_llm_features:
   mode: include_available
-  direct_allowed:
-    - rating_group
   include:
     - rating_group
     - memzuc_limit_utilization
@@ -562,10 +604,8 @@ final_llm_features:
     - memzuc_debt_to_q_sales
     - q_trade_receivables_to_assets
     - q_notes_receivable_to_assets
-  forbidden:
-    - pd_ratio
-    - pd_to_rating_group
   note: >
     Yeni feature denemesi icin once generated_variables altinda formulu tanimla,
-    sonra LLM'e gitmesini istiyorsan include listesine ekle. PD numeric degerleri
-    ve PD/rating cross-ratio sinyalleri LLM karar setine alinmaz.
+    sonra LLM'e gitmesini istiyorsan include listesine ekle. LLM'e gitmesini
+    istemedigin alanlari exclude listesinde tut. PD numeric degerleri ve
+    PD/rating cross-ratio sinyalleri exclude listesinde kapali tutulur.
