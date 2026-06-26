@@ -1,0 +1,558 @@
+version: 1
+description: >
+  EWS anomaly pipeline variable dictionary. Raw variables, generated variables
+  and final LLM feature selection are kept here so feature trials can be made
+  without changing Python code.
+
+formula_language:
+  supported_operations:
+    - addition: "a + b"
+    - subtraction: "a - b"
+    - multiplication: "a * b"
+    - safe_division: "a / b"
+    - parentheses: "(a + b) / c"
+  note: >
+    Division uses the pipeline safe_divide rule, so near-zero denominators and
+    extreme ratios are suppressed as missing. Use lower-case raw column names.
+
+raw_variables:
+  default_source:
+    backend: oracle
+    table_key: multivar_input
+    module: engine.multivar_anomaly.load_windows_oracle
+  groups:
+    current_snapshot:
+      category: current
+      description: Skorlanan ay ve musteri kimlik/baglam kolonlari.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        cohort_dt:
+          source_column: COHORT_DT
+          data_type: date
+          label: Skorlanan ay
+          definition: Kaydin ait oldugu ay sonu tarihidir; zaman serisi eksenidir.
+          role: time_key
+          linguistic: "Kayit, cohort_dt ay sonu snapshotinda degerlendirilir."
+        mono_id:
+          source_column: MONO_ID
+          data_type: string
+          label: Musteri tekil numarasi
+          definition: Musteriyi tekil takip etmek icin kullanilan anonim musteri id kolonudur.
+          role: entity_key
+          linguistic: "mono_id, degerlendirilen musteriyi temsil eder."
+        musteri_segment:
+          source_column: MUSTERI_SEGMENT
+          data_type: numeric
+          label: Musteri segmenti
+          definition: Kurumsal/ticari segment kodudur; peer gruplamada kullanilir.
+          role: peer_key
+          linguistic: "Musteri, segmentine gore benzer musterilerle karsilastirilir."
+        bilanco_flg:
+          source_column: BILANCO_FLG
+          data_type: numeric
+          label: Bilanco bayragi
+          definition: Bilanco usulu defter bilgisidir; veri yorumunda context olarak kullanilir.
+          role: context
+        cst_sector:
+          source_column: CST_SECTOR
+          data_type: string
+          label: Sektor metni
+          definition: Musterinin faaliyet sektoru metnidir; peer gruplamada kullanilir.
+          role: peer_key
+        cst_nace_code:
+          source_column: CST_NACE_CODE
+          data_type: string
+          label: NACE kodu
+          definition: Musterinin faaliyet NACE kodudur; sektor baglamini aciklar.
+          role: peer_key
+        cst_nace_code_id:
+          source_column: CST_NACE_CODE_ID
+          data_type: numeric
+          label: NACE kod id
+          definition: Musterinin faaliyet NACE kod id degeridir.
+          role: peer_key
+
+    l1_term_financial:
+      category: financial
+      description: Son 12 ay/yillik mali tablo kolonlari.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        financial_term_l1y:
+          source_column: FINANCIAL_TERM_L1Y
+          data_type: date
+          label: L1Y finansal donem
+          definition: Yillik mali tablonun ait oldugu donemdir.
+          role: financial_term
+        fs_net_sales_cumulative_l1y:
+          source_column: FS_NET_SALES_CUMULATIVE_L1Y
+          data_type: numeric_tl
+          label: L1Y net satis
+          definition: Son 12 ay net satis/ciro tutaridir.
+          role: raw_amount
+        fs_trade_receivables_l1y:
+          source_column: FS_TRADE_RECEIVABLES_L1Y
+          data_type: numeric_tl
+          label: L1Y ticari alacak
+          definition: Son 12 ay ticari alacak tutaridir.
+          role: raw_amount
+        fs_notes_receivable_l1y:
+          source_column: FS_NOTES_RECEIVABLE_L1Y
+          data_type: numeric_tl
+          label: L1Y senetli alacak
+          definition: Son 12 ay senetli alacak tutaridir.
+          role: raw_amount
+        supheli_ticari_alacaklar_l1y:
+          source_column: SUPHELI_TICARI_ALACAKLAR_L1Y
+          data_type: numeric_tl
+          label: L1Y supheli ticari alacak
+          definition: Son 12 ay supheli ticari alacak tutaridir.
+          role: raw_amount
+        equity_l1y:
+          source_column: EQUITY_L1Y
+          data_type: numeric_tl
+          label: L1Y ozkaynak
+          definition: Son 12 ay ozkaynak tutaridir; dusus risk sinyali olabilir.
+          role: raw_amount
+        fs_net_profit_cumulative_l1y:
+          source_column: FS_NET_PROFIT_CUMULATIVE_L1Y
+          data_type: numeric_tl
+          label: L1Y net kar
+          definition: Son 12 ay net kar tutaridir; zarar veya sert dusus risk sinyali olabilir.
+          role: raw_amount
+
+    q_financial:
+      category: financial
+      description: Ara donem/ceyrek mali tablo kolonlari.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        financial_term_q:
+          source_column: FINANCIAL_TERM_Q
+          data_type: date
+          label: Q finansal donem
+          definition: Ara donem finansal tablonun ait oldugu donemdir.
+          role: financial_term
+        annualization_q:
+          source_column: ANNUALIZATION_Q
+          data_type: numeric
+          label: Q yilliklandirma katsayisi
+          definition: Ara donem finansalini yilliga cevirmek icin kullanilan katsayidir.
+          role: transform_context
+        fs_net_sales_cumulative_q:
+          source_column: FS_NET_SALES_CUMULATIVE_Q
+          data_type: numeric_tl
+          label: Q net satis
+          definition: Ara donem net satis tutaridir.
+          role: raw_amount
+        fs_ebitda_cumulative_q:
+          source_column: FS_EBITDA_CUMULATIVE_Q
+          data_type: numeric_tl
+          label: Q EBITDA
+          definition: Ara donem FAVOK/EBITDA tutaridir.
+          role: raw_amount
+        fs_net_profit_cumulative_q:
+          source_column: FS_NET_PROFIT_CUMULATIVE_Q
+          data_type: numeric_tl
+          label: Q net kar
+          definition: Ara donem net kar tutaridir.
+          role: raw_amount
+        fs_trade_receivables_q:
+          source_column: FS_TRADE_RECEIVABLES_Q
+          data_type: numeric_tl
+          label: Q ticari alacak
+          definition: Ara donem ticari alacak tutaridir.
+          role: raw_amount
+        fs_notes_receivable_q:
+          source_column: FS_NOTES_RECEIVABLE_Q
+          data_type: numeric_tl
+          label: Q senetli alacak
+          definition: Ara donem senetli alacak tutaridir.
+          role: raw_amount
+        supheli_alacaklar_q:
+          source_column: SUPHELI_ALACAKLAR_Q
+          data_type: numeric_tl
+          label: Q supheli alacak
+          definition: Ara donem supheli alacak tutaridir.
+          role: raw_amount
+        fs_equity_q:
+          source_column: FS_EQUITY_Q
+          data_type: numeric_tl
+          label: Q ozkaynak
+          definition: Ara donem ozkaynak tutaridir.
+          role: raw_amount
+
+    kkb:
+      category: kkb
+      description: KKB sorgu ve dis kredi kayit bilgileri.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        kkbguncelsorgu_no:
+          source_column: KKBGUNCELSORGU_NO
+          data_type: numeric
+          label: KKB guncel sorgu no
+          definition: En son KKB sorgu numarasidir; teknik/izleme amacli kullanilir.
+          role: technical_reference
+        kkb_sorgu_tarihi:
+          source_column: KKB_SORGU_TARIHI
+          data_type: date
+          label: KKB sorgu tarihi
+          definition: En son KKB sorgu tarihidir; inputta varsa veri guncelligi icin kullanilir.
+          role: data_freshness
+
+    pd_rating:
+      category: pd_rating
+      description: PD/rating sinyalleri. Numeric PD degerleri LLM feature setine alinmaz.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        irb_rating_pd:
+          source_column: IRB_RATING_PD
+          data_type: numeric
+          label: IRB rating PD
+          definition: Rating notuna karsilik gelen temerrut olasiligi; LLM karar kaniti olarak kullanilmaz.
+          role: pd_value_excluded_from_llm
+        irb_model_pd:
+          source_column: IRB_MODEL_PD
+          data_type: numeric
+          label: IRB model PD
+          definition: Istatistiksel model bazli temerrut olasiligi; LLM karar kaniti olarak kullanilmaz.
+          role: pd_value_excluded_from_llm
+        rating_group:
+          source_column: RATING_GROUP
+          data_type: numeric
+          label: Rating grup
+          definition: Derecelendirme/rating grubu; dogrudan rating sinyali olarak kullanilabilir.
+          role: direct_rating_signal_allowed
+          risk_direction: HIGHER_IS_RISKY
+          linguistic: "Rating grup yukselirse kredi riski artmis olabilir."
+
+    internal_other:
+      category: internal
+      description: Banka riski, memzuc, varlik ve internal KKB/TKN/TBE kolonlari.
+      source:
+        backend: oracle
+        table_key: multivar_input
+      variables:
+        bank_total_risk:
+          source_column: BANK_TOTAL_RISK
+          data_type: numeric_tl
+          label: Banka toplam risk
+          definition: Bankanin musterideki toplam kredi/risk tutaridir.
+          role: raw_amount
+        kred_top_am_risk:
+          source_column: KRED_TOP_AM_RISK
+          data_type: numeric_tl
+          label: Nakdi ve gayri nakdi risk
+          definition: Anapara ve islemis faiz dahil kredi risk tutaridir; inputta varsa banka riski contextidir.
+          role: raw_amount
+        krd_top_am_risk:
+          source_column: KRD_TOP_AM_RISK
+          data_type: numeric_tl
+          label: Nakdi ve gayri nakdi risk
+          definition: Kredi risk tutari icin alternatif kolon adidir.
+          role: raw_amount
+        memzuc_total_risk:
+          source_column: MEMZUC_TOTAL_RISK
+          data_type: numeric_tl
+          label: Memzuc toplam risk
+          definition: Musterinin bankacilik sistemindeki toplam riskidir.
+          role: raw_amount
+        memzuc_total_limit:
+          source_column: MEMZUC_TOTAL_LIMIT
+          data_type: numeric_tl
+          label: Memzuc toplam limit
+          definition: Musterinin bankacilik sistemindeki toplam limitidir.
+          role: raw_amount
+        memzuc_st_mt_cash_risk:
+          source_column: MEMZUC_ST_MT_CASH_RISK
+          data_type: numeric_tl
+          label: Memzuc KV/OV nakdi risk
+          definition: Kisa/orta vadeli nakdi risk tutaridir.
+          role: raw_amount
+        toplam_varlik_ttr:
+          source_column: TOPLAM_VARLIK_TTR
+          data_type: numeric_tl
+          label: Toplam varlik
+          definition: Musterinin toplam varlik degeridir; riskleri olceklendirmek icin kullanilir.
+          role: denominator
+        ref_donem_id:
+          source_column: REF_DONEM_ID
+          data_type: numeric
+          label: Varlik referans donemi
+          definition: Varlik bilgisinin ait oldugu referans donemdir.
+          role: reference_period
+        gunceltkn_dgr:
+          source_column: GUNCELTKN_DGR
+          data_type: numeric_tl
+          label: Guncel TKN degeri
+          definition: Guncel bireysel KKB/TKN borc degeridir.
+          role: raw_amount
+        gunceltbe_dgr:
+          source_column: GUNCELTBE_DGR
+          data_type: numeric_tl
+          label: Guncel TBE degeri
+          definition: Guncel ticari KKB/TBE borc degeridir.
+          role: raw_amount
+        yukleme_zmn:
+          source_column: YUKLEME_ZMN
+          data_type: timestamp
+          label: Yukleme zamani
+          definition: Kaydin sisteme yuklendigi zamandir; teknik kolondur.
+          role: technical
+        data_time:
+          source_column: DATA_TIME
+          data_type: timestamp
+          label: Veri zamani
+          definition: Oracle input veri zamanidir; teknik kolondur.
+          role: technical
+        created_at:
+          source_column: CREATED_AT
+          data_type: timestamp
+          label: Olusturma zamani
+          definition: Oracle input olusturma zamanidir; teknik kolondur.
+          role: technical
+
+generated_variables:
+  variables:
+    memzuc_limit_utilization:
+      enabled: true
+      label: Memzuc limit kullanim orani
+      category: memzuc
+      formula: memzuc_total_risk / memzuc_total_limit
+      inputs: [memzuc_total_risk, memzuc_total_limit]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Memzuc toplam riskinin memzuc toplam limite oranidir.
+      risk_direction: HIGHER_IS_RISKY
+      linguistic: "Memzuc limit kullanimi yukseldikce sistem geneli kredi kullanim baskisi artar."
+    memzuc_st_mt_cash_share:
+      enabled: true
+      label: Memzuc KV/OV nakdi risk payi
+      category: memzuc
+      formula: memzuc_st_mt_cash_risk / memzuc_total_risk
+      inputs: [memzuc_st_mt_cash_risk, memzuc_total_risk]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Memzuc kisa/orta vadeli nakdi riskin toplam memzuc risk icindeki payidir.
+      risk_direction: HIGHER_IS_RISKY
+    bank_risk_to_assets:
+      enabled: true
+      label: Banka risk / varlik
+      category: bank_risk
+      formula: bank_total_risk / toplam_varlik_ttr
+      inputs: [bank_total_risk, toplam_varlik_ttr]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Bankadaki toplam riskin musteri varlik buyuklugune oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    memzuc_risk_to_assets:
+      enabled: true
+      label: Memzuc risk / varlik
+      category: memzuc
+      formula: memzuc_total_risk / toplam_varlik_ttr
+      inputs: [memzuc_total_risk, toplam_varlik_ttr]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Sistem geneli toplam riskin musteri varlik buyuklugune oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    l1y_equity_to_assets:
+      enabled: true
+      label: L1Y ozkaynak / varlik
+      category: financial
+      formula: equity_l1y / toplam_varlik_ttr
+      inputs: [equity_l1y, toplam_varlik_ttr]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Yillik ozkaynak tutarinin toplam varliga oranidir.
+      risk_direction: LOWER_IS_RISKY
+    l1y_debt_to_sales:
+      enabled: true
+      label: Banka risk / L1Y satis
+      category: financial
+      formula: bank_total_risk / fs_net_sales_cumulative_l1y
+      inputs: [bank_total_risk, fs_net_sales_cumulative_l1y]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Bankadaki toplam riskin son 12 ay net satisina oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    memzuc_debt_to_l1y_sales:
+      enabled: true
+      label: Memzuc risk / L1Y satis
+      category: memzuc
+      formula: memzuc_total_risk / fs_net_sales_cumulative_l1y
+      inputs: [memzuc_total_risk, fs_net_sales_cumulative_l1y]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Sistem geneli toplam riskin son 12 ay net satisina oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    memzuc_to_bank_risk_ratio:
+      enabled: true
+      label: Memzuc risk / banka risk
+      category: memzuc
+      formula: memzuc_total_risk / bank_total_risk
+      inputs: [memzuc_total_risk, bank_total_risk]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Sistem geneli riskin bankadaki riske oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    bank_to_memzuc_risk_ratio:
+      enabled: true
+      label: Banka risk / memzuc risk
+      category: memzuc
+      formula: bank_total_risk / memzuc_total_risk
+      inputs: [bank_total_risk, memzuc_total_risk]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Bankadaki riskin sistem geneli riske oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    l1y_trade_receivables_to_assets:
+      enabled: true
+      label: L1Y ticari alacak / varlik
+      category: financial
+      formula: fs_trade_receivables_l1y / toplam_varlik_ttr
+      inputs: [fs_trade_receivables_l1y, toplam_varlik_ttr]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Yillik ticari alacaklarin toplam varliga oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    l1y_notes_receivable_to_assets:
+      enabled: true
+      label: L1Y senetli alacak / varlik
+      category: financial
+      formula: fs_notes_receivable_l1y / toplam_varlik_ttr
+      inputs: [fs_notes_receivable_l1y, toplam_varlik_ttr]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Yillik senetli alacaklarin toplam varliga oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    internal_tkn_to_assets:
+      enabled: true
+      label: TKN / varlik
+      category: internal_kkb
+      formula: gunceltkn_dgr / toplam_varlik_ttr
+      inputs: [gunceltkn_dgr, toplam_varlik_ttr]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Guncel TKN degerinin toplam varliga oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    internal_tbe_to_assets:
+      enabled: true
+      label: TBE / varlik
+      category: internal_kkb
+      formula: gunceltbe_dgr / toplam_varlik_ttr
+      inputs: [gunceltbe_dgr, toplam_varlik_ttr]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Guncel TBE degerinin toplam varliga oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    internal_tkn_to_sales:
+      enabled: true
+      label: TKN / L1Y satis
+      category: internal_kkb
+      formula: gunceltkn_dgr / fs_net_sales_cumulative_l1y
+      inputs: [gunceltkn_dgr, fs_net_sales_cumulative_l1y]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Guncel TKN degerinin son 12 ay satisina oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    internal_tbe_to_sales:
+      enabled: true
+      label: TBE / L1Y satis
+      category: internal_kkb
+      formula: gunceltbe_dgr / fs_net_sales_cumulative_l1y
+      inputs: [gunceltbe_dgr, fs_net_sales_cumulative_l1y]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Guncel TBE degerinin son 12 ay satisina oranidir.
+      risk_direction: HIGHER_IS_RISKY
+    internal_tkn_tbe_ratio:
+      enabled: true
+      label: TKN / TBE
+      category: internal_kkb
+      formula: gunceltkn_dgr / gunceltbe_dgr
+      inputs: [gunceltkn_dgr, gunceltbe_dgr]
+      source_module: engine.multivar_anomaly.build_feature_frame
+      definition: Bireysel KKB/TKN degerinin ticari KKB/TBE degerine oranidir.
+      risk_direction: HIGHER_IS_RISKY
+
+    q_equity_to_assets:
+      enabled: false
+      label: Ara donem ozkaynak / varlik
+      category: financial
+      formula: fs_equity_q / toplam_varlik_ttr
+      inputs: [fs_equity_q, toplam_varlik_ttr]
+      definition: Ara donem ozkaynak/varlik oranidir; final LLM setinden kapali tutulur.
+      risk_direction: LOWER_IS_RISKY
+    q_debt_to_sales:
+      enabled: false
+      label: Banka risk / ara donem satis
+      category: financial
+      formula: bank_total_risk / fs_net_sales_cumulative_q
+      inputs: [bank_total_risk, fs_net_sales_cumulative_q]
+      definition: Banka riskinin ara donem satisina oranidir; final LLM setinden kapali tutulur.
+      risk_direction: HIGHER_IS_RISKY
+    memzuc_debt_to_q_sales:
+      enabled: false
+      label: Memzuc risk / ara donem satis
+      category: memzuc
+      formula: memzuc_total_risk / fs_net_sales_cumulative_q
+      inputs: [memzuc_total_risk, fs_net_sales_cumulative_q]
+      definition: Sistem geneli riskin ara donem satisina oranidir; final LLM setinden kapali tutulur.
+      risk_direction: HIGHER_IS_RISKY
+    q_trade_receivables_to_assets:
+      enabled: false
+      label: Ara donem ticari alacak / varlik
+      category: financial
+      formula: fs_trade_receivables_q / toplam_varlik_ttr
+      inputs: [fs_trade_receivables_q, toplam_varlik_ttr]
+      definition: Ara donem ticari alacak/varlik oranidir; final LLM setinden kapali tutulur.
+      risk_direction: HIGHER_IS_RISKY
+    q_notes_receivable_to_assets:
+      enabled: false
+      label: Ara donem senetli alacak / varlik
+      category: financial
+      formula: fs_notes_receivable_q / toplam_varlik_ttr
+      inputs: [fs_notes_receivable_q, toplam_varlik_ttr]
+      definition: Ara donem senetli alacak/varlik oranidir; final LLM setinden kapali tutulur.
+      risk_direction: HIGHER_IS_RISKY
+    pd_ratio:
+      enabled: false
+      label: IRB rating PD / model PD
+      category: pd_rating
+      formula: irb_rating_pd / irb_model_pd
+      inputs: [irb_rating_pd, irb_model_pd]
+      definition: Numeric PD degerlerinin orani; LLM karar kaniti olarak yasaktir.
+      risk_direction: UNKNOWN
+
+final_llm_features:
+  mode: include_available
+  direct_allowed:
+    - rating_group
+  include:
+    - rating_group
+    - memzuc_limit_utilization
+    - memzuc_st_mt_cash_share
+    - bank_risk_to_assets
+    - memzuc_risk_to_assets
+    - l1y_equity_to_assets
+    - l1y_debt_to_sales
+    - memzuc_debt_to_l1y_sales
+    - memzuc_to_bank_risk_ratio
+    - bank_to_memzuc_risk_ratio
+    - l1y_trade_receivables_to_assets
+    - l1y_notes_receivable_to_assets
+    - internal_tkn_to_assets
+    - internal_tbe_to_assets
+    - internal_tkn_to_sales
+    - internal_tbe_to_sales
+    - internal_tkn_tbe_ratio
+  exclude:
+    - irb_rating_pd
+    - irb_model_pd
+    - pd_ratio
+    - pd_to_rating_group
+    - q_equity_to_assets
+    - q_debt_to_sales
+    - memzuc_debt_to_q_sales
+    - q_trade_receivables_to_assets
+    - q_notes_receivable_to_assets
+  forbidden:
+    - pd_ratio
+    - pd_to_rating_group
+  note: >
+    Yeni feature denemesi icin once generated_variables altinda formulu tanimla,
+    sonra LLM'e gitmesini istiyorsan include listesine ekle. PD numeric degerleri
+    ve PD/rating cross-ratio sinyalleri LLM karar setine alinmaz.

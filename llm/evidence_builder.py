@@ -42,6 +42,15 @@ from engine.multivar_anomaly import (
     select_model_features,
 )
 from engine.oracle_io import OracleConnector
+from engine.variable_dictionary import (
+    feature_formula_map,
+    final_llm_include_features,
+    generated_feature_inputs,
+    llm_direct_allowed_features,
+    llm_excluded_feature_names,
+    raw_variable_label_map,
+    variable_metadata,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -91,6 +100,7 @@ RAW_COLUMN_LABELS = {
     "data_time": "Oracle input tablosu teknik veri zamani",
     "created_at": "Oracle input tablosu teknik olusturma zamani",
 }
+RAW_COLUMN_LABELS.update(raw_variable_label_map())
 
 FEATURE_FORMULAS = {
     "memzuc_limit_utilization": "memzuc_total_risk / memzuc_total_limit",
@@ -111,6 +121,7 @@ FEATURE_FORMULAS = {
     "internal_tbe_to_sales": "gunceltbe_dgr / fs_net_sales_cumulative_l1y",
     "internal_tkn_tbe_ratio": "gunceltkn_dgr / gunceltbe_dgr",
 }
+FEATURE_FORMULAS.update(feature_formula_map())
 
 DECREASE_IS_RISK_HINTS = (
     "equity",
@@ -128,16 +139,16 @@ TECHNICAL_COLUMNS = {
     "created_at",
 }
 
-LLM_ALLOWED_RATING_FEATURES = {
-    "rating_group",
-}
+LLM_ALLOWED_RATING_FEATURES = llm_direct_allowed_features() or {"rating_group"}
 
-LLM_EXCLUDED_PD_VALUE_FEATURES = {
+DEFAULT_LLM_EXCLUDED_PD_VALUE_FEATURES = {
     "irb_rating_pd",
     "irb_model_pd",
     "pd_ratio",
     "pd_to_rating_group",
 }
+LLM_EXCLUDED_PD_VALUE_FEATURES = llm_excluded_feature_names() or DEFAULT_LLM_EXCLUDED_PD_VALUE_FEATURES
+FINAL_LLM_INCLUDE_FEATURES = final_llm_include_features()
 
 FORBIDDEN_PD_RATING_COMPARISON_SIGNALS = {
     "pd_ratio",
@@ -1164,12 +1175,18 @@ def infer_numeric_source_columns(frame: pd.DataFrame) -> list[str]:
 
 
 def feature_dictionary(feature: str) -> dict[str, Any]:
+    metadata = variable_metadata(feature)
     return {
-        "label": FEATURE_LABELS.get(feature, feature),
-        "category": variable_category(feature),
-        "formula": FEATURE_FORMULAS.get(feature),
-        "risk_direction": risk_direction(feature),
-        "interpretation_note": interpretation_note(feature),
+        "label": metadata.get("label") or FEATURE_LABELS.get(feature, feature),
+        "category": metadata.get("category") or variable_category(feature),
+        "formula": metadata.get("formula") or FEATURE_FORMULAS.get(feature),
+        "source_module": metadata.get("source_module"),
+        "source_columns": generated_feature_inputs(feature) or feature_source_columns(feature, []),
+        "source_column": metadata.get("source_column"),
+        "definition": metadata.get("definition"),
+        "source": metadata.get("source"),
+        "risk_direction": metadata.get("risk_direction") or risk_direction(feature),
+        "interpretation_note": metadata.get("linguistic") or interpretation_note(feature),
     }
 
 
@@ -1189,6 +1206,8 @@ def is_allowed_llm_feature(feature: Any) -> bool:
         return False
     if name in LLM_EXCLUDED_PD_VALUE_FEATURES:
         return False
+    if FINAL_LLM_INCLUDE_FEATURES and name not in FINAL_LLM_INCLUDE_FEATURES:
+        return False
     return True
 
 
@@ -1201,9 +1220,13 @@ def log_step_done(step_no: str, detail: str) -> None:
 
 
 def raw_column_dictionary(column: str) -> dict[str, Any]:
+    metadata = variable_metadata(column)
     return {
-        "label": RAW_COLUMN_LABELS.get(column) or FEATURE_LABELS.get(column),
-        "category": variable_category(column),
+        "label": metadata.get("label") or RAW_COLUMN_LABELS.get(column) or FEATURE_LABELS.get(column),
+        "category": metadata.get("category") or variable_category(column),
+        "definition": metadata.get("definition"),
+        "source": metadata.get("source"),
+        "source_column": metadata.get("source_column"),
         "role": raw_column_role(column),
     }
 
@@ -1293,6 +1316,13 @@ def log_transformed_feature_audit(selected_features: list[str], numeric_source_c
 
 def log_evidence_contract(selected_features: list[str]) -> None:
     logger.info(
+        "AUDIT VARIABLE DICTIONARY | raw_dictionary_columns=%s generated_dictionary_features=%s final_llm_include=%s final_llm_exclude=%s",
+        len(RAW_COLUMN_LABELS),
+        len(FEATURE_FORMULAS),
+        ",".join(sorted(FINAL_LLM_INCLUDE_FEATURES)) or "not_configured",
+        ",".join(sorted(LLM_EXCLUDED_PD_VALUE_FEATURES | FORBIDDEN_PD_RATING_COMPARISON_SIGNALS)),
+    )
+    logger.info(
         "AUDIT PIPELINE CONTRACT | raw_input=Oracle raw monthly rows generated_features=%s peer_grouping=%s excluded_signals=%s",
         len(selected_features),
         "cohort_dt + musteri_segment + sector + monthly_size hierarchy; rating_group/IRB rating allowed; PD numeric values and PD cross-ratios forbidden",
@@ -1319,6 +1349,9 @@ def log_evidence_contract(selected_features: list[str]) -> None:
 
 
 def feature_source_columns(feature: str, numeric_source_columns: list[str]) -> list[str]:
+    configured_inputs = generated_feature_inputs(feature)
+    if configured_inputs:
+        return configured_inputs
     formula = FEATURE_FORMULAS.get(feature)
     if not formula:
         return [feature] if feature in numeric_source_columns else []
@@ -1328,6 +1361,9 @@ def feature_source_columns(feature: str, numeric_source_columns: list[str]) -> l
 
 
 def variable_category(name: str) -> str:
+    metadata = variable_metadata(name)
+    if metadata.get("category"):
+        return str(metadata["category"])
     lower = str(name).lower()
     if lower in {ID_COLUMN, TIME_COLUMN}:
         return "identity_time"
@@ -1379,6 +1415,9 @@ def configured_oracle_table_name(table_key: str) -> str:
 
 
 def risk_direction(feature: str) -> str:
+    metadata = variable_metadata(feature)
+    if metadata.get("risk_direction"):
+        return str(metadata["risk_direction"])
     lower = feature.lower()
     if lower == "rating_group":
         return "HIGHER_IS_RISKY"
@@ -1390,6 +1429,11 @@ def risk_direction(feature: str) -> str:
 
 
 def interpretation_note(feature: str) -> str:
+    metadata = variable_metadata(feature)
+    if metadata.get("linguistic"):
+        return str(metadata["linguistic"])
+    if metadata.get("definition"):
+        return str(metadata["definition"])
     lower = feature.lower()
     if lower == "rating_group" or lower == "irb_rating":
         return "Rating sinyali kullanilabilir; PD degerleri karar kaniti olarak kullanilmaz."

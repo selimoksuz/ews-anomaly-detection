@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ast
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +17,15 @@ from sklearn.ensemble import IsolationForest
 
 from engine.config_loader import load_config, load_secrets, resolve_project_path
 from engine.oracle_io import OracleConnector
+from engine.variable_dictionary import (
+    feature_label_map,
+    final_llm_include_features,
+    generated_feature_names,
+    generated_source_columns,
+    generated_variable_metadata,
+    llm_direct_allowed_features,
+    llm_excluded_feature_names,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -93,7 +103,7 @@ PEER_MEANINGFULNESS_THRESHOLDS = {
     "min_median_support": 100.0,
     "min_narrow_peer_pct": 75.0,
 }
-FORBIDDEN_DERIVED_FEATURES = {
+DEFAULT_FORBIDDEN_DERIVED_FEATURES = {
     "pd_ratio",
     "pd_to_rating_group",
     "q_equity_to_assets",
@@ -102,12 +112,13 @@ FORBIDDEN_DERIVED_FEATURES = {
     "q_trade_receivables_to_assets",
     "q_notes_receivable_to_assets",
 }
+_DICTIONARY_FORBIDDEN_FEATURES = llm_excluded_feature_names()
+_DICTIONARY_GENERATED_FEATURES = generated_feature_names(enabled_only=False)
+FORBIDDEN_DERIVED_FEATURES = (
+    _DICTIONARY_FORBIDDEN_FEATURES & _DICTIONARY_GENERATED_FEATURES
+) or DEFAULT_FORBIDDEN_DERIVED_FEATURES
 
-DIRECT_PD_RATING_SIGNAL_FEATURES = {
-    "irb_rating_pd",
-    "irb_model_pd",
-    "rating_group",
-}
+DIRECT_PD_RATING_SIGNAL_FEATURES = llm_direct_allowed_features() or {"rating_group"}
 
 MULTIVAR_DETAIL_EXTRA_COLUMNS = {
     "PEER_LEVEL": "VARCHAR2(64)",
@@ -115,7 +126,7 @@ MULTIVAR_DETAIL_EXTRA_COLUMNS = {
     "PEER_QUALITY": "VARCHAR2(32)",
 }
 
-DERIVED_INPUT_COLUMNS = {
+DEFAULT_DERIVED_INPUT_COLUMNS = {
     "bank_total_risk",
     "toplam_varlik_ttr",
     "memzuc_total_risk",
@@ -138,6 +149,7 @@ DERIVED_INPUT_COLUMNS = {
     "gunceltkn_dgr",
     "gunceltbe_dgr",
 }
+DERIVED_INPUT_COLUMNS = generated_source_columns() or DEFAULT_DERIVED_INPUT_COLUMNS
 
 RAW_MODEL_EXCLUDE_COLUMNS = DERIVED_INPUT_COLUMNS | {
     "supheli_ticari_alacaklar_l1y",
@@ -148,6 +160,7 @@ RAW_MODEL_EXCLUDE_COLUMNS = DERIVED_INPUT_COLUMNS | {
     "gunceltkn_dgr",
     "gunceltbe_dgr",
 }
+GENERATED_FEATURE_NAMES = generated_feature_names(enabled_only=True)
 
 DERIVED_FEATURE_PREFIXES = (
     "l1y_",
@@ -323,6 +336,7 @@ FEATURE_LABELS = {
     "internal_tbe_to_sales": "TBE / L1Y satis",
     "internal_tkn_tbe_ratio": "TKN / TBE",
 }
+FEATURE_LABELS.update(feature_label_map())
 
 INCREASE_IS_RISK_TOKENS = (
     "risk",
@@ -1034,28 +1048,21 @@ def build_feature_frame(frame: pd.DataFrame, source_columns: Iterable[str]) -> p
         if column in normalized.columns:
             result[column] = coerce_numeric(normalized[column])
 
-    result["memzuc_limit_utilization"] = safe_divide(result.get("memzuc_total_risk"), result.get("memzuc_total_limit"))
-    result["memzuc_st_mt_cash_share"] = safe_divide(result.get("memzuc_st_mt_cash_risk"), result.get("memzuc_total_risk"))
-    result["bank_risk_to_assets"] = safe_divide(result.get("bank_total_risk"), result.get("toplam_varlik_ttr"))
-    result["memzuc_risk_to_assets"] = safe_divide(result.get("memzuc_total_risk"), result.get("toplam_varlik_ttr"))
-    result["l1y_equity_to_assets"] = safe_divide(result.get("equity_l1y"), result.get("toplam_varlik_ttr"))
-    result["q_equity_to_assets"] = safe_divide(result.get("fs_equity_q"), result.get("toplam_varlik_ttr"))
-    result["l1y_debt_to_sales"] = safe_divide(result.get("bank_total_risk"), result.get("fs_net_sales_cumulative_l1y"))
-    result["q_debt_to_sales"] = safe_divide(result.get("bank_total_risk"), result.get("fs_net_sales_cumulative_q"))
-    result["memzuc_debt_to_l1y_sales"] = safe_divide(result.get("memzuc_total_risk"), result.get("fs_net_sales_cumulative_l1y"))
-    result["memzuc_debt_to_q_sales"] = safe_divide(result.get("memzuc_total_risk"), result.get("fs_net_sales_cumulative_q"))
-    result["memzuc_to_bank_risk_ratio"] = safe_divide(result.get("memzuc_total_risk"), result.get("bank_total_risk"))
-    result["bank_to_memzuc_risk_ratio"] = safe_divide(result.get("bank_total_risk"), result.get("memzuc_total_risk"))
-    result["l1y_trade_receivables_to_assets"] = safe_divide(result.get("fs_trade_receivables_l1y"), result.get("toplam_varlik_ttr"))
-    result["l1y_notes_receivable_to_assets"] = safe_divide(result.get("fs_notes_receivable_l1y"), result.get("toplam_varlik_ttr"))
-    result["q_trade_receivables_to_assets"] = safe_divide(result.get("fs_trade_receivables_q"), result.get("toplam_varlik_ttr"))
-    result["q_notes_receivable_to_assets"] = safe_divide(result.get("fs_notes_receivable_q"), result.get("toplam_varlik_ttr"))
-    result["pd_ratio"] = safe_divide(result.get("irb_rating_pd"), result.get("irb_model_pd"))
-    result["internal_tkn_to_assets"] = safe_divide(result.get("gunceltkn_dgr"), result.get("toplam_varlik_ttr"))
-    result["internal_tbe_to_assets"] = safe_divide(result.get("gunceltbe_dgr"), result.get("toplam_varlik_ttr"))
-    result["internal_tkn_to_sales"] = safe_divide(result.get("gunceltkn_dgr"), result.get("fs_net_sales_cumulative_l1y"))
-    result["internal_tbe_to_sales"] = safe_divide(result.get("gunceltbe_dgr"), result.get("fs_net_sales_cumulative_l1y"))
-    result["internal_tkn_tbe_ratio"] = safe_divide(result.get("gunceltkn_dgr"), result.get("gunceltbe_dgr"))
+    for feature_name, metadata in generated_variable_metadata(enabled_only=True).items():
+        formula = str(metadata.get("formula", "")).strip()
+        if not formula:
+            logger.warning("Generated feature skipped because formula is empty: %s", feature_name)
+            continue
+        try:
+            result[feature_name] = evaluate_feature_formula(formula, result)
+        except Exception as exc:
+            logger.warning(
+                "Generated feature skipped because formula failed: feature=%s formula=%s error=%s",
+                feature_name,
+                formula,
+                exc,
+            )
+            result[feature_name] = pd.Series(np.nan, index=result.index, dtype=float)
     result = result.drop(columns=[column for column in FORBIDDEN_DERIVED_FEATURES if column in result.columns])
     return result.replace([np.inf, -np.inf], np.nan)
 
@@ -1320,7 +1327,11 @@ def select_model_features(
         if column not in {ID_COLUMN, TIME_COLUMN}
         and (column not in RAW_MODEL_EXCLUDE_COLUMNS or column in DIRECT_PD_RATING_SIGNAL_FEATURES)
         and column not in FORBIDDEN_DERIVED_FEATURES
-        and (column.startswith(DERIVED_FEATURE_PREFIXES) or column in DIRECT_PD_RATING_SIGNAL_FEATURES)
+        and (
+            column in GENERATED_FEATURE_NAMES
+            or column.startswith(DERIVED_FEATURE_PREFIXES)
+            or column in DIRECT_PD_RATING_SIGNAL_FEATURES
+        )
     ]
     selected = []
     for column in candidates:
@@ -2080,6 +2091,51 @@ def safe_divide(numerator, denominator) -> pd.Series:
     values = values.replace([np.inf, -np.inf], np.nan)
     values = values.where(values.abs() <= RATIO_ABS_MAX)
     return values.astype(float)
+
+
+def evaluate_feature_formula(expression: str, frame: pd.DataFrame) -> pd.Series:
+    """Evaluate a configured feature formula against numeric frame columns."""
+    parsed = ast.parse(expression, mode="eval")
+    values = _evaluate_formula_node(parsed.body, frame)
+    return pd.to_numeric(values, errors="coerce").astype(float)
+
+
+def _formula_index(frame: pd.DataFrame) -> pd.Index:
+    return frame.index if len(frame.index) else pd.RangeIndex(0)
+
+
+def _constant_series(value: float, frame: pd.DataFrame) -> pd.Series:
+    return pd.Series(float(value), index=_formula_index(frame), dtype=float)
+
+
+def _formula_column(name: str, frame: pd.DataFrame) -> pd.Series:
+    normalized = str(name).strip().lower()
+    if normalized not in frame.columns:
+        return pd.Series(np.nan, index=_formula_index(frame), dtype=float)
+    return pd.to_numeric(frame[normalized], errors="coerce").astype(float)
+
+
+def _evaluate_formula_node(node: ast.AST, frame: pd.DataFrame) -> pd.Series:
+    if isinstance(node, ast.Name):
+        return _formula_column(node.id, frame)
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return _constant_series(float(node.value), frame)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        return -_evaluate_formula_node(node.operand, frame)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd):
+        return _evaluate_formula_node(node.operand, frame)
+    if isinstance(node, ast.BinOp):
+        left = _evaluate_formula_node(node.left, frame)
+        right = _evaluate_formula_node(node.right, frame)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            return safe_divide(left, right)
+    raise ValueError(f"Unsupported formula expression: {ast.dump(node, include_attributes=False)}")
 
 
 def signed_log1p(frame: pd.DataFrame) -> pd.DataFrame:
