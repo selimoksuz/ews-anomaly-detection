@@ -5,9 +5,13 @@ import json
 import logging
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, List, Optional
 
+import pandas as pd
+
+from engine.multivar_anomaly import ID_COLUMN, TIME_COLUMN, run_multivar_anomaly
 from engine.config_loader import load_secrets
 from llm.evidence_builder import (
     EvidenceConfig,
@@ -31,6 +35,11 @@ except ImportError:  # Runtime dependency is checked when the LLM chain is built
 
 
 logger = logging.getLogger(__name__)
+warnings.filterwarnings(
+    "ignore",
+    message="The behavior of DataFrame concatenation with empty or all-NA entries is deprecated.*",
+    category=FutureWarning,
+)
 LLM_PAYLOAD_PREVIEW_CUSTOMERS = 3
 LLM_PAYLOAD_PREVIEW_CHARS = 50000
 LLM_ERROR_PAYLOAD_PREVIEW_CHARS = 8000
@@ -53,6 +62,7 @@ Bu seriler ayrica karar satiri degildir; sadece secilen snapshot'in anomali olup
 
 Kurallar:
 - Degisken sozlugunu oku: is anlami, formul, risk yonu ve birimi dikkate al.
+- Tum aciklama alanlarini Turkce yaz. reason_summary ve reason_1/2/3 icinde Ingilizce cumle kullanma.
 - Cari degeri musterinin kendi gecmisiyle, ayni sezon gecmisiyle ve peer grubuyla karsilastir.
 - snapshot_series.customer ile musterinin son snapshot degerlerini, snapshot_series.peer ile ayni snapshotlardaki peer median/support/quality bilgisini birlikte oku.
 - Tek donem sicrama, kademeli trend bozulmasi, sezon etkisi ve veri kalitesi problemini ayir.
@@ -87,13 +97,13 @@ OUTPUT_CONTRACT = {
     "period_position": "0-based integer",
     "is_anomaly": "boolean",
     "anomaly_type": "ANI_RISK_ARTISI | FINANSAL_BOZULMA | PD_RISKI | KKB_RISKI | PEER_UYUMSUZLUGU | DATA_GAP | TREND_KIRILMASI | SEZON_DISI_SAPMA | NORMAL",
-    "anomaly_score": "0.0-1.0 anomaly severity score",
-    "reason_summary": "single Turkish explanation combining history, peer, trend, seasonality and data quality",
-    "reason_1": "highest impact reason",
+    "anomaly_score": "0.0-1.0 arasi anomali siddet skoru; guven skoru degildir",
+    "reason_summary": "history, peer, trend, sezon ve veri kalitesini birlestiren Turkce tekil aciklama",
+    "reason_1": "karara en cok etki eden Turkce neden",
     "reason_1_weight": "0.0-1.0",
-    "reason_2": "second highest impact reason or empty",
+    "reason_2": "karara ikinci en cok etki eden Turkce neden veya bos",
     "reason_2_weight": "0.0-1.0",
-    "reason_3": "third highest impact reason or empty",
+    "reason_3": "karara ucuncu en cok etki eden Turkce neden veya bos",
     "reason_3_weight": "0.0-1.0",
     "risk_level": "DUSUK | ORTA | YUKSEK | KRITIK",
 }
@@ -299,6 +309,7 @@ def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
         "Cikti: Tek satir JSON object olmali; results listesi, feature listesi veya birden fazla karar dondurme.",
         "JSON disinda metin yazma. Markdown/code fence/Python repr kullanma. JSON'u string icine gomerek dondurme.",
         "Alanlar: period_position, is_anomaly, anomaly_type, anomaly_score, reason_summary, reason_1, reason_1_weight, reason_2, reason_2_weight, reason_3, reason_3_weight, risk_level.",
+        "Tum aciklama icerigi Turkce olmali; reason_summary ve reason_1/2/3 Ingilizce cumle icermemeli.",
         "anomaly_score 0.0-1.0 arasi anomali siddet skorudur; confidence degildir.",
         "reason_summary tekil karar nedenini birlestirilmis olarak anlatir.",
         "reason_1/2/3 en yuksek etkili uc nedeni temsil eder; weight alanlari goreli karar agirligidir.",
@@ -1073,6 +1084,136 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
     return decisions
 
 
+def attach_ml_companion_scores(
+    decisions: list[dict[str, Any]],
+    evidence_items: list[dict[str, Any]],
+    *,
+    table_key: str,
+    scoring_month: str | None,
+    max_train_rows: int | None,
+    output_path: str | Path,
+) -> list[dict[str, Any]]:
+    """Append non-LLM anomaly scores for the same customer snapshots.
+
+    These columns are persisted only for comparison. They are not sent to the
+    LLM prompt and do not influence the LLM decision.
+    """
+
+    if not decisions:
+        return decisions
+    customer_ids = distinct_evidence_customer_ids(evidence_items)
+    if not customer_ids:
+        logger.warning("ML companion scoring skipped because evidence has no customer ids.")
+        return decisions
+
+    selected_month = scoring_month or first_evidence_month(evidence_items)
+    companion_dir = Path(output_path).parent / "ml_companion"
+    log_step("04M", "Ayni musteri snapshotlari icin ML anomaly skorlari uretiliyor")
+    logger.info(
+        "Starting ML companion scoring: table_key=%s scoring_month=%s customers=%s max_train_rows=%s output_dir=%s",
+        table_key,
+        selected_month or "latest",
+        len(customer_ids),
+        max_train_rows,
+        companion_dir,
+    )
+    summary = run_multivar_anomaly(
+        source="oracle",
+        table_key=table_key,
+        scoring_month=selected_month,
+        max_train_rows=max_train_rows,
+        output_dir=companion_dir,
+        persist_oracle_outputs=False,
+        score_customer_ids=customer_ids,
+    )
+    score_frame = pd.read_csv(summary["scores_path"], encoding="utf-8-sig")
+    score_lookup = ml_score_lookup(score_frame)
+    attached = 0
+    for decision in decisions:
+        key = decision_lookup_key(decision)
+        row = score_lookup.get(key)
+        if row is None:
+            row = score_lookup.get((str(decision.get("mono_id")), ""))
+        if row is None:
+            continue
+        decision["ml_anomaly_score"] = clean_float(row.get("anomaly_score"))
+        decision["ml_if_score"] = clean_float(row.get("if_score"))
+        decision["ml_residual_score"] = clean_float(row.get("residual_score"))
+        decision["ml_alert_band"] = text_or_empty(row.get("alert_band"))
+        decision["ml_is_anomaly"] = text_or_empty(row.get("alert_band")).upper() != "NORMAL"
+        attached += 1
+    logger.info(
+        "Completed ML companion scoring: attached=%s/%s scores_path=%s scored_rows=%s",
+        attached,
+        len(decisions),
+        summary["scores_path"],
+        summary.get("scored_rows"),
+    )
+    log_step_done("04M", f"ml_scores_attached={attached}/{len(decisions)} scores_path={summary['scores_path']}")
+    return decisions
+
+
+def distinct_evidence_customer_ids(evidence_items: list[dict[str, Any]]) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in evidence_items:
+        customer_id = str(item.get("mono_id") or "").strip()
+        if not customer_id or customer_id in seen:
+            continue
+        seen.add(customer_id)
+        ids.append(customer_id)
+    return ids
+
+
+def first_evidence_month(evidence_items: list[dict[str, Any]]) -> str | None:
+    for item in evidence_items:
+        value = item.get("cohort_dt")
+        if value:
+            return str(value)
+    return None
+
+
+def ml_score_lookup(score_frame: pd.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
+    frame = score_frame.copy()
+    frame.columns = [str(column).strip().lower() for column in frame.columns]
+    lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    for _, row in frame.iterrows():
+        customer_id = str(row.get(ID_COLUMN) or "").strip()
+        month_value = row.get(TIME_COLUMN)
+        month = "" if pd.isna(month_value) else pd.Timestamp(month_value).strftime("%Y-%m-%d")
+        payload = row.to_dict()
+        lookup[(customer_id, month)] = payload
+        lookup.setdefault((customer_id, ""), payload)
+    return lookup
+
+
+def decision_lookup_key(decision: dict[str, Any]) -> tuple[str, str]:
+    customer_id = str(decision.get("mono_id") or "").strip()
+    month_value = decision.get("cohort_dt")
+    month = "" if month_value is None else pd.Timestamp(month_value).strftime("%Y-%m-%d")
+    return customer_id, month
+
+
+def clean_float(value: Any) -> float | None:
+    try:
+        if pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def text_or_empty(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
 def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
     items = []
     with Path(path).open("r", encoding="utf-8") as handle:
@@ -1128,6 +1269,7 @@ def main(argv: list[str] | None = None) -> int:
     run_oracle_parser.add_argument("--table-key", default="multivar_input")
     run_oracle_parser.add_argument("--persist-oracle", action="store_true", default=True)
     run_oracle_parser.add_argument("--dry-run", action="store_true")
+    run_oracle_parser.add_argument("--skip-ml-companion", action="store_true")
 
     ensure_parser = subparsers.add_parser("ensure-output-tables")
     ensure_parser.add_argument("--scoring-month")
@@ -1206,6 +1348,19 @@ def main(argv: list[str] | None = None) -> int:
             if evidence:
                 audit_llm_output_tables(evidence[0].get("cohort_dt"))
             return 2
+        if not args.dry_run and not args.skip_ml_companion:
+            try:
+                decisions = attach_ml_companion_scores(
+                    decisions,
+                    evidence,
+                    table_key=args.table_key,
+                    scoring_month=args.scoring_month,
+                    max_train_rows=args.max_train_rows,
+                    output_path=args.output_path,
+                )
+            except Exception as exc:
+                log_step_failed("04M", f"ML companion scoring failed: {exc}")
+                return 4
         output_path = write_jsonl(decisions, args.output_path)
         logger.info("Wrote %s LLM decision rows to %s", len(decisions), output_path)
         print(f"wrote {len(decisions)} LLM decision rows to {output_path}")

@@ -429,6 +429,7 @@ def run_multivar_anomaly(
     n_estimators: int = 150,
     max_calibration_rows: int | None = DEFAULT_MAX_CALIBRATION_ROWS,
     persist_oracle_outputs: bool | None = None,
+    score_customer_ids: Iterable[str] | None = None,
 ) -> dict:
     """Train on prior months and score one monthly cohort from CSV or Oracle."""
 
@@ -437,6 +438,11 @@ def run_multivar_anomaly(
         source = "csv" if input_path is not None else "oracle"
     if source not in {"oracle", "csv"}:
         raise ValueError("source must be 'auto', 'oracle', or 'csv'.")
+    score_customer_id_set = {
+        str(value)
+        for value in (score_customer_ids or [])
+        if value is not None and str(value).strip()
+    }
 
     input_path = resolve_project_path(input_path) if input_path is not None else None
     if source == "csv":
@@ -533,7 +539,32 @@ def run_multivar_anomaly(
     anomaly_score = np.clip(0.55 * if_score + 0.45 * residual_score, 0, 100)
     band_thresholds = operational_band_thresholds(anomaly_score)
 
-    score_feature_values = score_features[selected_features].copy()
+    result_positions = np.arange(len(score_df))
+    if score_customer_id_set:
+        customer_mask = score_df[ID_COLUMN].astype(str).isin(score_customer_id_set).to_numpy()
+        result_positions = np.flatnonzero(customer_mask)
+        if not len(result_positions):
+            raise ValueError(
+                "No scoring rows matched score_customer_ids for "
+                f"{selected_month.date()}: requested={len(score_customer_id_set)}"
+            )
+        missing_requested = score_customer_id_set - set(score_df.loc[customer_mask, ID_COLUMN].astype(str))
+        logger.info(
+            "Filtering multivar result rows to requested customers: requested=%s matched=%s missing=%s note='model and peer references are still fitted on the full scoring cohort'",
+            len(score_customer_id_set),
+            len(result_positions),
+            len(missing_requested),
+        )
+
+    result_score_df = score_df.iloc[result_positions].copy()
+    result_score_features = score_features.iloc[result_positions].copy()
+    result_score_peer = subset_peer_artifacts(score_peer, result_score_features.index)
+    result_x_score = x_score[result_positions]
+    result_if_score = if_score[result_positions]
+    result_residual_score = residual_score[result_positions]
+    result_anomaly_score = anomaly_score[result_positions]
+
+    score_feature_values = result_score_features[selected_features].copy()
     train_reference = train_features[selected_features].median(axis=0, skipna=True)
     peer_reference = score_features[selected_features].median(axis=0, skipna=True)
     prior_reference = (
@@ -550,25 +581,25 @@ def run_multivar_anomaly(
     coverage_ratio = score_feature_values.notna().mean(axis=1).fillna(0.0).to_numpy(dtype=float)
     data_gap_score = np.clip((1.0 - coverage_ratio) * 100.0, 0, 100)
     missing_feature_count = score_feature_values.isna().sum(axis=1).to_numpy(dtype=int)
-    agreement = 1.0 - (np.abs(if_score - residual_score) / 100.0)
+    agreement = 1.0 - (np.abs(result_if_score - result_residual_score) / 100.0)
     confidence = np.clip((0.65 * coverage_ratio + 0.35 * agreement) * 100.0, 0, 100)
 
-    feature_severity = pd.DataFrame(np.abs(x_score), columns=model_features, index=score_features.index)
+    feature_severity = pd.DataFrame(np.abs(result_x_score), columns=model_features, index=result_score_features.index)
     logger.info("Building result rows and reason details.")
     results = build_results(
-        score_df=score_df,
-        score_features=score_features,
+        score_df=result_score_df,
+        score_features=result_score_features,
         feature_severity=feature_severity,
         selected_features=selected_features,
         missing_features=missing_features,
         train_reference=train_reference,
         peer_reference=peer_reference,
-        peer_artifacts=score_peer,
+        peer_artifacts=result_score_peer,
         prior_reference=prior_reference,
         prior_context=prior_context,
-        anomaly_score=anomaly_score,
-        if_score=if_score,
-        residual_score=residual_score,
+        anomaly_score=result_anomaly_score,
+        if_score=result_if_score,
+        residual_score=result_residual_score,
         confidence=confidence,
         coverage_ratio=coverage_ratio,
         data_gap_score=data_gap_score,
@@ -619,6 +650,7 @@ def run_multivar_anomaly(
         "oracle_output": oracle_output,
         "scoring_month": selected_month.strftime("%Y-%m-%d"),
         "scored_rows": int(len(results)),
+        "score_customer_filter_count": int(len(score_customer_id_set)),
         "train_rows": int(len(train_df)),
         "calibration_rows": int(len(x_calibration)),
         "prior_rows_available": int(prior_rows),
@@ -1115,6 +1147,21 @@ def build_peer_artifacts(
         representativeness_score=peer_representativeness,
         quality=peer_quality,
         peer_key=context["peer_key"],
+    )
+
+
+def subset_peer_artifacts(artifacts: PeerArtifacts, index: pd.Index) -> PeerArtifacts:
+    """Keep peer references aligned after scoring rows are filtered for output."""
+
+    return PeerArtifacts(
+        model_features=artifacts.model_features.loc[index].copy(),
+        median=artifacts.median.loc[index].copy(),
+        support=artifacts.support.loc[index].copy(),
+        zscore=artifacts.zscore.loc[index].copy(),
+        level=artifacts.level.loc[index].copy(),
+        representativeness_score=artifacts.representativeness_score.loc[index].copy(),
+        quality=artifacts.quality.loc[index].copy(),
+        peer_key=artifacts.peer_key.loc[index].copy(),
     )
 
 

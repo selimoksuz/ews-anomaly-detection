@@ -67,7 +67,7 @@ class FakeInvokeChain:
 
 
 class FakeRawMessage:
-    content = '{"period_position":0,"is_anomaly":false,"anomaly_type":"NORMAL","anomaly_score":0.1,"reason_summary":"Test","reason_1":"History normal","reason_1_weight":1.0,"risk_level":"DUSUK"}'
+    content = '{"period_position":0,"is_anomaly":false,"anomaly_type":"NORMAL","anomaly_score":0.1,"reason_summary":"Test kaydi normal gorunuyor.","reason_1":"Musteri gecmisinde belirgin bozulma yok","reason_1_weight":1.0,"risk_level":"DUSUK"}'
     additional_kwargs = {"tool_calls": []}
     response_metadata = {"status": "ok"}
     tool_calls = []
@@ -225,7 +225,7 @@ class StructuredChainCallTests(unittest.TestCase):
         self.assertEqual(len(decisions), 1)
         self.assertEqual(decisions[0]["mono_id"], "C1")
         self.assertEqual(decisions[0]["anomaly_score"], 0.1)
-        self.assertEqual(decisions[0]["reason_1"], "History normal")
+        self.assertEqual(decisions[0]["reason_1"], "Musteri gecmisinde belirgin bozulma yok")
 
     def test_raw_content_json_fence_is_parsed_when_present(self):
         evidence = [{"mono_id": "C1", "cohort_dt": "2026-05-31", "features": [1]}]

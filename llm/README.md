@@ -141,6 +141,8 @@ Model feature veya neden bazinda birden fazla `results` item'i dondurmemelidir. 
 
 Output format parse edilebilir olmak zorundadir: tek satir JSON object, markdown/code fence yok, JSON string wrapper yok, Python repr yok. Internal endpoint bazen structured parser'a tool-call objesi vermek yerine JSON'u `AIMessage.content` icinde duz metin olarak dondurur; kod bu durumda raw content icindeki JSON objeyi okuyup ayni tek satir karar kontratina sokar.
 
+`reason_summary`, `reason_1`, `reason_2`, `reason_3` ve LLM kaynakli aciklama alanlari Turkce olmalidir. Alan adlari Oracle/JSON kontrati geregi teknik isim olarak kalir.
+
 Evidence, ham nested JSON dump olarak degil ayni bilgileri tasiyan kompakt text olarak gonderilir; bu feature veya veri azaltma degildir, gereksiz token sismesini azaltmak icindir.
 
 `timeout_seconds` eski config/secret dosyalarinda kalsa bile LLM scoring cagrisina aktarilmaz. Bu bilerek yapildi; onceki calisan notebook `ChatOpenAI` icine timeout vermedigi icin uzun structured cevaplarda client tarafinda erken kesme olmuyordu.
@@ -251,6 +253,8 @@ Onemli:
 
 - `build-oracle`: sadece evidence JSONL uretir, LLM'e gitmez, Oracle output insert yapmaz.
 - `run-oracle`: Oracle'dan okur, evidence uretir, LLM'e gider, structured output'u Oracle tablolarina yazar.
+- `run-oracle` varsayilan olarak ayni musteri/snapshot listesi icin mevcut multivar ML skorlayiciyi de calistirir ve LLM sonucuna `ML_ANOMALY_SCORE`, `ML_IS_ANOMALY`, `ML_ALERT_BAND`, `ML_IF_SCORE`, `ML_RESIDUAL_SCORE` kolonlarini ekler. Bu skorlar LLM promptuna verilmez; sadece karsilastirma icin output satirina yazilir.
+- ML companion skoru istenmezse `--skip-ml-companion` kullan.
 - `--dry-run`: LLM'e gitmez ve Oracle output insert yapmaz; sadece prompt/evidence kontrolu icindir.
 - `--max-customers 10`: LLM'e gidecek scoring snapshot/musteri sayisidir. Her musteri scoring ayinda 1 karar satiri olarak gider; history satirlari insert edilmez, evidence icinde baglam olarak kullanilir.
 - `--max-train-rows 300000`: LLM'e 300k satir gondermez. History, peer, trend ve seasonality referanslarini hesaplamak icin kullanilan gecmis/reference ust limitidir.
@@ -267,7 +271,7 @@ python -m llm.llm_anomaly ensure-output-tables --scoring-month 2026-05-31
 
 LLM karar tablolari:
 
-- `ZT_VAR2.EWS_ANOMALY_LLM_RESULTS`: musteri-donem seviyesinde `IS_ANOMALY`, `ANOMALY_TYPE`, `RISK_LEVEL`, `ANOMALY_SCORE`, `REASON_SUMMARY`, `REASON_1/2/3`, `REASON_1_WEIGHT/2_WEIGHT/3_WEIGHT` ve raw JSON response.
+- `ZT_VAR2.EWS_ANOMALY_LLM_RESULTS`: musteri-donem seviyesinde `IS_ANOMALY`, `ANOMALY_TYPE`, `RISK_LEVEL`, LLM `ANOMALY_SCORE`, ML comparison kolonlari (`ML_ANOMALY_SCORE`, `ML_IS_ANOMALY`, `ML_ALERT_BAND`, `ML_IF_SCORE`, `ML_RESIDUAL_SCORE`), `REASON_SUMMARY`, `REASON_1/2/3`, `REASON_1_WEIGHT/2_WEIGHT/3_WEIGHT` ve raw JSON response.
 - `ZT_VAR2.EWS_ANOMALY_LLM_REASONS`: tek karar icindeki top reason alanlarinin detay satirlari.
 
 ## Terminalde Beklenen Akis
@@ -280,6 +284,7 @@ STEP 01 START/DONE | Oracle kaynak tablo ve ay profili okunuyor
 STEP 02 START/DONE | Ham tablo kolonlari ve veri sozlugu denetleniyor
 STEP 03 START/DONE | Musteri bazli history ve aylik peer gruplariyla LLM evidence uretiliyor
 STEP 04 START/DONE | LLM modelinden anomali karari aliniyor
+STEP 04M START/DONE | Ayni musteri snapshotlari icin ML anomaly skorlari uretiliyor
 STEP 05 START/DONE | LLM kararlari Oracle output tablolarina yaziliyor
 ```
 

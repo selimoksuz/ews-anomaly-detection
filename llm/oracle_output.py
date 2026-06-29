@@ -27,6 +27,11 @@ LLM_RESULT_COLUMNS = [
     "anomaly_type",
     "risk_level",
     "anomaly_score",
+    "ml_anomaly_score",
+    "ml_is_anomaly",
+    "ml_alert_band",
+    "ml_if_score",
+    "ml_residual_score",
     "reason_summary",
     "reason_1",
     "reason_1_weight",
@@ -58,6 +63,11 @@ LLM_RESULT_COLUMN_DDLS = {
     "ANOMALY_TYPE": "ANOMALY_TYPE VARCHAR2(64)",
     "RISK_LEVEL": "RISK_LEVEL VARCHAR2(32)",
     "ANOMALY_SCORE": "ANOMALY_SCORE NUMBER(6,4)",
+    "ML_ANOMALY_SCORE": "ML_ANOMALY_SCORE NUMBER(6,2)",
+    "ML_IS_ANOMALY": "ML_IS_ANOMALY NUMBER(1)",
+    "ML_ALERT_BAND": "ML_ALERT_BAND VARCHAR2(32)",
+    "ML_IF_SCORE": "ML_IF_SCORE NUMBER(6,2)",
+    "ML_RESIDUAL_SCORE": "ML_RESIDUAL_SCORE NUMBER(6,2)",
     "REASON_SUMMARY": "REASON_SUMMARY VARCHAR2(4000)",
     "REASON_1": "REASON_1 VARCHAR2(2000)",
     "REASON_1_WEIGHT": "REASON_1_WEIGHT NUMBER(6,4)",
@@ -442,6 +452,11 @@ def prepare_llm_result_frame(
                 "anomaly_type": text_or_none(decision.get("anomaly_type"), 64),
                 "risk_level": text_or_none(decision.get("risk_level"), 32),
                 "anomaly_score": number_or_none(decision.get("anomaly_score")),
+                "ml_anomaly_score": number_or_none(decision.get("ml_anomaly_score")),
+                "ml_is_anomaly": bool_to_number_or_none(decision.get("ml_is_anomaly")),
+                "ml_alert_band": text_or_none(decision.get("ml_alert_band"), 32),
+                "ml_if_score": number_or_none(decision.get("ml_if_score")),
+                "ml_residual_score": number_or_none(decision.get("ml_residual_score")),
                 "reason_summary": text_or_none(decision.get("reason_summary"), 4000),
                 "reason_1": text_or_none(decision.get("reason_1"), 2000),
                 "reason_1_weight": number_or_none(decision.get("reason_1_weight")),
@@ -507,6 +522,23 @@ def number_or_none(value) -> float | None:
         return None
 
 
+def bool_to_number_or_none(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "evet", "anomaly", "anomali"}:
+            return 1
+        if normalized in {"0", "false", "no", "n", "hayir", "normal"}:
+            return 0
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return 1 if bool(value) else 0
+
+
 def text_or_none(value, limit: int) -> str | None:
     if value is None:
         return None
@@ -532,6 +564,11 @@ def llm_results_table_ddl(ora: OracleConnector, table_key: str) -> str:
             ANOMALY_TYPE VARCHAR2(64),
             RISK_LEVEL VARCHAR2(32),
             ANOMALY_SCORE NUMBER(6,4),
+            ML_ANOMALY_SCORE NUMBER(6,2),
+            ML_IS_ANOMALY NUMBER(1),
+            ML_ALERT_BAND VARCHAR2(32),
+            ML_IF_SCORE NUMBER(6,2),
+            ML_RESIDUAL_SCORE NUMBER(6,2),
             REASON_SUMMARY VARCHAR2(4000),
             REASON_1 VARCHAR2(2000),
             REASON_1_WEIGHT NUMBER(6,4),

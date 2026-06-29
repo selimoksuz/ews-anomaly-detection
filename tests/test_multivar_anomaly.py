@@ -98,6 +98,19 @@ class MultivarAnomalyTests(unittest.TestCase):
             self.assertIn("review_queue", scores.columns)
             self.assertGreaterEqual(scores.loc[0, "anomaly_score"], scores.loc[1, "anomaly_score"])
 
+            filtered_summary = run_multivar_anomaly(
+                input_path=input_path,
+                output_dir=tmp_path / "out_filtered",
+                max_train_rows=100,
+                chunk_size=10,
+                n_estimators=20,
+                score_customer_ids=["C_000", "C_001"],
+            )
+            filtered_scores = pd.read_csv(filtered_summary["scores_path"])
+            self.assertEqual(filtered_summary["scored_rows"], 2)
+            self.assertEqual(set(filtered_scores["mono_id"].astype(str)), {"C_000", "C_001"})
+            self.assertEqual(filtered_summary["score_customer_filter_count"], 2)
+
     def test_operational_bands_use_top_tail_thresholds(self):
         scores = list(range(100))
         thresholds = operational_band_thresholds(scores)
