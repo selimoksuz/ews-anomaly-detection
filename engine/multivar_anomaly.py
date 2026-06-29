@@ -114,7 +114,7 @@ DEFAULT_EXCLUDED_DERIVED_FEATURES = {
     "q_notes_receivable_to_assets",
 }
 _DICTIONARY_EXCLUDED_FEATURES = llm_excluded_feature_names()
-_DICTIONARY_GENERATED_FEATURES = generated_feature_names(enabled_only=False)
+_DICTIONARY_GENERATED_FEATURES = generated_feature_names()
 EXCLUDED_DERIVED_FEATURES = (
     _DICTIONARY_EXCLUDED_FEATURES & _DICTIONARY_GENERATED_FEATURES
 ) or DEFAULT_EXCLUDED_DERIVED_FEATURES
@@ -161,7 +161,7 @@ RAW_MODEL_EXCLUDE_COLUMNS = DERIVED_INPUT_COLUMNS | {
     "gunceltkn_dgr",
     "gunceltbe_dgr",
 }
-GENERATED_FEATURE_NAMES = generated_feature_names(enabled_only=True)
+GENERATED_FEATURE_NAMES = generated_feature_names()
 
 DERIVED_FEATURE_PREFIXES = (
     "l1y_",
@@ -1049,7 +1049,9 @@ def build_feature_frame(frame: pd.DataFrame, source_columns: Iterable[str]) -> p
         if column in normalized.columns:
             result[column] = coerce_numeric(normalized[column])
 
-    for feature_name, metadata in generated_variable_metadata(enabled_only=True).items():
+    for feature_name, metadata in generated_variable_metadata().items():
+        if feature_name in EXCLUDED_DERIVED_FEATURES:
+            continue
         formula = str(metadata.get("formula", "")).strip()
         if not formula:
             logger.warning("Generated feature skipped because formula is empty: %s", feature_name)

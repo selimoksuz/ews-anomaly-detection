@@ -20,7 +20,7 @@ Degisken sozlugu ve feature deneme noktasi `config/dictionaries.yaml` dosyasidir
 - `final_llm_features.exclude`: LLM'e gitmeyecek degiskenlerdir. Numeric PD degerleri ve PD/rating oranlari burada kapali tutulur.
 - `risk_direction`: `HIGHER_IS_RISKY` ise artan deger risk bozulmasi, azalan deger iyilesme; `LOWER_IS_RISKY` ise azalan deger risk bozulmasi, artan deger iyilesme olarak yorumlanir.
 
-Yeni bir deneme icin once `generated_variables.variables` altina feature ekle, sonra LLM'e gitsin istiyorsan ayni feature adini `final_llm_features.include` listesine ekle.
+Yeni bir deneme icin once `generated_variables.variables` altina feature ekle, sonra LLM'e gitsin istiyorsan ayni feature adini `final_llm_features.include` listesine ekle. `enabled` veya `source_module` kullanilmaz; kapatmak istedigin feature'i `final_llm_features.exclude` listesine al.
 
 ## Evidence Uretme
 

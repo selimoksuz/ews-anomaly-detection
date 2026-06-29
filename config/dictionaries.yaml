@@ -380,153 +380,120 @@ raw_variables:
 generated_variables:
   variables:
     memzuc_limit_utilization:
-      enabled: true
       label: Memzuc limit kullanim orani
       category: memzuc
       formula: memzuc_total_risk / memzuc_total_limit
       inputs: [memzuc_total_risk, memzuc_total_limit]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Memzuc toplam riskinin memzuc toplam limite oranidir.
       risk_direction: HIGHER_IS_RISKY
       linguistic: "Memzuc limit kullanimi yukseldikce sistem geneli kredi kullanim baskisi artar."
     memzuc_st_mt_cash_share:
-      enabled: true
       label: Memzuc KV/OV nakdi risk payi
       category: memzuc
       formula: memzuc_st_mt_cash_risk / memzuc_total_risk
       inputs: [memzuc_st_mt_cash_risk, memzuc_total_risk]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Memzuc kisa/orta vadeli nakdi riskin toplam memzuc risk icindeki payidir.
       risk_direction: HIGHER_IS_RISKY
     bank_risk_to_assets:
-      enabled: true
       label: Banka risk / varlik
       category: bank_risk
       formula: bank_total_risk / toplam_varlik_ttr
       inputs: [bank_total_risk, toplam_varlik_ttr]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Bankadaki toplam riskin musteri varlik buyuklugune oranidir.
       risk_direction: HIGHER_IS_RISKY
     memzuc_risk_to_assets:
-      enabled: true
       label: Memzuc risk / varlik
       category: memzuc
       formula: memzuc_total_risk / toplam_varlik_ttr
       inputs: [memzuc_total_risk, toplam_varlik_ttr]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Sistem geneli toplam riskin musteri varlik buyuklugune oranidir.
       risk_direction: HIGHER_IS_RISKY
     l1y_equity_to_assets:
-      enabled: true
       label: L1Y ozkaynak / varlik
       category: financial
       formula: equity_l1y / toplam_varlik_ttr
       inputs: [equity_l1y, toplam_varlik_ttr]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Yillik ozkaynak tutarinin toplam varliga oranidir.
       risk_direction: LOWER_IS_RISKY
     l1y_debt_to_sales:
-      enabled: true
       label: Banka risk / L1Y satis
       category: financial
       formula: bank_total_risk / fs_net_sales_cumulative_l1y
       inputs: [bank_total_risk, fs_net_sales_cumulative_l1y]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Bankadaki toplam riskin son 12 ay net satisina oranidir.
       risk_direction: HIGHER_IS_RISKY
     memzuc_debt_to_l1y_sales:
-      enabled: true
       label: Memzuc risk / L1Y satis
       category: memzuc
       formula: memzuc_total_risk / fs_net_sales_cumulative_l1y
       inputs: [memzuc_total_risk, fs_net_sales_cumulative_l1y]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Sistem geneli toplam riskin son 12 ay net satisina oranidir.
       risk_direction: HIGHER_IS_RISKY
     memzuc_to_bank_risk_ratio:
-      enabled: true
       label: Memzuc risk / banka risk
       category: memzuc
       formula: memzuc_total_risk / bank_total_risk
       inputs: [memzuc_total_risk, bank_total_risk]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Sistem geneli riskin bankadaki riske oranidir.
       risk_direction: HIGHER_IS_RISKY
     bank_to_memzuc_risk_ratio:
-      enabled: true
       label: Banka risk / memzuc risk
       category: memzuc
       formula: bank_total_risk / memzuc_total_risk
       inputs: [bank_total_risk, memzuc_total_risk]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Bankadaki riskin sistem geneli riske oranidir.
       risk_direction: HIGHER_IS_RISKY
     l1y_trade_receivables_to_assets:
-      enabled: true
       label: L1Y ticari alacak / varlik
       category: financial
       formula: fs_trade_receivables_l1y / toplam_varlik_ttr
       inputs: [fs_trade_receivables_l1y, toplam_varlik_ttr]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Yillik ticari alacaklarin toplam varliga oranidir.
       risk_direction: HIGHER_IS_RISKY
     l1y_notes_receivable_to_assets:
-      enabled: true
       label: L1Y senetli alacak / varlik
       category: financial
       formula: fs_notes_receivable_l1y / toplam_varlik_ttr
       inputs: [fs_notes_receivable_l1y, toplam_varlik_ttr]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Yillik senetli alacaklarin toplam varliga oranidir.
       risk_direction: HIGHER_IS_RISKY
     internal_tkn_to_assets:
-      enabled: true
       label: TKN / varlik
       category: internal_kkb
       formula: gunceltkn_dgr / toplam_varlik_ttr
       inputs: [gunceltkn_dgr, toplam_varlik_ttr]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Guncel TKN degerinin toplam varliga oranidir.
       risk_direction: HIGHER_IS_RISKY
     internal_tbe_to_assets:
-      enabled: true
       label: TBE / varlik
       category: internal_kkb
       formula: gunceltbe_dgr / toplam_varlik_ttr
       inputs: [gunceltbe_dgr, toplam_varlik_ttr]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Guncel TBE degerinin toplam varliga oranidir.
       risk_direction: HIGHER_IS_RISKY
     internal_tkn_to_sales:
-      enabled: true
       label: TKN / L1Y satis
       category: internal_kkb
       formula: gunceltkn_dgr / fs_net_sales_cumulative_l1y
       inputs: [gunceltkn_dgr, fs_net_sales_cumulative_l1y]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Guncel TKN degerinin son 12 ay satisina oranidir.
       risk_direction: HIGHER_IS_RISKY
     internal_tbe_to_sales:
-      enabled: true
       label: TBE / L1Y satis
       category: internal_kkb
       formula: gunceltbe_dgr / fs_net_sales_cumulative_l1y
       inputs: [gunceltbe_dgr, fs_net_sales_cumulative_l1y]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Guncel TBE degerinin son 12 ay satisina oranidir.
       risk_direction: HIGHER_IS_RISKY
     internal_tkn_tbe_ratio:
-      enabled: true
       label: TKN / TBE
       category: internal_kkb
       formula: gunceltkn_dgr / gunceltbe_dgr
       inputs: [gunceltkn_dgr, gunceltbe_dgr]
-      source_module: engine.multivar_anomaly.build_feature_frame
       definition: Bireysel KKB/TKN degerinin ticari KKB/TBE degerine oranidir.
       risk_direction: HIGHER_IS_RISKY
 
     q_equity_to_assets:
-      enabled: false
       label: Ara donem ozkaynak / varlik
       category: financial
       formula: fs_equity_q / toplam_varlik_ttr
@@ -534,7 +501,6 @@ generated_variables:
       definition: Ara donem ozkaynak/varlik oranidir; final LLM setinden kapali tutulur.
       risk_direction: LOWER_IS_RISKY
     q_debt_to_sales:
-      enabled: false
       label: Banka risk / ara donem satis
       category: financial
       formula: bank_total_risk / fs_net_sales_cumulative_q
@@ -542,7 +508,6 @@ generated_variables:
       definition: Banka riskinin ara donem satisina oranidir; final LLM setinden kapali tutulur.
       risk_direction: HIGHER_IS_RISKY
     memzuc_debt_to_q_sales:
-      enabled: false
       label: Memzuc risk / ara donem satis
       category: memzuc
       formula: memzuc_total_risk / fs_net_sales_cumulative_q
@@ -550,7 +515,6 @@ generated_variables:
       definition: Sistem geneli riskin ara donem satisina oranidir; final LLM setinden kapali tutulur.
       risk_direction: HIGHER_IS_RISKY
     q_trade_receivables_to_assets:
-      enabled: false
       label: Ara donem ticari alacak / varlik
       category: financial
       formula: fs_trade_receivables_q / toplam_varlik_ttr
@@ -558,7 +522,6 @@ generated_variables:
       definition: Ara donem ticari alacak/varlik oranidir; final LLM setinden kapali tutulur.
       risk_direction: HIGHER_IS_RISKY
     q_notes_receivable_to_assets:
-      enabled: false
       label: Ara donem senetli alacak / varlik
       category: financial
       formula: fs_notes_receivable_q / toplam_varlik_ttr
@@ -566,7 +529,6 @@ generated_variables:
       definition: Ara donem senetli alacak/varlik oranidir; final LLM setinden kapali tutulur.
       risk_direction: HIGHER_IS_RISKY
     pd_ratio:
-      enabled: false
       label: IRB rating PD / model PD
       category: pd_rating
       formula: irb_rating_pd / irb_model_pd

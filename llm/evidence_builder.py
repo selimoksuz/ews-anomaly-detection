@@ -1181,7 +1181,6 @@ def feature_dictionary(feature: str) -> dict[str, Any]:
         "label": metadata.get("label") or FEATURE_LABELS.get(feature, feature),
         "category": metadata.get("category") or variable_category(feature),
         "formula": metadata.get("formula") or FEATURE_FORMULAS.get(feature),
-        "source_module": metadata.get("source_module"),
         "source_columns": generated_feature_inputs(feature) or feature_source_columns(feature, []),
         "source_column": metadata.get("source_column"),
         "definition": metadata.get("definition"),

@@ -61,11 +61,7 @@ def raw_variable_metadata(dictionary: dict[str, Any] | None = None) -> dict[str,
     return result
 
 
-def generated_variable_metadata(
-    dictionary: dict[str, Any] | None = None,
-    *,
-    enabled_only: bool = False,
-) -> dict[str, dict[str, Any]]:
+def generated_variable_metadata(dictionary: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     payload = (dictionary or load_variable_dictionary()).get("generated_variables", {}) or {}
     variables = payload.get("variables", {}) or {}
     result: dict[str, dict[str, Any]] = {}
@@ -76,8 +72,6 @@ def generated_variable_metadata(
             metadata = {}
         if not isinstance(metadata, dict):
             metadata = {"formula": str(metadata)}
-        if enabled_only and metadata.get("enabled", True) is False:
-            continue
         normalized = _normalize_name(name)
         merged = dict(metadata)
         merged["name"] = normalized
@@ -121,8 +115,8 @@ def feature_formula_map(dictionary: dict[str, Any] | None = None) -> dict[str, s
     return result
 
 
-def generated_feature_names(dictionary: dict[str, Any] | None = None, *, enabled_only: bool = True) -> set[str]:
-    return set(generated_variable_metadata(dictionary, enabled_only=enabled_only))
+def generated_feature_names(dictionary: dict[str, Any] | None = None) -> set[str]:
+    return set(generated_variable_metadata(dictionary))
 
 
 def generated_feature_inputs(feature: str, dictionary: dict[str, Any] | None = None) -> list[str]:
