@@ -12,6 +12,8 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from engine.config_loader import resolve_secrets_path
+
 try:
     import oracledb
 except ImportError as exc:  # pragma: no cover - dependency is environment-specific
@@ -21,7 +23,6 @@ except ImportError as exc:  # pragma: no cover - dependency is environment-speci
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PIPELINE_CONFIG = PROJECT_ROOT / "config" / "pipeline_config.yaml"
-DEFAULT_SECRETS_CONFIG = PROJECT_ROOT / "secret" / "secrets.yaml"
 _ORACLE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$.#]*$")
 
 
@@ -41,8 +42,7 @@ def load_yaml_config(config_source=None, default_path: Path | None = None) -> di
 
 
 def resolve_default_secrets_path() -> Path:
-    override = os.getenv("EWS_ANOMALY_SECRETS_PATH") or os.getenv("RISK_PIPELINE_SECRETS_PATH")
-    return Path(override) if override else DEFAULT_SECRETS_CONFIG
+    return resolve_secrets_path()
 
 
 def case_get(mapping: Mapping[str, Any], key: str) -> Any:

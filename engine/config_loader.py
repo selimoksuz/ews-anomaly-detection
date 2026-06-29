@@ -11,6 +11,41 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SECRETS_PATH = PROJECT_ROOT / "secret" / "secrets.yaml"
+
+
+def _unique_paths(paths: Iterable[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        resolved = path.expanduser()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(resolved)
+    return result
+
+
+def _path_variants(path_like) -> list[Path]:
+    path = Path(path_like).expanduser()
+    if path.is_absolute():
+        return [path]
+    return [(Path.cwd() / path), (PROJECT_ROOT / path)]
+
+
+def _project_root_candidates() -> list[Path]:
+    roots: list[Path] = []
+    for start in (Path.cwd(), PROJECT_ROOT):
+        try:
+            resolved = start.resolve()
+        except OSError:
+            resolved = start
+        for candidate in (resolved, *resolved.parents):
+            if (candidate / "config" / "pipeline_config.yaml").exists() or (candidate / "secret").exists():
+                roots.append(candidate)
+                break
+    return _unique_paths(roots)
 
 
 def _load_yaml_mapping(path: Path) -> dict:
@@ -76,12 +111,34 @@ def save_config(config: dict, config_path=None):
 
 
 def load_secrets(secrets_path=None):
-    if secrets_path:
-        path = Path(secrets_path)
-    else:
-        override = os.getenv("EWS_ANOMALY_SECRETS_PATH") or os.getenv("RISK_PIPELINE_SECRETS_PATH")
-        path = Path(override) if override else PROJECT_ROOT / "secret" / "secrets.yaml"
+    path = resolve_secrets_path(secrets_path)
     return _load_yaml_mapping(path)
+
+
+def resolve_secrets_path(secrets_path=None) -> Path:
+    candidates: list[Path] = []
+    if secrets_path:
+        candidates.extend(_path_variants(secrets_path))
+    else:
+        for env_name in ("EWS_ANOMALY_SECRETS_PATH", "RISK_PIPELINE_SECRETS_PATH"):
+            env_value = os.getenv(env_name)
+            if env_value:
+                candidates.extend(_path_variants(env_value))
+        for root in _project_root_candidates():
+            candidates.append(root / "secret" / "secrets.yaml")
+        candidates.append(DEFAULT_SECRETS_PATH)
+
+    candidates = _unique_paths(candidates)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    checked = ", ".join(str(path) for path in candidates) or str(DEFAULT_SECRETS_PATH)
+    raise FileNotFoundError(
+        "Secrets file not found. Checked: "
+        + checked
+        + ". Put credentials under <repo>/secret/secrets.yaml or set EWS_ANOMALY_SECRETS_PATH."
+    )
 
 
 def resolve_project_path(path_like) -> Path:
