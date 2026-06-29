@@ -47,6 +47,9 @@ oracle:
     llm_reason_details:
       owner: ZT_VAR2
       table: EWS_ANOMALY_LLM_REASONS
+    llm_feature_details:
+      owner: ZT_VAR2
+      table: EWS_ANOMALY_LLM_FEATURES
 
 logging:
   logger_name: ews.multivar

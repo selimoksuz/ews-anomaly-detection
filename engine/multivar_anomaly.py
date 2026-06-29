@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import ast
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +15,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.neural_network import MLPRegressor
 
 from engine.config_loader import load_config, load_secrets, resolve_project_path
 from engine.oracle_io import OracleConnector
@@ -83,6 +86,11 @@ DENOMINATOR_ABS_FLOOR = 1e-9
 RATIO_ABS_MAX = 1_000.0
 DEFAULT_MAX_CALIBRATION_ROWS = 300_000
 REASON_CANDIDATE_MULTIPLIER = 2
+ML_ENSEMBLE_WEIGHTS = {
+    "if_score": 0.40,
+    "residual_score": 0.35,
+    "autoencoder_score": 0.25,
+}
 
 PEER_LEVEL_SCORE = {
     "AY_SEGMENT_SEKTOR_SIZE": 1.00,
@@ -246,11 +254,13 @@ MULTIVAR_RESULT_COLUMNS = [
     "ref_donem_id",
     "yukleme_zmn",
     "anomaly_score",
+    "ensemble_score",
     "alert_band",
     "alert_type",
     "review_queue",
     "if_score",
     "residual_score",
+    "autoencoder_score",
     "confidence",
     "coverage_ratio",
     "data_gap_score",
@@ -532,12 +542,30 @@ def run_multivar_anomaly(
     score_if_raw = -iso.decision_function(x_score)
     train_residual_raw = row_top_mean(np.abs(x_calibration), top_k=3)
     score_residual_raw = row_top_mean(np.abs(x_score), top_k=3)
+    logger.info("Fitting autoencoder reconstruction model.")
+    train_autoencoder_raw, score_autoencoder_raw = autoencoder_reconstruction_errors(
+        x_calibration,
+        x_score,
+        random_state=random_state,
+    )
     logger.info("Calculated anomaly scores.")
 
     if_score = empirical_percentile(train_if_raw, score_if_raw)
     residual_score = empirical_percentile(train_residual_raw, score_residual_raw)
-    anomaly_score = np.clip(0.55 * if_score + 0.45 * residual_score, 0, 100)
-    band_thresholds = operational_band_thresholds(anomaly_score)
+    autoencoder_score = empirical_percentile(train_autoencoder_raw, score_autoencoder_raw)
+    ensemble_score = np.clip(
+        ML_ENSEMBLE_WEIGHTS["if_score"] * if_score
+        + ML_ENSEMBLE_WEIGHTS["residual_score"] * residual_score
+        + ML_ENSEMBLE_WEIGHTS["autoencoder_score"] * autoencoder_score,
+        0,
+        100,
+    )
+    anomaly_score = ensemble_score
+    band_thresholds = operational_band_thresholds(ensemble_score)
+    logger.info(
+        "ML ensemble score calculated: weights=%s note='anomaly_score is kept as backward-compatible alias of ensemble_score'",
+        ML_ENSEMBLE_WEIGHTS,
+    )
 
     result_positions = np.arange(len(score_df))
     if score_customer_id_set:
@@ -562,6 +590,8 @@ def run_multivar_anomaly(
     result_x_score = x_score[result_positions]
     result_if_score = if_score[result_positions]
     result_residual_score = residual_score[result_positions]
+    result_autoencoder_score = autoencoder_score[result_positions]
+    result_ensemble_score = ensemble_score[result_positions]
     result_anomaly_score = anomaly_score[result_positions]
 
     score_feature_values = result_score_features[selected_features].copy()
@@ -581,7 +611,11 @@ def run_multivar_anomaly(
     coverage_ratio = score_feature_values.notna().mean(axis=1).fillna(0.0).to_numpy(dtype=float)
     data_gap_score = np.clip((1.0 - coverage_ratio) * 100.0, 0, 100)
     missing_feature_count = score_feature_values.isna().sum(axis=1).to_numpy(dtype=int)
-    agreement = 1.0 - (np.abs(result_if_score - result_residual_score) / 100.0)
+    score_spread = np.ptp(
+        np.vstack([result_if_score, result_residual_score, result_autoencoder_score]),
+        axis=0,
+    )
+    agreement = 1.0 - (score_spread / 100.0)
     confidence = np.clip((0.65 * coverage_ratio + 0.35 * agreement) * 100.0, 0, 100)
 
     feature_severity = pd.DataFrame(np.abs(result_x_score), columns=model_features, index=result_score_features.index)
@@ -598,8 +632,10 @@ def run_multivar_anomaly(
         prior_reference=prior_reference,
         prior_context=prior_context,
         anomaly_score=result_anomaly_score,
+        ensemble_score=result_ensemble_score,
         if_score=result_if_score,
         residual_score=result_residual_score,
+        autoencoder_score=result_autoencoder_score,
         confidence=confidence,
         coverage_ratio=coverage_ratio,
         data_gap_score=data_gap_score,
@@ -669,6 +705,7 @@ def run_multivar_anomaly(
             key: round(float(value), 4)
             for key, value in band_thresholds.items()
         },
+        "ml_ensemble_weights": ML_ENSEMBLE_WEIGHTS,
         "top_score": float(results["anomaly_score"].max()) if len(results) else None,
         "scores_path": str(artifacts.scores_path),
         "top_path": str(artifacts.top_path),
@@ -1495,8 +1532,10 @@ def build_results(
     prior_reference: pd.DataFrame,
     prior_context: pd.DataFrame,
     anomaly_score: np.ndarray,
+    ensemble_score: np.ndarray,
     if_score: np.ndarray,
     residual_score: np.ndarray,
+    autoencoder_score: np.ndarray,
     confidence: np.ndarray,
     coverage_ratio: np.ndarray,
     data_gap_score: np.ndarray,
@@ -1508,9 +1547,11 @@ def build_results(
     result = score_df[[ID_COLUMN, TIME_COLUMN, *context_cols]].copy()
     result[TIME_COLUMN] = parse_dates(result[TIME_COLUMN]).dt.strftime("%Y-%m-%d")
     result["anomaly_score"] = np.round(anomaly_score, 1)
-    result["alert_band"] = assign_operational_bands(anomaly_score, band_thresholds)
+    result["ensemble_score"] = np.round(ensemble_score, 1)
+    result["alert_band"] = assign_operational_bands(ensemble_score, band_thresholds)
     result["if_score"] = np.round(if_score, 1)
     result["residual_score"] = np.round(residual_score, 1)
+    result["autoencoder_score"] = np.round(autoencoder_score, 1)
     result["confidence"] = np.round(confidence, 1)
     result["coverage_ratio"] = np.round(coverage_ratio, 4)
     result["data_gap_score"] = np.round(data_gap_score, 1)
@@ -1655,6 +1696,7 @@ def write_outputs(
             key: round(float(value), 4)
             for key, value in band_thresholds.items()
         },
+        "ml_ensemble_weights": ML_ENSEMBLE_WEIGHTS,
         "excluded_feature_columns": sorted(EXCLUDED_FEATURE_COLUMNS),
         "descriptor_columns_not_modeled": sorted(DESCRIPTOR_COLUMNS),
         "month_counts": {
@@ -1763,7 +1805,32 @@ def ensure_multivar_output_tables(
             cursor.execute(ddl)
             ora.logger.info("Created %s", ora._qualified_table_name(table_key))
     ora.connection.commit()
+    ensure_multivar_result_columns(ora, results_table_key)
     ensure_multivar_detail_columns(ora, details_table_key)
+
+
+MULTIVAR_RESULT_EXTRA_COLUMNS = {
+    "ENSEMBLE_SCORE": "NUMBER(6,2)",
+    "AUTOENCODER_SCORE": "NUMBER(6,2)",
+}
+
+
+def ensure_multivar_result_columns(ora: OracleConnector, results_table_key: str) -> None:
+    existing = ora._table_columns(results_table_key)
+    missing = {
+        column: ddl
+        for column, ddl in MULTIVAR_RESULT_EXTRA_COLUMNS.items()
+        if column not in existing
+    }
+    if not missing:
+        return
+    with ora.connection.cursor() as cursor:
+        for column, ddl in missing.items():
+            cursor.execute(
+                f"ALTER TABLE {ora._qualified_table_name(results_table_key)} ADD ({column} {ddl})"
+            )
+            ora.logger.info("Added %s.%s", ora._qualified_table_name(results_table_key), column)
+    ora.connection.commit()
 
 
 def ensure_multivar_detail_columns(ora: OracleConnector, details_table_key: str) -> None:
@@ -1856,8 +1923,10 @@ def prepare_multivar_oracle_results(
     out["yukleme_zmn"] = parse_dates_or_none(frame.get("yukleme_zmn"))
     for column in (
         "anomaly_score",
+        "ensemble_score",
         "if_score",
         "residual_score",
+        "autoencoder_score",
         "confidence",
         "coverage_ratio",
         "data_gap_score",
@@ -1966,11 +2035,13 @@ def multivar_results_table_ddl(ora: OracleConnector, table_key: str) -> str:
             REF_DONEM_ID NUMBER(12),
             YUKLEME_ZMN TIMESTAMP,
             ANOMALY_SCORE NUMBER(6,2) NOT NULL,
+            ENSEMBLE_SCORE NUMBER(6,2),
             ALERT_BAND VARCHAR2(32) NOT NULL,
             ALERT_TYPE VARCHAR2(64),
             REVIEW_QUEUE VARCHAR2(64),
             IF_SCORE NUMBER(6,2),
             RESIDUAL_SCORE NUMBER(6,2),
+            AUTOENCODER_SCORE NUMBER(6,2),
             CONFIDENCE NUMBER(6,2),
             COVERAGE_RATIO NUMBER(10,6),
             DATA_GAP_SCORE NUMBER(6,2),
@@ -2190,6 +2261,44 @@ def _evaluate_formula_node(node: ast.AST, frame: pd.DataFrame) -> pd.Series:
 
 def signed_log1p(frame: pd.DataFrame) -> pd.DataFrame:
     return np.sign(frame) * np.log1p(np.abs(frame))
+
+
+def autoencoder_reconstruction_errors(
+    reference_matrix: np.ndarray,
+    score_matrix: np.ndarray,
+    *,
+    random_state: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return reconstruction errors from a compact sklearn autoencoder."""
+
+    reference = np.asarray(reference_matrix, dtype=float)
+    score = np.asarray(score_matrix, dtype=float)
+    if reference.size == 0 or score.size == 0 or reference.shape[1] == 0:
+        return np.zeros(reference.shape[0], dtype=float), np.zeros(score.shape[0], dtype=float)
+
+    feature_count = int(reference.shape[1])
+    hidden_units = max(1, min(16, max(1, feature_count // 2)))
+    model = MLPRegressor(
+        hidden_layer_sizes=(hidden_units,),
+        activation="relu",
+        solver="adam",
+        random_state=random_state,
+        max_iter=120,
+        early_stopping=reference.shape[0] >= 50,
+        validation_fraction=0.1,
+        n_iter_no_change=8,
+        batch_size=min(512, max(16, reference.shape[0])),
+        learning_rate_init=0.001,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=ConvergenceWarning)
+        model.fit(reference, reference)
+
+    reference_prediction = model.predict(reference)
+    score_prediction = model.predict(score)
+    reference_error = np.mean((reference - reference_prediction) ** 2, axis=1)
+    score_error = np.mean((score - score_prediction) ** 2, axis=1)
+    return reference_error, score_error
 
 
 def row_top_mean(values: np.ndarray, *, top_k: int = 3) -> np.ndarray:

@@ -1084,6 +1084,151 @@ def run_decisions(evidence_items: list[dict[str, Any]], *, dry_run: bool = False
     return decisions
 
 
+def run_full_ml_scoring_for_llm_selection(
+    *,
+    table_key: str,
+    scoring_month: str | None,
+    max_train_rows: int | None,
+    output_path: str | Path,
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    output_dir = Path(output_path).parent / "ml_full_scoring"
+    log_step("00M", "LLM oncesi tum scoring cohort icin ML anomaly skorlamasi yapiliyor")
+    logger.info(
+        "Starting full ML scoring before LLM selection: table_key=%s scoring_month=%s max_train_rows=%s output_dir=%s",
+        table_key,
+        scoring_month or "latest",
+        max_train_rows,
+        output_dir,
+    )
+    summary = run_multivar_anomaly(
+        source="oracle",
+        table_key=table_key,
+        scoring_month=scoring_month,
+        max_train_rows=max_train_rows,
+        output_dir=output_dir,
+        persist_oracle_outputs=False,
+    )
+    score_frame = pd.read_csv(summary["scores_path"], encoding="utf-8-sig")
+    logger.info(
+        "Full ML scoring completed before LLM selection: scored_rows=%s scores_path=%s alert_counts=%s",
+        summary.get("scored_rows"),
+        summary.get("scores_path"),
+        summary.get("alert_counts"),
+    )
+    log_step_done(
+        "00M",
+        f"scored_rows={summary.get('scored_rows')} scores_path={summary.get('scores_path')} alert_counts={summary.get('alert_counts')}",
+    )
+    return summary, score_frame
+
+
+def attach_evidence_feature_details(
+    decisions: list[dict[str, Any]],
+    evidence_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    evidence_lookup = {
+        (str(item.get("mono_id") or "").strip(), pd.Timestamp(item.get("cohort_dt")).strftime("%Y-%m-%d")): item
+        for item in evidence_items
+        if item.get("mono_id") and item.get("cohort_dt")
+    }
+    attached = 0
+    for decision in decisions:
+        item = evidence_lookup.get(decision_lookup_key(decision))
+        if item is None:
+            continue
+        details = item.get("feature_details") or item.get("features") or []
+        decision["evidence_features"] = details
+        decision["evidence_feature_count"] = len(details)
+        attached += 1
+    logger.info(
+        "Attached evidence feature details to decisions: attached=%s/%s",
+        attached,
+        len(decisions),
+    )
+    return decisions
+
+
+def select_ml_balanced_customer_ids(
+    score_frame: pd.DataFrame,
+    *,
+    total_customers: int = 10,
+    anomaly_customers: int = 5,
+    output_path: str | Path | None = None,
+) -> tuple[list[str], pd.DataFrame]:
+    if total_customers <= 0:
+        return [], pd.DataFrame()
+
+    frame = score_frame.copy()
+    frame.columns = [str(column).strip().lower() for column in frame.columns]
+    if ID_COLUMN not in frame.columns:
+        raise ValueError(f"ML selection score frame does not include {ID_COLUMN}.")
+    if TIME_COLUMN in frame.columns:
+        frame[TIME_COLUMN] = pd.to_datetime(frame[TIME_COLUMN], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    score_source = "ensemble_score" if "ensemble_score" in frame.columns else "anomaly_score"
+    if score_source not in frame.columns:
+        raise ValueError("ML selection score frame does not include ensemble_score or anomaly_score.")
+    frame["_selection_score"] = pd.to_numeric(frame[score_source], errors="coerce").fillna(-1.0)
+    if "alert_band" in frame.columns:
+        frame["_alert_band"] = frame["alert_band"].astype(str).str.upper().fillna("")
+    else:
+        frame["_alert_band"] = pd.Series(["NORMAL"] * len(frame), index=frame.index)
+    frame["_is_ml_anomaly"] = frame["_alert_band"].ne("NORMAL")
+    frame = frame.sort_values("_selection_score", ascending=False).drop_duplicates(subset=[ID_COLUMN], keep="first")
+
+    anomaly_target = min(max(anomaly_customers, 0), total_customers)
+    anomaly_rows = frame[frame["_is_ml_anomaly"]].sort_values("_selection_score", ascending=False).head(anomaly_target)
+    normal_target = total_customers - len(anomaly_rows)
+    normal_rows = (
+        frame[~frame[ID_COLUMN].isin(anomaly_rows[ID_COLUMN]) & ~frame["_is_ml_anomaly"]]
+        .sort_values("_selection_score", ascending=True)
+        .head(normal_target)
+    )
+    selected = pd.concat([anomaly_rows, normal_rows], ignore_index=True)
+    if len(selected) < total_customers:
+        filler = (
+            frame[~frame[ID_COLUMN].isin(selected[ID_COLUMN])]
+            .sort_values("_selection_score", ascending=False)
+            .head(total_customers - len(selected))
+        )
+        selected = pd.concat([selected, filler], ignore_index=True)
+        logger.warning(
+            "ML balanced selection could not find requested split exactly; filled remaining rows from highest remaining ML scores: requested_total=%s selected=%s anomaly_target=%s anomaly_selected=%s",
+            total_customers,
+            len(selected),
+            anomaly_target,
+            len(anomaly_rows),
+        )
+
+    selected = selected.head(total_customers).copy()
+    selected["selection_bucket"] = [
+        "ML_HIGH_ANOMALY" if idx < len(anomaly_rows) else "ML_NORMAL_REFERENCE"
+        for idx in range(len(selected))
+    ]
+    customer_ids = selected[ID_COLUMN].astype(str).tolist()
+    logger.info(
+        "ML BALANCED CUSTOMER SELECTION | total=%s anomaly_requested=%s anomaly_selected=%s normal_selected=%s score_column=%s selected_ids=%s",
+        len(customer_ids),
+        anomaly_target,
+        int(selected["selection_bucket"].eq("ML_HIGH_ANOMALY").sum()),
+        int(selected["selection_bucket"].eq("ML_NORMAL_REFERENCE").sum()),
+        score_source,
+        ",".join(customer_ids),
+    )
+
+    if output_path is not None:
+        path = Path(output_path).parent / "ml_balanced_selected_customers.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        selected.drop(columns=[column for column in selected.columns if column.startswith("_")], errors="ignore").to_csv(
+            path,
+            index=False,
+            encoding="utf-8-sig",
+        )
+        logger.info("Wrote ML balanced customer selection to %s", path)
+
+    return customer_ids, selected.drop(columns=[column for column in selected.columns if column.startswith("_")], errors="ignore")
+
+
 def attach_ml_companion_scores(
     decisions: list[dict[str, Any]],
     evidence_items: list[dict[str, Any]],
@@ -1092,6 +1237,8 @@ def attach_ml_companion_scores(
     scoring_month: str | None,
     max_train_rows: int | None,
     output_path: str | Path,
+    score_frame: pd.DataFrame | None = None,
+    score_summary: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Append non-LLM anomaly scores for the same customer snapshots.
 
@@ -1107,26 +1254,37 @@ def attach_ml_companion_scores(
         return decisions
 
     selected_month = scoring_month or first_evidence_month(evidence_items)
-    companion_dir = Path(output_path).parent / "ml_companion"
-    log_step("04M", "Ayni musteri snapshotlari icin ML anomaly skorlari uretiliyor")
-    logger.info(
-        "Starting ML companion scoring: table_key=%s scoring_month=%s customers=%s max_train_rows=%s output_dir=%s",
-        table_key,
-        selected_month or "latest",
-        len(customer_ids),
-        max_train_rows,
-        companion_dir,
-    )
-    summary = run_multivar_anomaly(
-        source="oracle",
-        table_key=table_key,
-        scoring_month=selected_month,
-        max_train_rows=max_train_rows,
-        output_dir=companion_dir,
-        persist_oracle_outputs=False,
-        score_customer_ids=customer_ids,
-    )
-    score_frame = pd.read_csv(summary["scores_path"], encoding="utf-8-sig")
+    summary = score_summary or {}
+    if score_frame is None:
+        companion_dir = Path(output_path).parent / "ml_companion"
+        log_step("04M", "Ayni musteri snapshotlari icin ML anomaly skorlari uretiliyor")
+        logger.info(
+            "Starting ML companion scoring: table_key=%s scoring_month=%s customers=%s max_train_rows=%s output_dir=%s",
+            table_key,
+            selected_month or "latest",
+            len(customer_ids),
+            max_train_rows,
+            companion_dir,
+        )
+        summary = run_multivar_anomaly(
+            source="oracle",
+            table_key=table_key,
+            scoring_month=selected_month,
+            max_train_rows=max_train_rows,
+            output_dir=companion_dir,
+            persist_oracle_outputs=False,
+            score_customer_ids=customer_ids,
+        )
+        score_frame = pd.read_csv(summary["scores_path"], encoding="utf-8-sig")
+    else:
+        log_step("04M", "Full cohort ML skorlarindan LLM karar satirlarina karsilastirma kolonlari ekleniyor")
+        logger.info(
+            "Attaching precomputed ML full-cohort scores: scoring_month=%s decisions=%s score_rows=%s scores_path=%s",
+            selected_month or "latest",
+            len(decisions),
+            len(score_frame),
+            summary.get("scores_path"),
+        )
     score_lookup = ml_score_lookup(score_frame)
     attached = 0
     for decision in decisions:
@@ -1136,9 +1294,14 @@ def attach_ml_companion_scores(
             row = score_lookup.get((str(decision.get("mono_id")), ""))
         if row is None:
             continue
-        decision["ml_anomaly_score"] = clean_float(row.get("anomaly_score"))
+        ensemble_value = clean_float(row.get("ensemble_score"))
+        if ensemble_value is None:
+            ensemble_value = clean_float(row.get("anomaly_score"))
+        decision["ml_ensemble_score"] = ensemble_value
+        decision["ml_anomaly_score"] = ensemble_value
         decision["ml_if_score"] = clean_float(row.get("if_score"))
         decision["ml_residual_score"] = clean_float(row.get("residual_score"))
+        decision["ml_autoencoder_score"] = clean_float(row.get("autoencoder_score"))
         decision["ml_alert_band"] = text_or_empty(row.get("alert_band"))
         decision["ml_is_anomaly"] = text_or_empty(row.get("alert_band")).upper() != "NORMAL"
         attached += 1
@@ -1146,10 +1309,10 @@ def attach_ml_companion_scores(
         "Completed ML companion scoring: attached=%s/%s scores_path=%s scored_rows=%s",
         attached,
         len(decisions),
-        summary["scores_path"],
+        summary.get("scores_path"),
         summary.get("scored_rows"),
     )
-    log_step_done("04M", f"ml_scores_attached={attached}/{len(decisions)} scores_path={summary['scores_path']}")
+    log_step_done("04M", f"ml_scores_attached={attached}/{len(decisions)} scores_path={summary.get('scores_path')}")
     return decisions
 
 
@@ -1270,6 +1433,13 @@ def main(argv: list[str] | None = None) -> int:
     run_oracle_parser.add_argument("--persist-oracle", action="store_true", default=True)
     run_oracle_parser.add_argument("--dry-run", action="store_true")
     run_oracle_parser.add_argument("--skip-ml-companion", action="store_true")
+    run_oracle_parser.add_argument(
+        "--customer-selection-mode",
+        choices=["ml-balanced", "first"],
+        default="ml-balanced",
+        help="LLM'e gidecek musterileri secme yontemi. ml-balanced: once full ML skorla, 5 yuksek anomaly + normal referans sec.",
+    )
+    run_oracle_parser.add_argument("--ml-balanced-anomaly-count", type=int, default=5)
 
     ensure_parser = subparsers.add_parser("ensure-output-tables")
     ensure_parser.add_argument("--scoring-month")
@@ -1320,11 +1490,40 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run-oracle":
         log_step("00", "LLM Oracle anomaly run basladi")
+        llm_max_customers = args.max_customers
+        ml_selection_summary: dict[str, Any] | None = None
+        ml_selection_score_frame: pd.DataFrame | None = None
+        selected_customer_ids: list[str] | None = None
+        selection_rule: str | None = None
+        if args.customer_selection_mode == "ml-balanced":
+            llm_max_customers = args.max_customers or 10
+            ml_selection_summary, ml_selection_score_frame = run_full_ml_scoring_for_llm_selection(
+                table_key=args.table_key,
+                scoring_month=args.scoring_month,
+                max_train_rows=args.max_train_rows,
+                output_path=args.output_path,
+            )
+            selected_customer_ids, selected_rows = select_ml_balanced_customer_ids(
+                ml_selection_score_frame,
+                total_customers=llm_max_customers,
+                anomaly_customers=args.ml_balanced_anomaly_count,
+                output_path=args.output_path,
+            )
+            selection_rule = (
+                f"ml_balanced_full_cohort_top_anomaly_{args.ml_balanced_anomaly_count}_"
+                f"plus_normal_{max(llm_max_customers - min(args.ml_balanced_anomaly_count, llm_max_customers), 0)}"
+            )
+            logger.info(
+                "LLM customer selection is ML-balanced: selected_customers=%s selected_rows=%s",
+                ",".join(selected_customer_ids),
+                selected_rows.to_dict(orient="records"),
+            )
         logger.info(
-            "Running Oracle-to-LLM flow: table_key=%s scoring_month=%s max_customers=%s max_train_rows=%s top_features=%s dry_run=%s persist_oracle=%s",
+            "Running Oracle-to-LLM flow: table_key=%s scoring_month=%s max_customers=%s customer_selection_mode=%s max_train_rows=%s top_features=%s dry_run=%s persist_oracle=%s",
             args.table_key,
             args.scoring_month or "latest",
-            args.max_customers,
+            llm_max_customers,
+            args.customer_selection_mode,
             args.max_train_rows,
             args.top_features,
             args.dry_run,
@@ -1335,11 +1534,13 @@ def main(argv: list[str] | None = None) -> int:
             ensure_llm_output_tables_in_oracle(scoring_month=args.scoring_month)
         evidence = build_evidence_packages_from_oracle(
             scoring_month=args.scoring_month,
-            max_customers=args.max_customers,
+            max_customers=llm_max_customers,
             max_train_rows=args.max_train_rows,
             top_features=args.top_features,
             series_periods=args.series_periods,
             table_key=args.table_key,
+            selected_customer_ids=selected_customer_ids,
+            selection_rule=selection_rule,
         )
         try:
             decisions = run_decisions(evidence, dry_run=args.dry_run)
@@ -1348,6 +1549,7 @@ def main(argv: list[str] | None = None) -> int:
             if evidence:
                 audit_llm_output_tables(evidence[0].get("cohort_dt"))
             return 2
+        decisions = attach_evidence_feature_details(decisions, evidence)
         if not args.dry_run and not args.skip_ml_companion:
             try:
                 decisions = attach_ml_companion_scores(
@@ -1357,6 +1559,8 @@ def main(argv: list[str] | None = None) -> int:
                     scoring_month=args.scoring_month,
                     max_train_rows=args.max_train_rows,
                     output_path=args.output_path,
+                    score_frame=ml_selection_score_frame,
+                    score_summary=ml_selection_summary,
                 )
             except Exception as exc:
                 log_step_failed("04M", f"ML companion scoring failed: {exc}")
@@ -1382,7 +1586,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(oracle_result, ensure_ascii=False))
             log_step_done(
                 "05",
-                f"inserted_results={oracle_result.get('inserted_results')} inserted_reasons={oracle_result.get('inserted_reasons')} results_table={oracle_result.get('results_table')} reasons_table={oracle_result.get('reasons_table')}",
+                f"inserted_results={oracle_result.get('inserted_results')} inserted_reasons={oracle_result.get('inserted_reasons')} inserted_features={oracle_result.get('inserted_features')} results_table={oracle_result.get('results_table')} reasons_table={oracle_result.get('reasons_table')} features_table={oracle_result.get('features_table')}",
             )
         elif evidence:
             log_step("05", "Dry-run output tablo audit'i yapiliyor")
@@ -1423,6 +1627,7 @@ def main(argv: list[str] | None = None) -> int:
         if evidence:
             audit_llm_output_tables(evidence[0].get("cohort_dt"))
         return 2
+    decisions = attach_evidence_feature_details(decisions, evidence)
     output_path = write_jsonl(decisions, args.output_path)
     logger.info("Wrote %s LLM decision rows to %s", len(decisions), output_path)
     print(f"wrote {len(decisions)} LLM decision rows to {output_path}")
@@ -1444,7 +1649,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(oracle_result, ensure_ascii=False))
         log_step_done(
             "05",
-            f"inserted_results={oracle_result.get('inserted_results')} inserted_reasons={oracle_result.get('inserted_reasons')} results_table={oracle_result.get('results_table')} reasons_table={oracle_result.get('reasons_table')}",
+            f"inserted_results={oracle_result.get('inserted_results')} inserted_reasons={oracle_result.get('inserted_reasons')} inserted_features={oracle_result.get('inserted_features')} results_table={oracle_result.get('results_table')} reasons_table={oracle_result.get('reasons_table')} features_table={oracle_result.get('features_table')}",
         )
     elif evidence:
         log_step("05", "Dry-run output tablo audit'i yapiliyor")

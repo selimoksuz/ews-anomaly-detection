@@ -16,6 +16,7 @@ from engine.oracle_io import OracleConnector
 
 DEFAULT_LLM_RESULTS_TABLE_KEY = "llm_results"
 DEFAULT_LLM_REASONS_TABLE_KEY = "llm_reason_details"
+DEFAULT_LLM_FEATURES_TABLE_KEY = "llm_feature_details"
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,12 @@ LLM_RESULT_COLUMNS = [
     "risk_level",
     "anomaly_score",
     "ml_anomaly_score",
+    "ml_ensemble_score",
     "ml_is_anomaly",
     "ml_alert_band",
     "ml_if_score",
     "ml_residual_score",
+    "ml_autoencoder_score",
     "reason_summary",
     "reason_1",
     "reason_1_weight",
@@ -55,6 +58,50 @@ LLM_REASON_COLUMNS = [
     "interpretation",
 ]
 
+LLM_FEATURE_COLUMNS = [
+    "run_id",
+    TIME_COLUMN,
+    ID_COLUMN,
+    "feature_rank",
+    "feature_name",
+    "feature_label",
+    "feature_category",
+    "formula",
+    "source_columns",
+    "risk_direction",
+    "current_value",
+    "previous_value",
+    "change_pct",
+    "history_period_count",
+    "history_median",
+    "history_p25",
+    "history_p75",
+    "history_robust_scale",
+    "history_z",
+    "rolling_3m_median",
+    "rolling_6m_median",
+    "rolling_12m_median",
+    "trend_slope_6m",
+    "trend_slope_12m",
+    "trend_break_flag",
+    "trend_note",
+    "month_of_year",
+    "same_month_last_year_value",
+    "yoy_change_pct",
+    "same_month_customer_median",
+    "same_month_customer_z",
+    "seasonal_peer_median",
+    "seasonal_peer_z",
+    "peer_median",
+    "peer_z",
+    "peer_support",
+    "peer_definition_level",
+    "peer_quality",
+    "data_missing_flag",
+    "snapshot_series_json",
+    "feature_json",
+]
+
 LLM_RESULT_COLUMN_DDLS = {
     "RUN_ID": "RUN_ID VARCHAR2(64)",
     TIME_COLUMN.upper(): f"{TIME_COLUMN.upper()} DATE",
@@ -64,10 +111,12 @@ LLM_RESULT_COLUMN_DDLS = {
     "RISK_LEVEL": "RISK_LEVEL VARCHAR2(32)",
     "ANOMALY_SCORE": "ANOMALY_SCORE NUMBER(6,4)",
     "ML_ANOMALY_SCORE": "ML_ANOMALY_SCORE NUMBER(6,2)",
+    "ML_ENSEMBLE_SCORE": "ML_ENSEMBLE_SCORE NUMBER(6,2)",
     "ML_IS_ANOMALY": "ML_IS_ANOMALY NUMBER(1)",
     "ML_ALERT_BAND": "ML_ALERT_BAND VARCHAR2(32)",
     "ML_IF_SCORE": "ML_IF_SCORE NUMBER(6,2)",
     "ML_RESIDUAL_SCORE": "ML_RESIDUAL_SCORE NUMBER(6,2)",
+    "ML_AUTOENCODER_SCORE": "ML_AUTOENCODER_SCORE NUMBER(6,2)",
     "REASON_SUMMARY": "REASON_SUMMARY VARCHAR2(4000)",
     "REASON_1": "REASON_1 VARCHAR2(2000)",
     "REASON_1_WEIGHT": "REASON_1_WEIGHT NUMBER(6,4)",
@@ -93,6 +142,51 @@ LLM_REASON_COLUMN_DDLS = {
     "CREATED_AT": "CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP",
 }
 
+LLM_FEATURE_COLUMN_DDLS = {
+    "RUN_ID": "RUN_ID VARCHAR2(64)",
+    TIME_COLUMN.upper(): f"{TIME_COLUMN.upper()} DATE",
+    ID_COLUMN.upper(): f"{ID_COLUMN.upper()} VARCHAR2(128)",
+    "FEATURE_RANK": "FEATURE_RANK NUMBER(4)",
+    "FEATURE_NAME": "FEATURE_NAME VARCHAR2(128)",
+    "FEATURE_LABEL": "FEATURE_LABEL VARCHAR2(256)",
+    "FEATURE_CATEGORY": "FEATURE_CATEGORY VARCHAR2(64)",
+    "FORMULA": "FORMULA VARCHAR2(1000)",
+    "SOURCE_COLUMNS": "SOURCE_COLUMNS VARCHAR2(1000)",
+    "RISK_DIRECTION": "RISK_DIRECTION VARCHAR2(32)",
+    "CURRENT_VALUE": "CURRENT_VALUE NUMBER(24,8)",
+    "PREVIOUS_VALUE": "PREVIOUS_VALUE NUMBER(24,8)",
+    "CHANGE_PCT": "CHANGE_PCT NUMBER(18,6)",
+    "HISTORY_PERIOD_COUNT": "HISTORY_PERIOD_COUNT NUMBER(10)",
+    "HISTORY_MEDIAN": "HISTORY_MEDIAN NUMBER(24,8)",
+    "HISTORY_P25": "HISTORY_P25 NUMBER(24,8)",
+    "HISTORY_P75": "HISTORY_P75 NUMBER(24,8)",
+    "HISTORY_ROBUST_SCALE": "HISTORY_ROBUST_SCALE NUMBER(24,8)",
+    "HISTORY_Z": "HISTORY_Z NUMBER(18,6)",
+    "ROLLING_3M_MEDIAN": "ROLLING_3M_MEDIAN NUMBER(24,8)",
+    "ROLLING_6M_MEDIAN": "ROLLING_6M_MEDIAN NUMBER(24,8)",
+    "ROLLING_12M_MEDIAN": "ROLLING_12M_MEDIAN NUMBER(24,8)",
+    "TREND_SLOPE_6M": "TREND_SLOPE_6M NUMBER(24,8)",
+    "TREND_SLOPE_12M": "TREND_SLOPE_12M NUMBER(24,8)",
+    "TREND_BREAK_FLAG": "TREND_BREAK_FLAG NUMBER(1)",
+    "TREND_NOTE": "TREND_NOTE VARCHAR2(1000)",
+    "MONTH_OF_YEAR": "MONTH_OF_YEAR NUMBER(2)",
+    "SAME_MONTH_LAST_YEAR_VALUE": "SAME_MONTH_LAST_YEAR_VALUE NUMBER(24,8)",
+    "YOY_CHANGE_PCT": "YOY_CHANGE_PCT NUMBER(18,6)",
+    "SAME_MONTH_CUSTOMER_MEDIAN": "SAME_MONTH_CUSTOMER_MEDIAN NUMBER(24,8)",
+    "SAME_MONTH_CUSTOMER_Z": "SAME_MONTH_CUSTOMER_Z NUMBER(18,6)",
+    "SEASONAL_PEER_MEDIAN": "SEASONAL_PEER_MEDIAN NUMBER(24,8)",
+    "SEASONAL_PEER_Z": "SEASONAL_PEER_Z NUMBER(18,6)",
+    "PEER_MEDIAN": "PEER_MEDIAN NUMBER(24,8)",
+    "PEER_Z": "PEER_Z NUMBER(18,6)",
+    "PEER_SUPPORT": "PEER_SUPPORT NUMBER(10)",
+    "PEER_DEFINITION_LEVEL": "PEER_DEFINITION_LEVEL VARCHAR2(64)",
+    "PEER_QUALITY": "PEER_QUALITY VARCHAR2(32)",
+    "DATA_MISSING_FLAG": "DATA_MISSING_FLAG NUMBER(1)",
+    "SNAPSHOT_SERIES_JSON": "SNAPSHOT_SERIES_JSON CLOB",
+    "FEATURE_JSON": "FEATURE_JSON CLOB",
+    "CREATED_AT": "CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP",
+}
+
 
 def write_llm_outputs_to_oracle(
     decisions: list[dict[str, Any]],
@@ -101,6 +195,7 @@ def write_llm_outputs_to_oracle(
     evidence_source: str = "oracle_input",
     results_table_key: str = DEFAULT_LLM_RESULTS_TABLE_KEY,
     reasons_table_key: str = DEFAULT_LLM_REASONS_TABLE_KEY,
+    features_table_key: str = DEFAULT_LLM_FEATURES_TABLE_KEY,
     batch_size: int = 1000,
 ) -> dict[str, Any]:
     if not decisions:
@@ -110,8 +205,10 @@ def write_llm_outputs_to_oracle(
             "run_id": None,
             "inserted_results": 0,
             "inserted_reasons": 0,
+            "inserted_features": 0,
             "deleted_results": 0,
             "deleted_reasons": 0,
+            "deleted_features": 0,
         }
 
     scoring_month = first_scoring_month(decisions)
@@ -123,30 +220,35 @@ def write_llm_outputs_to_oracle(
         evidence_source=evidence_source,
     )
     reason_frame = prepare_llm_reason_frame(decisions, run_id=run_id)
+    feature_frame = prepare_llm_feature_frame(decisions, run_id=run_id)
     logger.info(
-        "Prepared LLM Oracle output frames: run_id=%s result_rows=%s reason_rows=%s",
+        "Prepared LLM Oracle output frames: run_id=%s result_rows=%s reason_rows=%s feature_rows=%s",
         run_id,
         len(result_frame),
         len(reason_frame),
+        len(feature_frame),
     )
     logger.info(
-        "AUDIT STRUCTURED OUTPUT CONTRACT | results_columns=%s reasons_columns=%s",
+        "AUDIT STRUCTURED OUTPUT CONTRACT | results_columns=%s reasons_columns=%s features_columns=%s",
         ",".join(LLM_RESULT_COLUMNS),
         ",".join(LLM_REASON_COLUMNS),
+        ",".join(LLM_FEATURE_COLUMNS),
     )
 
     config = load_config()
     secrets = load_secrets()
     with OracleConnector(config, secrets) as ora:
         logger.info(
-            "Ensuring LLM Oracle output tables: results=%s reasons=%s",
+            "Ensuring LLM Oracle output tables: results=%s reasons=%s features=%s",
             ora._qualified_table_name(results_table_key),
             ora._qualified_table_name(reasons_table_key),
+            ora._qualified_table_name(features_table_key),
         )
         ensure_llm_output_tables(
             ora,
             results_table_key=results_table_key,
             reasons_table_key=reasons_table_key,
+            features_table_key=features_table_key,
         )
         logger.info("Deleting previous LLM output rows for scoring_month=%s", scoring_month.date())
         deleted = delete_llm_output_month(
@@ -154,8 +256,14 @@ def write_llm_outputs_to_oracle(
             scoring_month=scoring_month,
             results_table_key=results_table_key,
             reasons_table_key=reasons_table_key,
+            features_table_key=features_table_key,
         )
-        logger.info("Deleted old LLM rows: results=%s reasons=%s", deleted["results"], deleted["reasons"])
+        logger.info(
+            "Deleted old LLM rows: results=%s reasons=%s features=%s",
+            deleted["results"],
+            deleted["reasons"],
+            deleted["features"],
+        )
         logger.info("Inserting LLM result rows: rows=%s", len(result_frame))
         inserted_results = insert_frame(
             ora,
@@ -170,6 +278,13 @@ def write_llm_outputs_to_oracle(
             reason_frame,
             batch_size=batch_size,
         )
+        logger.info("Inserting LLM feature detail rows: rows=%s", len(feature_frame))
+        inserted_features = insert_frame(
+            ora,
+            features_table_key,
+            feature_frame,
+            batch_size=batch_size,
+        )
         result_counts = count_llm_output_rows(
             ora,
             results_table_key,
@@ -182,10 +297,17 @@ def write_llm_outputs_to_oracle(
             scoring_month=scoring_month,
             run_id=run_id,
         )
+        feature_counts = count_llm_output_rows(
+            ora,
+            features_table_key,
+            scoring_month=scoring_month,
+            run_id=run_id,
+        )
         logger.info(
-            "Inserted LLM Oracle rows: results=%s reasons=%s",
+            "Inserted LLM Oracle rows: results=%s reasons=%s features=%s",
             inserted_results,
             inserted_reasons,
+            inserted_features,
         )
         logger.info(
             "AUDIT OUTPUT TABLE | table_key=%s table=%s inserted=%s total_rows_after=%s scoring_month_rows_after=%s run_rows_after=%s",
@@ -205,23 +327,39 @@ def write_llm_outputs_to_oracle(
             reason_counts["scoring_month_rows"],
             reason_counts["run_rows"],
         )
+        logger.info(
+            "AUDIT OUTPUT TABLE | table_key=%s table=%s inserted=%s total_rows_after=%s scoring_month_rows_after=%s run_rows_after=%s",
+            features_table_key,
+            ora._qualified_table_name(features_table_key),
+            inserted_features,
+            feature_counts["total_rows"],
+            feature_counts["scoring_month_rows"],
+            feature_counts["run_rows"],
+        )
         return {
             "backend": "oracle",
             "run_id": run_id,
             "results_table_key": results_table_key,
             "reasons_table_key": reasons_table_key,
+            "features_table_key": features_table_key,
             "results_table": ora._qualified_table_name(results_table_key),
             "reasons_table": ora._qualified_table_name(reasons_table_key),
+            "features_table": ora._qualified_table_name(features_table_key),
             "deleted_results": int(deleted["results"]),
             "deleted_reasons": int(deleted["reasons"]),
+            "deleted_features": int(deleted["features"]),
             "inserted_results": int(inserted_results),
             "inserted_reasons": int(inserted_reasons),
+            "inserted_features": int(inserted_features),
             "result_table_total_rows_after": int(result_counts["total_rows"]),
             "result_table_scoring_month_rows_after": int(result_counts["scoring_month_rows"]),
             "result_table_run_rows_after": int(result_counts["run_rows"]),
             "reason_table_total_rows_after": int(reason_counts["total_rows"]),
             "reason_table_scoring_month_rows_after": int(reason_counts["scoring_month_rows"]),
             "reason_table_run_rows_after": int(reason_counts["run_rows"]),
+            "feature_table_total_rows_after": int(feature_counts["total_rows"]),
+            "feature_table_scoring_month_rows_after": int(feature_counts["scoring_month_rows"]),
+            "feature_table_run_rows_after": int(feature_counts["run_rows"]),
         }
 
 
@@ -230,13 +368,18 @@ def audit_llm_output_tables(
     *,
     results_table_key: str = DEFAULT_LLM_RESULTS_TABLE_KEY,
     reasons_table_key: str = DEFAULT_LLM_REASONS_TABLE_KEY,
+    features_table_key: str = DEFAULT_LLM_FEATURES_TABLE_KEY,
 ) -> dict[str, Any]:
     scoring_month = pd.Timestamp(scoring_month).normalize()
     config = load_config()
     secrets = load_secrets()
     audit: dict[str, Any] = {}
     with OracleConnector(config, secrets) as ora:
-        for label, table_key in (("results", results_table_key), ("reasons", reasons_table_key)):
+        for label, table_key in (
+            ("results", results_table_key),
+            ("reasons", reasons_table_key),
+            ("features", features_table_key),
+        ):
             table_name = ora._qualified_table_name(table_key)
             exists = ora._table_exists(table_key)
             counts = (
@@ -268,6 +411,7 @@ def ensure_llm_output_tables_in_oracle(
     scoring_month=None,
     results_table_key: str = DEFAULT_LLM_RESULTS_TABLE_KEY,
     reasons_table_key: str = DEFAULT_LLM_REASONS_TABLE_KEY,
+    features_table_key: str = DEFAULT_LLM_FEATURES_TABLE_KEY,
 ) -> dict[str, Any]:
     month = pd.Timestamp(scoring_month).normalize() if scoring_month else None
     config = load_config()
@@ -278,8 +422,13 @@ def ensure_llm_output_tables_in_oracle(
             ora,
             results_table_key=results_table_key,
             reasons_table_key=reasons_table_key,
+            features_table_key=features_table_key,
         )
-        for label, table_key in (("results", results_table_key), ("reasons", reasons_table_key)):
+        for label, table_key in (
+            ("results", results_table_key),
+            ("reasons", reasons_table_key),
+            ("features", features_table_key),
+        ):
             table_name = ora._qualified_table_name(table_key)
             exists = ora._table_exists(table_key)
             total_rows = count_table_rows(ora, table_key) if exists else 0
@@ -359,10 +508,12 @@ def ensure_llm_output_tables(
     *,
     results_table_key: str,
     reasons_table_key: str,
+    features_table_key: str,
 ) -> None:
     ddls = {
         results_table_key: llm_results_table_ddl(ora, results_table_key),
         reasons_table_key: llm_reasons_table_ddl(ora, reasons_table_key),
+        features_table_key: llm_features_table_ddl(ora, features_table_key),
     }
     with ora.connection.cursor() as cursor:
         for table_key, ddl in ddls.items():
@@ -373,6 +524,7 @@ def ensure_llm_output_tables(
     ora.connection.commit()
     ensure_missing_columns(ora, results_table_key, LLM_RESULT_COLUMN_DDLS)
     ensure_missing_columns(ora, reasons_table_key, LLM_REASON_COLUMN_DDLS)
+    ensure_missing_columns(ora, features_table_key, LLM_FEATURE_COLUMN_DDLS)
 
 
 def ensure_missing_columns(ora: OracleConnector, table_key: str, column_ddls: dict[str, str]) -> None:
@@ -393,11 +545,16 @@ def delete_llm_output_month(
     scoring_month: pd.Timestamp,
     results_table_key: str,
     reasons_table_key: str,
+    features_table_key: str,
 ) -> dict[str, int]:
-    deleted = {"results": 0, "reasons": 0}
+    deleted = {"results": 0, "reasons": 0, "features": 0}
     params = {"scoring_month": pd.Timestamp(scoring_month).to_pydatetime()}
     with ora.connection.cursor() as cursor:
-        for label, table_key in (("reasons", reasons_table_key), ("results", results_table_key)):
+        for label, table_key in (
+            ("features", features_table_key),
+            ("reasons", reasons_table_key),
+            ("results", results_table_key),
+        ):
             cursor.execute(
                 f"""
                 DELETE FROM {ora._qualified_table_name(table_key)}
@@ -434,6 +591,76 @@ def insert_frame(
     return ora._executemany(sql, rows, batch_size=batch_size)
 
 
+def prepare_llm_feature_frame(decisions: list[dict[str, Any]], *, run_id: str) -> pd.DataFrame:
+    rows = []
+    for decision in decisions:
+        scoring_date = parse_single_date(decision.get("cohort_dt"))
+        mono_id = text_or_none(decision.get("mono_id"), 128)
+        features = decision.get("evidence_features") or []
+        if not isinstance(features, list):
+            continue
+        for rank, feature in enumerate(features, start=1):
+            if not isinstance(feature, dict):
+                continue
+            dictionary = feature.get("dictionary") or {}
+            history = feature.get("history") or {}
+            trend = feature.get("trend") or {}
+            seasonality = feature.get("seasonality") or {}
+            peer = feature.get("peer") or {}
+            data_quality = feature.get("data_quality") or {}
+            current_value = number_or_none(feature.get("current_value"))
+            history_median = number_or_none(history.get("median"))
+            history_robust_scale = number_or_none(history.get("robust_scale"))
+            rows.append(
+                {
+                    "run_id": text_or_none(run_id, 64),
+                    TIME_COLUMN: scoring_date,
+                    ID_COLUMN: mono_id,
+                    "feature_rank": rank,
+                    "feature_name": text_or_none(feature.get("name"), 128),
+                    "feature_label": text_or_none(dictionary.get("label"), 256),
+                    "feature_category": text_or_none(dictionary.get("category"), 64),
+                    "formula": text_or_none(dictionary.get("formula"), 1000),
+                    "source_columns": text_or_none(json.dumps(dictionary.get("source_columns"), ensure_ascii=False), 1000),
+                    "risk_direction": text_or_none(dictionary.get("risk_direction"), 32),
+                    "current_value": current_value,
+                    "previous_value": number_or_none(feature.get("previous_value")),
+                    "change_pct": number_or_none(feature.get("change_pct")),
+                    "history_period_count": number_or_none(history.get("period_count")),
+                    "history_median": history_median,
+                    "history_p25": number_or_none(history.get("p25")),
+                    "history_p75": number_or_none(history.get("p75")),
+                    "history_robust_scale": history_robust_scale,
+                    "history_z": robust_z_value(current_value, history_median, history_robust_scale),
+                    "rolling_3m_median": number_or_none(history.get("rolling_3m_median")),
+                    "rolling_6m_median": number_or_none(history.get("rolling_6m_median")),
+                    "rolling_12m_median": number_or_none(history.get("rolling_12m_median")),
+                    "trend_slope_6m": number_or_none(trend.get("slope_6m")),
+                    "trend_slope_12m": number_or_none(trend.get("slope_12m")),
+                    "trend_break_flag": bool_to_number_or_none(trend.get("trend_break_flag")),
+                    "trend_note": text_or_none(trend.get("trend_note"), 1000),
+                    "month_of_year": number_or_none(seasonality.get("month_of_year")),
+                    "same_month_last_year_value": number_or_none(seasonality.get("same_month_last_year_value")),
+                    "yoy_change_pct": number_or_none(seasonality.get("yoy_change_pct")),
+                    "same_month_customer_median": number_or_none(seasonality.get("same_month_customer_median")),
+                    "same_month_customer_z": number_or_none(seasonality.get("same_month_customer_z")),
+                    "seasonal_peer_median": number_or_none(seasonality.get("seasonal_peer_median")),
+                    "seasonal_peer_z": number_or_none(seasonality.get("seasonal_peer_z")),
+                    "peer_median": number_or_none(peer.get("peer_median")),
+                    "peer_z": number_or_none(peer.get("peer_z")),
+                    "peer_support": number_or_none(peer.get("peer_support")),
+                    "peer_definition_level": text_or_none(peer.get("peer_definition_level"), 64),
+                    "peer_quality": text_or_none(peer.get("peer_quality"), 32),
+                    "data_missing_flag": bool_to_number_or_none(data_quality.get("missing_flag")),
+                    "snapshot_series_json": json.dumps(feature.get("snapshot_series") or {}, ensure_ascii=False),
+                    "feature_json": json.dumps(feature, ensure_ascii=False),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=LLM_FEATURE_COLUMNS)
+    return pd.DataFrame(rows, columns=LLM_FEATURE_COLUMNS)
+
+
 def prepare_llm_result_frame(
     decisions: list[dict[str, Any]],
     *,
@@ -443,6 +670,9 @@ def prepare_llm_result_frame(
 ) -> pd.DataFrame:
     rows = []
     for decision in decisions:
+        ml_ensemble_score = decision.get("ml_ensemble_score")
+        if ml_ensemble_score is None:
+            ml_ensemble_score = decision.get("ml_anomaly_score")
         rows.append(
             {
                 "run_id": text_or_none(run_id, 64),
@@ -453,10 +683,12 @@ def prepare_llm_result_frame(
                 "risk_level": text_or_none(decision.get("risk_level"), 32),
                 "anomaly_score": number_or_none(decision.get("anomaly_score")),
                 "ml_anomaly_score": number_or_none(decision.get("ml_anomaly_score")),
+                "ml_ensemble_score": number_or_none(ml_ensemble_score),
                 "ml_is_anomaly": bool_to_number_or_none(decision.get("ml_is_anomaly")),
                 "ml_alert_band": text_or_none(decision.get("ml_alert_band"), 32),
                 "ml_if_score": number_or_none(decision.get("ml_if_score")),
                 "ml_residual_score": number_or_none(decision.get("ml_residual_score")),
+                "ml_autoencoder_score": number_or_none(decision.get("ml_autoencoder_score")),
                 "reason_summary": text_or_none(decision.get("reason_summary"), 4000),
                 "reason_1": text_or_none(decision.get("reason_1"), 2000),
                 "reason_1_weight": number_or_none(decision.get("reason_1_weight")),
@@ -467,7 +699,7 @@ def prepare_llm_result_frame(
                 "recommended_action": text_or_none(decision.get("recommended_action"), 128),
                 "llm_model": text_or_none(llm_model, 128),
                 "evidence_source": text_or_none(evidence_source, 64),
-                "raw_response": json.dumps(decision, ensure_ascii=False),
+                "raw_response": json.dumps(result_raw_payload(decision), ensure_ascii=False),
             }
         )
     return pd.DataFrame(rows, columns=LLM_RESULT_COLUMNS)
@@ -539,6 +771,18 @@ def bool_to_number_or_none(value) -> int | None:
     return 1 if bool(value) else 0
 
 
+def robust_z_value(current: float | None, median: float | None, scale: float | None) -> float | None:
+    if current is None or median is None or scale is None or scale <= 0:
+        return None
+    return float((current - median) / scale)
+
+
+def result_raw_payload(decision: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(decision)
+    payload.pop("evidence_features", None)
+    return payload
+
+
 def text_or_none(value, limit: int) -> str | None:
     if value is None:
         return None
@@ -565,10 +809,12 @@ def llm_results_table_ddl(ora: OracleConnector, table_key: str) -> str:
             RISK_LEVEL VARCHAR2(32),
             ANOMALY_SCORE NUMBER(6,4),
             ML_ANOMALY_SCORE NUMBER(6,2),
+            ML_ENSEMBLE_SCORE NUMBER(6,2),
             ML_IS_ANOMALY NUMBER(1),
             ML_ALERT_BAND VARCHAR2(32),
             ML_IF_SCORE NUMBER(6,2),
             ML_RESIDUAL_SCORE NUMBER(6,2),
+            ML_AUTOENCODER_SCORE NUMBER(6,2),
             REASON_SUMMARY VARCHAR2(4000),
             REASON_1 VARCHAR2(2000),
             REASON_1_WEIGHT NUMBER(6,4),
@@ -599,5 +845,56 @@ def llm_reasons_table_ddl(ora: OracleConnector, table_key: str) -> str:
             INTERPRETATION VARCHAR2(2000),
             CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
             CONSTRAINT {pk_name} PRIMARY KEY ({TIME_COLUMN.upper()}, {ID_COLUMN.upper()}, REASON_RANK)
+        )
+    """
+
+
+def llm_features_table_ddl(ora: OracleConnector, table_key: str) -> str:
+    pk_name = f"PK_{ora._table_name(table_key)}"[:30]
+    return f"""
+        CREATE TABLE {ora._qualified_table_name(table_key)} (
+            RUN_ID VARCHAR2(64) NOT NULL,
+            {TIME_COLUMN.upper()} DATE NOT NULL,
+            {ID_COLUMN.upper()} VARCHAR2(128) NOT NULL,
+            FEATURE_RANK NUMBER(4) NOT NULL,
+            FEATURE_NAME VARCHAR2(128),
+            FEATURE_LABEL VARCHAR2(256),
+            FEATURE_CATEGORY VARCHAR2(64),
+            FORMULA VARCHAR2(1000),
+            SOURCE_COLUMNS VARCHAR2(1000),
+            RISK_DIRECTION VARCHAR2(32),
+            CURRENT_VALUE NUMBER(24,8),
+            PREVIOUS_VALUE NUMBER(24,8),
+            CHANGE_PCT NUMBER(18,6),
+            HISTORY_PERIOD_COUNT NUMBER(10),
+            HISTORY_MEDIAN NUMBER(24,8),
+            HISTORY_P25 NUMBER(24,8),
+            HISTORY_P75 NUMBER(24,8),
+            HISTORY_ROBUST_SCALE NUMBER(24,8),
+            HISTORY_Z NUMBER(18,6),
+            ROLLING_3M_MEDIAN NUMBER(24,8),
+            ROLLING_6M_MEDIAN NUMBER(24,8),
+            ROLLING_12M_MEDIAN NUMBER(24,8),
+            TREND_SLOPE_6M NUMBER(24,8),
+            TREND_SLOPE_12M NUMBER(24,8),
+            TREND_BREAK_FLAG NUMBER(1),
+            TREND_NOTE VARCHAR2(1000),
+            MONTH_OF_YEAR NUMBER(2),
+            SAME_MONTH_LAST_YEAR_VALUE NUMBER(24,8),
+            YOY_CHANGE_PCT NUMBER(18,6),
+            SAME_MONTH_CUSTOMER_MEDIAN NUMBER(24,8),
+            SAME_MONTH_CUSTOMER_Z NUMBER(18,6),
+            SEASONAL_PEER_MEDIAN NUMBER(24,8),
+            SEASONAL_PEER_Z NUMBER(18,6),
+            PEER_MEDIAN NUMBER(24,8),
+            PEER_Z NUMBER(18,6),
+            PEER_SUPPORT NUMBER(10),
+            PEER_DEFINITION_LEVEL VARCHAR2(64),
+            PEER_QUALITY VARCHAR2(32),
+            DATA_MISSING_FLAG NUMBER(1),
+            SNAPSHOT_SERIES_JSON CLOB,
+            FEATURE_JSON CLOB,
+            CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+            CONSTRAINT {pk_name} PRIMARY KEY ({TIME_COLUMN.upper()}, {ID_COLUMN.upper()}, FEATURE_RANK)
         )
     """

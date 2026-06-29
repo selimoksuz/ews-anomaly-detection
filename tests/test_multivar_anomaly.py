@@ -96,6 +96,8 @@ class MultivarAnomalyTests(unittest.TestCase):
             self.assertIn("reason_1", scores.columns)
             self.assertIn("alert_type", scores.columns)
             self.assertIn("review_queue", scores.columns)
+            self.assertIn("ensemble_score", scores.columns)
+            self.assertIn("autoencoder_score", scores.columns)
             self.assertGreaterEqual(scores.loc[0, "anomaly_score"], scores.loc[1, "anomaly_score"])
 
             filtered_summary = run_multivar_anomaly(
@@ -159,11 +161,13 @@ class MultivarAnomalyTests(unittest.TestCase):
                     "ref_donem_id": 202512,
                     "yukleme_zmn": "2026-01-01 08:00:00",
                     "anomaly_score": 98.1,
+                    "ensemble_score": 98.1,
                     "alert_band": "KIRMIZI",
                     "alert_type": "CREDIT_RISK",
                     "review_queue": "URGENT_FINANCIAL_REVIEW",
                     "if_score": 97.2,
                     "residual_score": 99.0,
+                    "autoencoder_score": 96.4,
                     "confidence": 91.0,
                     "coverage_ratio": 0.95,
                     "data_gap_score": 5.0,

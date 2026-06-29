@@ -355,7 +355,8 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
             )
             feature_evidence.append(item)
 
-        feature_evidence = rank_feature_evidence(feature_evidence)[: config.top_features]
+        ranked_feature_evidence = rank_feature_evidence(feature_evidence)
+        prompt_feature_evidence = ranked_feature_evidence[: config.top_features]
         coverage_ratio = coverage_for_features(score_features.loc[row_index], selected_features)
         packages.append(
             {
@@ -381,7 +382,8 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                     min_history_periods=config.min_history_periods,
                     customer_history_periods=len(customer_history),
                 ),
-                "features": feature_evidence,
+                "features": prompt_feature_evidence,
+                "feature_details": ranked_feature_evidence,
             }
         )
         if len(packages) == 1 or len(packages) % 100 == 0:
@@ -612,7 +614,8 @@ def build_evidence_packages_from_prepared_windows(
             )
             feature_evidence.append(item)
 
-        feature_evidence = rank_feature_evidence(feature_evidence)[: config.top_features]
+        ranked_feature_evidence = rank_feature_evidence(feature_evidence)
+        prompt_feature_evidence = ranked_feature_evidence[: config.top_features]
         coverage_ratio = coverage_for_features(score_features.loc[row_index], selected_features)
         packages.append(
             {
@@ -638,7 +641,8 @@ def build_evidence_packages_from_prepared_windows(
                     min_history_periods=config.min_history_periods,
                     customer_history_periods=len(customer_history),
                 ),
-                "features": feature_evidence,
+                "features": prompt_feature_evidence,
+                "feature_details": ranked_feature_evidence,
             }
         )
         if len(packages) == 1 or len(packages) % 100 == 0:
@@ -674,6 +678,8 @@ def build_evidence_packages_from_oracle(
     table_key: str = "multivar_input",
     chunk_size: int = 250_000,
     random_state: int = 42,
+    selected_customer_ids: list[str] | None = None,
+    selection_rule: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build full LLM evidence directly from the configured Oracle input table."""
 
@@ -759,14 +765,19 @@ def build_evidence_packages_from_oracle(
         len(prior_df),
         len(score_df),
     )
-    selected_customer_ids = selected_scoring_customer_ids(score_df, max_customers=max_customers)
+    if selected_customer_ids:
+        selected_customer_ids = [str(value) for value in selected_customer_ids if str(value).strip()]
+        selection_label = selection_rule or "explicit_customer_ids"
+    else:
+        selected_customer_ids = selected_scoring_customer_ids(score_df, max_customers=max_customers)
+        selection_label = f"first_distinct_{max_customers or 'all'}_after_oracle_order"
     logger.info(
-        "SCORING CUSTOMER SELECTION | selected_month=%s score_rows_available=%s max_customers=%s llm_payload_customers=%s selection_rule=first_distinct_%s_after_oracle_order",
+        "SCORING CUSTOMER SELECTION | selected_month=%s score_rows_available=%s max_customers=%s llm_payload_customers=%s selection_rule=%s",
         selected_month.date(),
         len(score_df),
         max_customers or "ALL",
         len(selected_customer_ids),
-        max_customers or "all",
+        selection_label,
     )
     selected_history_df = load_selected_customer_history_oracle(
         table_key=table_key,
