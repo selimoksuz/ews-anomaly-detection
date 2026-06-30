@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import engine.config_loader as config_loader
 from engine.config_loader import load_config, load_secrets, resolve_config_path, resolve_secrets_path
 from engine.oracle_io import OracleConnector
 
@@ -97,7 +98,11 @@ class ConfigLoaderTests(unittest.TestCase):
             previous_cwd = Path.cwd()
             os.chdir(project_root)
             try:
-                with patch.dict(
+                with patch.object(config_loader, "PROJECT_ROOT", project_root), patch.object(
+                    config_loader,
+                    "DEFAULT_CONFIG_PATH",
+                    project_root / "missing" / "pipeline_config.yaml",
+                ), patch.dict(
                     os.environ,
                     {
                         "EWS_ANOMALY_CONFIG_PATH": "",
@@ -105,10 +110,10 @@ class ConfigLoaderTests(unittest.TestCase):
                     },
                 ):
                     self.assertEqual(resolve_config_path(), parent_config.resolve())
-                    self.assertEqual(
-                        load_config(),
-                        {"pipeline": {"id_column": "mono_id"}, "oracle": {"section": "TEST"}},
-                    )
+                    config = load_config()
+                    self.assertEqual(config["pipeline"]["id_column"], "mono_id")
+                    self.assertEqual(config["oracle"]["section"], "TEST")
+                    self.assertIn("llm_feature_details", config["oracle"]["tables"])
             finally:
                 os.chdir(previous_cwd)
 
@@ -136,10 +141,9 @@ class ConfigLoaderTests(unittest.TestCase):
                     },
                 ):
                     self.assertEqual(resolve_config_path(), repo_config.resolve())
-                    self.assertEqual(
-                        load_config(),
-                        {"pipeline": {"id_column": "repo_mono"}, "oracle": {"section": "REPO"}},
-                    )
+                    config = load_config()
+                    self.assertEqual(config["pipeline"]["id_column"], "repo_mono")
+                    self.assertEqual(config["oracle"]["section"], "REPO")
             finally:
                 os.chdir(previous_cwd)
 
@@ -167,16 +171,32 @@ class ConfigLoaderTests(unittest.TestCase):
                     },
                 ):
                     self.assertEqual(resolve_config_path(), repo_config.resolve())
-                    self.assertEqual(
-                        load_config(),
-                        {"pipeline": {"id_column": "repo_mono"}, "oracle": {"section": "REPO"}},
-                    )
+                    config = load_config()
+                    self.assertEqual(config["pipeline"]["id_column"], "repo_mono")
+                    self.assertEqual(config["oracle"]["section"], "REPO")
             finally:
                 os.chdir(previous_cwd)
 
-    def test_oracle_connector_rejects_non_pipeline_config_with_clear_error(self):
-        with self.assertRaisesRegex(ValueError, "Pipeline config missing required root mapping"):
-            OracleConnector(pipeline_config={"model": {"name": "other_project"}}, secrets={"oracle": {}})
+    def test_oracle_connector_merges_non_pipeline_config_with_defaults(self):
+        connector = OracleConnector(
+            pipeline_config={"model": {"name": "other_project"}},
+            secrets={
+                "oracle": {
+                    "sections": {
+                        "ORA_PRD_ZTUSER": {
+                            "user": "user",
+                            "password": "password",
+                            "host": "host",
+                            "port": 1521,
+                            "service_name": "svc",
+                        }
+                    }
+                }
+            },
+        )
+        self.assertEqual(connector.pipeline_settings["id_column"], "mono_id")
+        self.assertIn("llm_feature_details", connector.oracle_settings["tables"])
+        self.assertEqual(connector.pipeline_config["model"]["name"], "other_project")
 
 
 if __name__ == "__main__":

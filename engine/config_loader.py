@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -14,6 +15,80 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SECRETS_PATH = PROJECT_ROOT / "secret" / "secrets.yaml"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
 REQUIRED_PIPELINE_CONFIG_KEYS = ("pipeline", "oracle")
+BUILTIN_PIPELINE_CONFIG = {
+    "pipeline": {
+        "name": "anomaly_multivar_detection",
+        "version": "2.0.0",
+        "id_column": "mono_id",
+        "time_column": "cohort_dt",
+        "non_feature_columns": [
+            "financial_term_l1y",
+            "bilanco_flg",
+            "financial_term_q",
+            "annualization_q",
+            "ref_donem_id",
+            "kkbguncelsorgu_no",
+            "yukleme_zmn",
+        ],
+    },
+    "sources": {
+        "multivar_input": {
+            "backend": "oracle",
+            "oracle": {"table": "multivar_input"},
+        }
+    },
+    "multivar_anomaly": {
+        "source_name": "multivar_input",
+        "time_column": "cohort_dt",
+        "id_column": "mono_id",
+        "default_train_rows": None,
+        "outputs": {
+            "backend": "oracle",
+            "oracle": {
+                "results_table_key": "multivar_results",
+                "details_table_key": "multivar_details",
+            },
+        },
+    },
+    "oracle": {
+        "section": "ORA_PRD_ZTUSER",
+        "tables": {
+            "multivar_input": {
+                "owner": "ZT_VAR2",
+                "table": "EWS_ANOMALY_MULTIVAR_INPUT",
+            },
+            "multivar_results": {
+                "owner": "ZT_VAR2",
+                "table": "EWS_ANOMALY_MULTIVAR_RESULTS",
+            },
+            "multivar_details": {
+                "owner": "ZT_VAR2",
+                "table": "EWS_ANOMALY_MULTIVAR_DETAILS",
+            },
+            "llm_results": {
+                "owner": "ZT_VAR2",
+                "table": "EWS_ANOMALY_LLM_RESULTS",
+            },
+            "llm_reason_details": {
+                "owner": "ZT_VAR2",
+                "table": "EWS_ANOMALY_LLM_REASONS",
+            },
+            "llm_feature_details": {
+                "owner": "ZT_VAR2",
+                "table": "EWS_ANOMALY_LLM_FEATURES",
+            },
+        },
+    },
+    "logging": {
+        "logger_name": "ews.multivar",
+        "level": "INFO",
+        "directory": "runtime/logs/cli",
+        "file_name": "multivar.log",
+        "format": "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        "date_format": "%Y-%m-%d %H:%M:%S",
+        "console": True,
+    },
+}
 
 
 def _unique_paths(paths: Iterable[Path]) -> list[Path]:
@@ -58,6 +133,8 @@ def _candidate_config_paths(root: Path) -> list[Path]:
     return [
         root / "config" / "pipeline_config.yaml",
         root / "pipeline_config.yaml",
+        root / "config" / "config.yaml",
+        root / "config.yaml",
     ]
 
 
@@ -113,6 +190,26 @@ def _resolve_config_refs(config: dict, *, config_path: Path) -> dict:
     return merged
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if (
+            isinstance(value, dict)
+            and isinstance(merged.get(key), dict)
+        ):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def normalize_pipeline_config(config: dict) -> dict:
+    """Merge user config with the minimal runtime contract needed by this repo."""
+    if not isinstance(config, dict):
+        return deepcopy(BUILTIN_PIPELINE_CONFIG)
+    return _deep_merge(BUILTIN_PIPELINE_CONFIG, config)
+
+
 def _valid_pipeline_config(path: Path) -> bool:
     try:
         config = _resolve_config_refs(_load_yaml_mapping(path), config_path=path)
@@ -124,7 +221,7 @@ def _valid_pipeline_config(path: Path) -> bool:
 def load_config(config_path=None):
     path = resolve_config_path(config_path)
     raw = _load_yaml_mapping(path)
-    return _resolve_config_refs(raw, config_path=path)
+    return normalize_pipeline_config(_resolve_config_refs(raw, config_path=path))
 
 
 def save_config(config: dict, config_path=None):
@@ -170,38 +267,55 @@ def resolve_config_path(config_path=None) -> Path:
     if config_path:
         candidates.extend(_path_variants(config_path))
     else:
+        env_candidates: list[Path] = []
         for env_name in ("EWS_ANOMALY_CONFIG_PATH", "RISK_PIPELINE_CONFIG_PATH"):
             env_value = os.getenv(env_name)
             if env_value:
-                candidates.extend(_path_variants(env_value))
+                env_candidates.extend(_path_variants(env_value))
+
+        # If the command is run from the cloned repo, that repo's config must win.
+        # Parent workspace files such as /opt/app/config/config.yaml may belong to
+        # another project and are only fallbacks.
+        repo_candidates = [
+            Path.cwd() / "config" / "pipeline_config.yaml",
+            DEFAULT_CONFIG_PATH,
+            Path.cwd() / "pipeline_config.yaml",
+            PROJECT_ROOT / "pipeline_config.yaml",
+        ]
+        parent_candidates: list[Path] = []
         for root in _project_root_candidates():
-            candidates.extend(_candidate_config_paths(root))
-        candidates.append(DEFAULT_CONFIG_PATH)
+            parent_candidates.extend(_candidate_config_paths(root))
+
+        candidates.extend(env_candidates)
+        candidates.extend(repo_candidates)
+        candidates.extend(parent_candidates)
 
     candidates = _unique_paths(candidates)
-    invalid_existing: list[Path] = []
+    invalid_env_candidates: list[Path] = []
     for candidate in candidates:
         if not candidate.exists():
             continue
-        if _valid_pipeline_config(candidate):
-            return candidate.resolve()
-        invalid_existing.append(candidate)
+        # Env config only overrides when it is clearly this pipeline's config.
+        # Otherwise keep searching for the repo config and merge defaults later.
+        if candidate in locals().get("env_candidates", []) and not _valid_pipeline_config(candidate):
+            invalid_env_candidates.append(candidate)
+            continue
+        return candidate.resolve()
 
-    if explicit_path and invalid_existing:
-        checked = ", ".join(str(path) for path in invalid_existing)
+    if explicit_path:
+        checked = ", ".join(str(path) for path in candidates)
         raise ValueError(
-            "Pipeline config file does not match expected schema. "
-            + f"Checked existing explicit path(s): {checked}. "
-            + "Required root mappings: pipeline, oracle."
+            "Explicit pipeline config file was not found. "
+            + f"Checked: {checked}. "
+            + "Use an existing file or omit the argument to use repo config."
         )
 
     checked = ", ".join(str(path) for path in candidates) or str(DEFAULT_CONFIG_PATH)
     invalid_note = ""
-    if invalid_existing:
+    if invalid_env_candidates:
         invalid_note = (
-            " Existing files ignored because they do not contain required root mappings "
-            f"{', '.join(REQUIRED_PIPELINE_CONFIG_KEYS)}: "
-            + ", ".join(str(path) for path in invalid_existing)
+            " Env config files ignored because they do not look like anomaly pipeline config: "
+            + ", ".join(str(path) for path in invalid_env_candidates)
             + "."
         )
     raise FileNotFoundError(

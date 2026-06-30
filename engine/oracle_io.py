@@ -12,7 +12,12 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from engine.config_loader import REQUIRED_PIPELINE_CONFIG_KEYS, load_config, resolve_secrets_path
+from engine.config_loader import (
+    REQUIRED_PIPELINE_CONFIG_KEYS,
+    load_config,
+    normalize_pipeline_config,
+    resolve_secrets_path,
+)
 
 try:
     import oracledb
@@ -81,7 +86,11 @@ class OracleConnector:
     """Thin Oracle connector for multivar input/output tables."""
 
     def __init__(self, pipeline_config=None, secrets=None) -> None:
-        self.pipeline_config = load_config() if pipeline_config is None else load_yaml_config(pipeline_config, DEFAULT_PIPELINE_CONFIG)
+        self.pipeline_config = (
+            load_config()
+            if pipeline_config is None
+            else normalize_pipeline_config(load_yaml_config(pipeline_config, DEFAULT_PIPELINE_CONFIG))
+        )
         missing_config_keys = [
             key
             for key in REQUIRED_PIPELINE_CONFIG_KEYS
