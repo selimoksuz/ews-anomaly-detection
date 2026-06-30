@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -63,6 +64,8 @@ Bu seriler ayrica karar satiri degildir; sadece secilen snapshot'in anomali olup
 Kurallar:
 - Degisken sozlugunu oku: is anlami, formul, risk yonu ve birimi dikkate al.
 - Tum aciklama alanlarini Turkce yaz. reason_summary ve reason_1/2/3 icinde Ingilizce cumle kullanma.
+- reason_summary ve reason_1/2/3 icinde karar verdigin degiskenler icin sayisal kanit yaz: current, previous veya history median, change_pct, history_z, peer_median ve peer_z alanlarindan mevcut olanlari kullan.
+- Artis, azalis, sapma, trend kirilmasi veya peer uyumsuzlugu gibi ifadeleri sayisal karsilastirma vermeden kullanma.
 - Cari degeri musterinin kendi gecmisiyle, ayni sezon gecmisiyle ve peer grubuyla karsilastir.
 - snapshot_series.customer ile musterinin son snapshot degerlerini, snapshot_series.peer ile ayni snapshotlardaki peer median/support/quality bilgisini birlikte oku.
 - Tek donem sicrama, kademeli trend bozulmasi, sezon etkisi ve veri kalitesi problemini ayir.
@@ -88,7 +91,7 @@ anomaly_score 0.0 ile 1.0 arasinda anomali siddet skorudur; confidence degildir.
 reason_summary tekil karar nedenini birlestirilmis olarak anlatir.
 reason_1/2/3 en yuksek etkili uc nedeni, weight alanlari ise bu nedenlerin toplam karar icindeki goreli agirligini verir.
 Agirliklar 0.0 ile 1.0 arasinda olmali ve mumkunse toplami 1.0'a yakin olmali.
-reason_summary en fazla 600 karakter, reason_1/2/3 her biri en fazla 220 karakter olsun.
+reason_summary en fazla 800 karakter, reason_1/2/3 her biri en fazla 420 karakter olsun.
 String degerlerinde satir sonu kullanma.
 Sadece tek satir gecerli JSON object dondur. Markdown, kod blogu, aciklama metni, Python repr veya JSON string wrapper kullanma.
 JSON'u tirnak icine alinmis string olarak dondurme; dogrudan { ile baslayan ve } ile biten object yaz."""
@@ -98,12 +101,12 @@ OUTPUT_CONTRACT = {
     "is_anomaly": "boolean",
     "anomaly_type": "ANI_RISK_ARTISI | FINANSAL_BOZULMA | PD_RISKI | KKB_RISKI | PEER_UYUMSUZLUGU | DATA_GAP | TREND_KIRILMASI | SEZON_DISI_SAPMA | NORMAL",
     "anomaly_score": "0.0-1.0 arasi anomali siddet skoru; guven skoru degildir",
-    "reason_summary": "history, peer, trend, sezon ve veri kalitesini birlestiren Turkce tekil aciklama",
-    "reason_1": "karara en cok etki eden Turkce neden",
+    "reason_summary": "history, peer, trend, sezon ve veri kalitesini sayisal kanitlarla birlestiren Turkce tekil aciklama",
+    "reason_1": "karara en cok etki eden Turkce neden; ilgili degiskenin current/previous/change/history_z/peer_z gibi sayisal kanitlarini icermeli",
     "reason_1_weight": "0.0-1.0",
-    "reason_2": "karara ikinci en cok etki eden Turkce neden veya bos",
+    "reason_2": "karara ikinci en cok etki eden Turkce neden veya bos; doluysa sayisal kanit icermeli",
     "reason_2_weight": "0.0-1.0",
-    "reason_3": "karara ucuncu en cok etki eden Turkce neden veya bos",
+    "reason_3": "karara ucuncu en cok etki eden Turkce neden veya bos; doluysa sayisal kanit icermeli",
     "reason_3_weight": "0.0-1.0",
     "risk_level": "DUSUK | ORTA | YUKSEK | KRITIK",
 }
@@ -123,13 +126,13 @@ if BaseModel is not None and Field is not None:
         )
         anomaly_score: float = Field(description="Anomali siddet skoru, 0.0 ile 1.0 arasinda; confidence degildir")
         reason_summary: str = Field(
-            description="Tekil karar nedeninin Turkce ozeti; history, peer, trend, sezon ve veri kalitesiyle kiyaslamali olsun"
+            description="Tekil karar nedeninin Turkce ozeti; current, previous/history median, change_pct, history_z ve peer_z gibi sayisal kanitlarla kiyaslamali olsun"
         )
-        reason_1: str = Field(description="Karara en cok etki eden neden")
+        reason_1: str = Field(description="Karara en cok etki eden neden; sayisal kanit icermeli")
         reason_1_weight: float = Field(description="Birinci nedenin goreli agirligi, 0.0 ile 1.0 arasinda")
-        reason_2: Optional[str] = Field(default=None, description="Karara ikinci en cok etki eden neden")
+        reason_2: Optional[str] = Field(default=None, description="Karara ikinci en cok etki eden neden; doluysa sayisal kanit icermeli")
         reason_2_weight: float = Field(default=0.0, description="Ikinci nedenin goreli agirligi, 0.0 ile 1.0 arasinda")
-        reason_3: Optional[str] = Field(default=None, description="Karara ucuncu en cok etki eden neden")
+        reason_3: Optional[str] = Field(default=None, description="Karara ucuncu en cok etki eden neden; doluysa sayisal kanit icermeli")
         reason_3_weight: float = Field(default=0.0, description="Ucuncu nedenin goreli agirligi, 0.0 ile 1.0 arasinda")
         risk_level: str = Field(description="Risk seviyesi: DUSUK, ORTA, YUKSEK veya KRITIK")
 
@@ -313,7 +316,9 @@ def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
         "anomaly_score 0.0-1.0 arasi anomali siddet skorudur; confidence degildir.",
         "reason_summary tekil karar nedenini birlestirilmis olarak anlatir.",
         "reason_1/2/3 en yuksek etkili uc nedeni temsil eder; weight alanlari goreli karar agirligidir.",
-        "reason_summary en fazla 600 karakter, reason_1/2/3 her biri en fazla 220 karakter olsun. String degerlerinde satir sonu kullanma.",
+        "Artis/azalis/sapma/trend/peer uyumsuzlugu dedigin her reason icinde sayisal kanit ver: current, previous/history_median, change_pct, history_z, peer_median, peer_z.",
+        "Sayi yoksa o degiskeni reason olarak yazma. Reasonlarda 'belirgin artis' gibi soyut ifade tek basina yeterli degildir.",
+        "reason_summary en fazla 800 karakter, reason_1/2/3 her biri en fazla 420 karakter olsun. String degerlerinde satir sonu kullanma.",
         "Musteri history'si yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.",
         'Ornek output sekli: {"period_position":0,"is_anomaly":false,"anomaly_type":"NORMAL","anomaly_score":0.0,"reason_summary":"...","reason_1":"...","reason_1_weight":1.0,"reason_2":"","reason_2_weight":0.0,"reason_3":"","reason_3_weight":0.0,"risk_level":"DUSUK"}',
         "Not: History, customer_series ve peer_series sadece bu snapshot'i yorumlama baglamidir.",
@@ -368,6 +373,7 @@ def compact_feature_line(feature: dict[str, Any], index: int) -> str:
                 "p25": history.get("p25"),
                 "p75": history.get("p75"),
                 "robust_scale": history.get("robust_scale"),
+                "history_z": feature_history_z(feature),
                 "rolling_3m_median": history.get("rolling_3m_median"),
                 "rolling_6m_median": history.get("rolling_6m_median"),
                 "rolling_12m_median": history.get("rolling_12m_median"),
@@ -755,15 +761,21 @@ def normalize_structured_decision(decision: dict[str, Any]) -> dict[str, Any]:
 
 def top_reason_records(decision: dict[str, Any]) -> list[dict[str, Any]]:
     records = []
+    numeric_evidence = decision.get("_reason_numeric_evidence") or {}
     for index in range(1, 4):
         reason = decision.get(f"reason_{index}")
         if not reason:
             continue
         weight = bounded_unit_float(decision.get(f"reason_{index}_weight"))
+        evidence_text = numeric_evidence.get(index) or numeric_evidence.get(str(index))
+        if evidence_text:
+            evidence_text = f"weight={weight:.4f}; {evidence_text}"
+        else:
+            evidence_text = f"weight={weight:.4f}"
         records.append(
             {
                 "feature": f"REASON_{index}",
-                "evidence": f"weight={weight:.4f}",
+                "evidence": evidence_text,
                 "interpretation": reason,
             }
         )
@@ -788,6 +800,172 @@ def bounded_unit_float(value: Any) -> float:
     if parsed > 1.0:
         return 1.0
     return parsed
+
+
+def enrich_decision_reasons_with_numeric_evidence(
+    decision: dict[str, Any],
+    evidence_item: dict[str, Any],
+) -> dict[str, Any]:
+    features = [
+        feature
+        for feature in (evidence_item.get("feature_details") or evidence_item.get("features") or [])
+        if isinstance(feature, dict)
+    ]
+    if not features:
+        decision["main_reasons"] = top_reason_records(decision)
+        return decision
+
+    numeric_evidence: dict[int, str] = {}
+    used_feature_indexes: set[int] = set()
+    for reason_index in range(1, 4):
+        reason_key = f"reason_{reason_index}"
+        reason = text_or_empty(decision.get(reason_key))
+        if not reason:
+            continue
+        feature_index, feature = select_reason_feature(reason, features, used_feature_indexes, reason_index - 1)
+        if feature is None:
+            continue
+        used_feature_indexes.add(feature_index)
+        evidence_text = numeric_evidence_for_feature(feature)
+        if not evidence_text:
+            continue
+        numeric_evidence[reason_index] = evidence_text
+        if not has_structured_numeric_evidence(reason):
+            decision[reason_key] = append_reason_numeric_evidence(reason, evidence_text)
+
+    summary = text_or_empty(decision.get("reason_summary"))
+    if summary and not has_structured_numeric_evidence(summary):
+        summary_feature = features[0]
+        summary_evidence = numeric_evidence.get(1) or numeric_evidence_for_feature(summary_feature)
+        if summary_evidence:
+            decision["reason_summary"] = append_reason_numeric_evidence(summary, summary_evidence, prefix="Sayisal ozet")
+
+    decision["_reason_numeric_evidence"] = numeric_evidence
+    decision["main_reasons"] = top_reason_records(decision)
+    return decision
+
+
+def select_reason_feature(
+    reason: str,
+    features: list[dict[str, Any]],
+    used_indexes: set[int],
+    fallback_index: int,
+) -> tuple[int, dict[str, Any] | None]:
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    reason_text = normalize_match_text(reason)
+    reason_tokens = match_tokens(reason)
+    for index, feature in enumerate(features):
+        dictionary = feature.get("dictionary") or {}
+        candidates = [
+            feature.get("name"),
+            dictionary.get("label"),
+            dictionary.get("category"),
+            dictionary.get("formula"),
+        ]
+        score = 0
+        for candidate in candidates:
+            candidate_text = normalize_match_text(candidate)
+            if candidate_text and candidate_text in reason_text:
+                score += 8
+            candidate_tokens = match_tokens(candidate)
+            if candidate_tokens:
+                score += len(reason_tokens.intersection(candidate_tokens))
+        if index in used_indexes:
+            score -= 2
+        scored.append((score, -index, feature))
+    scored.sort(reverse=True, key=lambda row: (row[0], row[1]))
+    best_score, best_negative_index, best_feature = scored[0]
+    if best_score > 0:
+        return -best_negative_index, best_feature
+    if 0 <= fallback_index < len(features):
+        return fallback_index, features[fallback_index]
+    return 0, features[0]
+
+
+def numeric_evidence_for_feature(feature: dict[str, Any]) -> str:
+    dictionary = feature.get("dictionary") or {}
+    history = feature.get("history") or {}
+    peer = feature.get("peer") or {}
+    trend = feature.get("trend") or {}
+    seasonality = feature.get("seasonality") or {}
+    label = text_or_empty(dictionary.get("label")) or text_or_empty(feature.get("name")) or "degisken"
+    parts = [f"feature={label}"]
+    add_numeric_part(parts, "current", feature.get("current_value"))
+    add_numeric_part(parts, "previous", feature.get("previous_value"))
+    add_numeric_part(parts, "change_pct", feature.get("change_pct"), suffix="%")
+    add_numeric_part(parts, "history_median", history.get("median"))
+    add_numeric_part(parts, "history_z", feature_history_z(feature))
+    add_numeric_part(parts, "peer_median", peer.get("peer_median"))
+    add_numeric_part(parts, "peer_z", peer.get("peer_z"))
+    add_numeric_part(parts, "slope_6m", trend.get("slope_6m"))
+    add_numeric_part(parts, "slope_12m", trend.get("slope_12m"))
+    add_numeric_part(parts, "yoy_change_pct", seasonality.get("yoy_change_pct"), suffix="%")
+    add_numeric_part(parts, "same_month_z", seasonality.get("same_month_customer_z"))
+    add_text_part(parts, "risk_direction", dictionary.get("risk_direction"))
+    return "; ".join(parts)
+
+
+def add_numeric_part(parts: list[str], key: str, value: Any, *, suffix: str = "") -> None:
+    formatted = format_reason_number(value)
+    if formatted is not None:
+        parts.append(f"{key}={formatted}{suffix}")
+
+
+def add_text_part(parts: list[str], key: str, value: Any) -> None:
+    text = text_or_empty(value)
+    if text:
+        parts.append(f"{key}={text}")
+
+
+def append_reason_numeric_evidence(reason: str, evidence_text: str, *, prefix: str = "Sayisal kanit") -> str:
+    combined = f"{reason.rstrip('. ')}. {prefix}: {evidence_text}."
+    return combined[:1200]
+
+
+def has_structured_numeric_evidence(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    if "sayisal kanit:" in lowered or "sayisal ozet:" in lowered:
+        return True
+    numeric_keys = {
+        match.group(1).lower()
+        for match in re.finditer(
+            r"\b(current|cari|previous|onceki|change_pct|degisim|history_z|hist_z|peer_z|peer_median|history_median)\s*[=:]",
+            text,
+            flags=re.IGNORECASE,
+        )
+    }
+    return len(numeric_keys) >= 3
+
+
+def feature_history_z(feature: dict[str, Any]) -> float | None:
+    history = feature.get("history") or {}
+    current = clean_float(feature.get("current_value"))
+    median = clean_float(history.get("median"))
+    robust_scale = clean_float(history.get("robust_scale"))
+    if current is None or median is None or robust_scale is None or robust_scale <= 0:
+        return None
+    return round((current - median) / robust_scale, 6)
+
+
+def format_reason_number(value: Any) -> str | None:
+    parsed = clean_float(value)
+    if parsed is None:
+        return None
+    if parsed == 0:
+        return "0"
+    formatted = f"{parsed:.6g}"
+    return formatted
+
+
+def normalize_match_text(value: Any) -> str:
+    return " ".join(sorted(match_tokens(value)))
+
+
+def match_tokens(value: Any) -> set[str]:
+    text = text_or_empty(value).lower().replace("_", " ")
+    return {token for token in re.split(r"[^0-9a-zA-Z]+", text) if len(token) >= 3}
 
 
 def group_evidence_by_customer(evidence_items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -1139,6 +1317,7 @@ def attach_evidence_feature_details(
         details = item.get("feature_details") or item.get("features") or []
         decision["evidence_features"] = details
         decision["evidence_feature_count"] = len(details)
+        enrich_decision_reasons_with_numeric_evidence(decision, item)
         attached += 1
     logger.info(
         "Attached evidence feature details to decisions: attached=%s/%s",

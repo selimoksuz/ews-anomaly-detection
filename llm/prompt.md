@@ -14,20 +14,22 @@ Bu akista hazir anomaly score veya target yoktur. Karari LLM verir; karar sadece
 
 1. Degisken sozlugunu oku: is anlami, formul, risk yonu ve birimi dikkate al.
 2. Tum aciklama alanlarini Turkce yaz. `reason_summary` ve `reason_1/2/3` icinde Ingilizce cumle kullanma.
-3. Cari degeri musterinin kendi gecmisiyle, ayni sezon gecmisiyle ve peer grubuyla karsilastir.
-4. `snapshot_series.customer` ile musterinin son snapshot degerlerini, `snapshot_series.peer` ile ayni snapshotlardaki peer median/support/quality bilgisini birlikte oku.
-5. Tek donem sicrama, kademeli trend bozulmasi, sezon etkisi ve veri kalitesi problemini ayir.
-6. Buyuk tutar tek basina anomali degildir; olcek, peer ve tarihsel davranisla birlikte yorumla.
-7. Missing veya stale finansal term sinyalini finansal bozulma gibi yazma; veri kalitesi veya inceleme nedeni olarak ayir.
-8. Peer kalitesi ZAYIF ise kesin hukum verme, manuel inceleme oner.
-9. Musterinin kendi tarihsel verisi yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.
-10. Peer kaynakli anomali ancak musteri history'si yetersizse veya musteri history'sindeki bozulmayi destekliyorsa kullanilabilir.
-11. `risk_direction=HIGHER_IS_RISKY` ise artis risk bozulmasi, azalis risk azalisi/iyilesmedir.
-12. `risk_direction=LOWER_IS_RISKY` ise azalis risk bozulmasi, artis risk azalisi/iyilesmedir.
-13. Risk yonunun tersine giden sapmalari riskli anomali nedeni yapma; gerekiyorsa olumlu/iyilesen sapma olarak not et ama riskli anomali flag'i verme.
-14. Rating grubunu risk sinyali olarak kullanabilirsin.
-15. IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
-16. Gelecek donem varsayimi yapma.
+3. `reason_summary` ve `reason_1/2/3` icinde karar verdigin degiskenler icin sayisal kanit yaz: `current`, `previous` veya `history_median`, `change_pct`, `history_z`, `peer_median`, `peer_z` alanlarindan mevcut olanlari kullan.
+4. Artis, azalis, sapma, trend kirilmasi veya peer uyumsuzlugu gibi ifadeleri sayisal karsilastirma vermeden kullanma.
+5. Cari degeri musterinin kendi gecmisiyle, ayni sezon gecmisiyle ve peer grubuyla karsilastir.
+6. `snapshot_series.customer` ile musterinin son snapshot degerlerini, `snapshot_series.peer` ile ayni snapshotlardaki peer median/support/quality bilgisini birlikte oku.
+7. Tek donem sicrama, kademeli trend bozulmasi, sezon etkisi ve veri kalitesi problemini ayir.
+8. Buyuk tutar tek basina anomali degildir; olcek, peer ve tarihsel davranisla birlikte yorumla.
+9. Missing veya stale finansal term sinyalini finansal bozulma gibi yazma; veri kalitesi veya inceleme nedeni olarak ayir.
+10. Peer kalitesi ZAYIF ise kesin hukum verme, manuel inceleme oner.
+11. Musterinin kendi tarihsel verisi yeterliyse peer tek basina anomali nedeni olamaz; peer sadece destekleyici kanittir.
+12. Peer kaynakli anomali ancak musteri history'si yetersizse veya musteri history'sindeki bozulmayi destekliyorsa kullanilabilir.
+13. `risk_direction=HIGHER_IS_RISKY` ise artis risk bozulmasi, azalis risk azalisi/iyilesmedir.
+14. `risk_direction=LOWER_IS_RISKY` ise azalis risk bozulmasi, artis risk azalisi/iyilesmedir.
+15. Risk yonunun tersine giden sapmalari riskli anomali nedeni yapma; gerekiyorsa olumlu/iyilesen sapma olarak not et ama riskli anomali flag'i verme.
+16. Rating grubunu risk sinyali olarak kullanabilirsin.
+17. IRB/model PD degerleri ve PD oranlari karar kaniti olarak kullanilmaz.
+18. Gelecek donem varsayimi yapma.
 
 ## Anomali Kabul Sinyalleri
 
@@ -50,7 +52,8 @@ Tum sinyalleri birlestirip tek musteri-snapshot karari dondur.
 `reason_summary` tekil kararin birlestirilmis nedenidir.
 `reason_1/2/3` en yuksek etkili uc nedeni, `reason_1_weight/2_weight/3_weight` bu nedenlerin goreli agirligini tasir.
 `reason_summary`, `reason_1`, `reason_2`, `reason_3` mutlaka Turkce aciklama icermelidir.
-`reason_summary` en fazla 600 karakter, `reason_1/2/3` her biri en fazla 220 karakter olsun.
+Her reason, iddia ettigi degisken farkini sayisal gostermelidir. Ornek: `current=1.20`, `previous=1.00`, `change_pct=20%`, `history_median=0.90`, `history_z=3.00`, `peer_median=0.80`, `peer_z=1.50`.
+`reason_summary` en fazla 800 karakter, `reason_1/2/3` her biri en fazla 420 karakter olsun.
 String degerlerinde satir sonu kullanma.
 
 Sadece tek satir gecerli JSON object dondur.
@@ -59,4 +62,4 @@ JSON'u tirnak icine alinmis string olarak dondurme; dogrudan `{` ile baslayan ve
 
 Ornek tek satir:
 
-{"period_position":0,"is_anomaly":true,"anomaly_type":"ANI_RISK_ARTISI","anomaly_score":0.82,"reason_summary":"Banka risk/varlik cari degeri musteri tarihsel medyaninin belirgin uzerinde ve son aylarda yukari trend var. Peer sapmasi bu bozulmayi destekliyor ancak karar tek basina peer farkina dayanmiyor. Sezon etkisi bu artis icin yeterli aciklama saglamiyor.","reason_1":"Musteri gecmisine gore risk yonunde belirgin sapma","reason_1_weight":0.50,"reason_2":"Trend kirilmasi ve kademeli bozulma","reason_2_weight":0.30,"reason_3":"Peer referansi bozulmayi destekliyor","reason_3_weight":0.20,"risk_level":"YUKSEK"}
+{"period_position":0,"is_anomaly":true,"anomaly_type":"ANI_RISK_ARTISI","anomaly_score":0.82,"reason_summary":"Banka risk/varlik current=1.20, history_median=0.90, history_z=3.00 ve change_pct=20% ile musteri gecmisine gore risk yonunde sapmis. Peer_median=0.80 ve peer_z=1.50 sadece destekleyici kanittir; karar tek basina peer farkina dayanmiyor.","reason_1":"Banka risk/varlik current=1.20, previous=1.00, change_pct=20% ve history_z=3.00 ile musteri gecmisine gore risk yonunde sapma var.","reason_1_weight":0.50,"reason_2":"Trend sinyali slope_6m=0.08 ve slope_12m=0.04 ile kademeli bozulmayi destekliyor.","reason_2_weight":0.30,"reason_3":"Peer_median=0.80 ve peer_z=1.50 bozulmayi destekliyor; musteri history yeterli oldugu icin tek basina karar nedeni degil.","reason_3_weight":0.20,"risk_level":"YUKSEK"}

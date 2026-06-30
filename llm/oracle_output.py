@@ -780,6 +780,7 @@ def robust_z_value(current: float | None, median: float | None, scale: float | N
 def result_raw_payload(decision: dict[str, Any]) -> dict[str, Any]:
     payload = dict(decision)
     payload.pop("evidence_features", None)
+    payload.pop("_reason_numeric_evidence", None)
     return payload
 
 
