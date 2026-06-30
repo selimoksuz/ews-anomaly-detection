@@ -12,6 +12,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SECRETS_PATH = PROJECT_ROOT / "secret" / "secrets.yaml"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
 
 
 def _unique_paths(paths: Iterable[Path]) -> list[Path]:
@@ -31,20 +32,59 @@ def _path_variants(path_like) -> list[Path]:
     path = Path(path_like).expanduser()
     if path.is_absolute():
         return [path]
-    return [(Path.cwd() / path), (PROJECT_ROOT / path)]
+    variants: list[Path] = []
+    for root in _search_roots():
+        variants.append(root / path)
+        if len(path.parts) == 1:
+            variants.append(root / "secret" / path)
+            variants.append(root / "config" / path)
+    return _unique_paths(variants)
 
 
-def _project_root_candidates() -> list[Path]:
+def _search_roots() -> list[Path]:
     roots: list[Path] = []
     for start in (Path.cwd(), PROJECT_ROOT):
         try:
             resolved = start.resolve()
         except OSError:
             resolved = start
-        for candidate in (resolved, *resolved.parents):
-            if (candidate / "config" / "pipeline_config.yaml").exists() or (candidate / "secret").exists():
-                roots.append(candidate)
-                break
+        roots.append(resolved)
+        roots.extend(resolved.parents)
+    return _unique_paths(roots)
+
+
+def _candidate_config_paths(root: Path) -> list[Path]:
+    return [
+        root / "config" / "pipeline_config.yaml",
+        root / "pipeline_config.yaml",
+    ]
+
+
+def _candidate_secret_paths(root: Path) -> list[Path]:
+    return [
+        root / "secret" / "secrets.yaml",
+        root / "secret" / "secrets.yml",
+        root / "secret" / "secret.yaml",
+        root / "secret" / "secret.yml",
+        root / "secrets.yaml",
+        root / "secrets.yml",
+        # Some notebook workspaces accidentally keep this file with a space before
+        # the extension. Keep it as a low-priority compatibility candidate.
+        root / "secrets .yaml",
+    ]
+
+
+def _project_root_candidates() -> list[Path]:
+    roots: list[Path] = []
+    for candidate in _search_roots():
+        if any(path.exists() for path in _candidate_config_paths(candidate)):
+            roots.append(candidate)
+            continue
+        if any(path.exists() for path in _candidate_secret_paths(candidate)):
+            roots.append(candidate)
+            continue
+        if (candidate / ".git").exists() and (candidate / "engine" / "config_loader.py").exists():
+            roots.append(candidate)
     return _unique_paths(roots)
 
 
@@ -73,13 +113,13 @@ def _resolve_config_refs(config: dict, *, config_path: Path) -> dict:
 
 
 def load_config(config_path=None):
-    path = Path(config_path) if config_path else PROJECT_ROOT / "config" / "pipeline_config.yaml"
+    path = resolve_config_path(config_path)
     raw = _load_yaml_mapping(path)
     return _resolve_config_refs(raw, config_path=path)
 
 
 def save_config(config: dict, config_path=None):
-    path = Path(config_path) if config_path else PROJECT_ROOT / "config" / "pipeline_config.yaml"
+    path = resolve_config_path(config_path)
     raw_root = _load_yaml_mapping(path)
     refs = raw_root.get("config_refs", {}) or {}
     external_sections = {str(name).strip() for name in refs.keys()}
@@ -115,6 +155,32 @@ def load_secrets(secrets_path=None):
     return _load_yaml_mapping(path)
 
 
+def resolve_config_path(config_path=None) -> Path:
+    candidates: list[Path] = []
+    if config_path:
+        candidates.extend(_path_variants(config_path))
+    else:
+        for env_name in ("EWS_ANOMALY_CONFIG_PATH", "RISK_PIPELINE_CONFIG_PATH"):
+            env_value = os.getenv(env_name)
+            if env_value:
+                candidates.extend(_path_variants(env_value))
+        for root in _project_root_candidates():
+            candidates.extend(_candidate_config_paths(root))
+        candidates.append(DEFAULT_CONFIG_PATH)
+
+    candidates = _unique_paths(candidates)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    checked = ", ".join(str(path) for path in candidates) or str(DEFAULT_CONFIG_PATH)
+    raise FileNotFoundError(
+        "Pipeline config file not found. Checked: "
+        + checked
+        + ". Put config under <repo>/config/pipeline_config.yaml or set EWS_ANOMALY_CONFIG_PATH."
+    )
+
+
 def resolve_secrets_path(secrets_path=None) -> Path:
     candidates: list[Path] = []
     if secrets_path:
@@ -125,7 +191,7 @@ def resolve_secrets_path(secrets_path=None) -> Path:
             if env_value:
                 candidates.extend(_path_variants(env_value))
         for root in _project_root_candidates():
-            candidates.append(root / "secret" / "secrets.yaml")
+            candidates.extend(_candidate_secret_paths(root))
         candidates.append(DEFAULT_SECRETS_PATH)
 
     candidates = _unique_paths(candidates)

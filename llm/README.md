@@ -46,7 +46,14 @@ Bu komut sadece evidence dosyasi uretir. LLM'e gitmez ve Oracle output tablolari
 
 Bu komut `ZT_VAR2.EWS_ANOMALY_MULTIVAR_INPUT` ham input tablosundan okur, gerekli turetilmis feature'lari uretir ve LLM'e gidecek evidence JSONL dosyasini yazar.
 
-Oracle baglanti ayari `secret/secrets.yaml` icindedir. Bu dosya `secret/secrets.yaml.example` dosyasindan kopyalanir ve git'e alinmaz.
+Oracle baglanti ayari secret YAML dosyasindan okunur. Kod once env ile verilen path'i, sonra repo ve notebook workspace koklerini dener:
+
+1. `EWS_ANOMALY_SECRETS_PATH` veya `RISK_PIPELINE_SECRETS_PATH`
+2. Calisilan dizin/repo ve parent dizinlerde `secret/secrets.yaml`
+3. Calisilan dizin/repo ve parent dizinlerde `secrets.yaml`
+4. Notebook workspace'te yanlislikla olusan `secrets .yaml`
+
+Standart repo ici kullanim icin dosyayi `secret/secrets.yaml` olarak tut. Kurumsal notebook workspace'inde secret parent dizinde duruyorsa ekstra path vermeden bulunur.
 
 Direkt kullanici ile baglanacaksan:
 
@@ -100,7 +107,7 @@ LLM ayarlari su sirayla okunur:
 
 1. Terminal env degiskenleri: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
 2. Lokal dosyalar: repo kokundeki `.env` ve `llm/.env.local`
-3. Secret dosyasi: `secret/secrets.yaml`
+3. Secret dosyasi: env ile verilen path, repo/workspace `secret/secrets.yaml`, repo/workspace `secrets.yaml`
 4. Model cagrisinda `ChatOpenAI` icine timeout parametresi verilmez; referans notebooktaki davranis korunur.
 5. Internal endpoint icin `httpx.Client(trust_env=False, timeout=None)` kullanilir; yani `HTTP_PROXY/HTTPS_PROXY` env degerleri varsayilan olarak LLM request'ine uygulanmaz.
 
