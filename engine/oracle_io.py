@@ -12,7 +12,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from engine.config_loader import resolve_secrets_path
+from engine.config_loader import REQUIRED_PIPELINE_CONFIG_KEYS, load_config, resolve_secrets_path
 
 try:
     import oracledb
@@ -81,7 +81,20 @@ class OracleConnector:
     """Thin Oracle connector for multivar input/output tables."""
 
     def __init__(self, pipeline_config=None, secrets=None) -> None:
-        self.pipeline_config = load_yaml_config(pipeline_config, DEFAULT_PIPELINE_CONFIG)
+        self.pipeline_config = load_config() if pipeline_config is None else load_yaml_config(pipeline_config, DEFAULT_PIPELINE_CONFIG)
+        missing_config_keys = [
+            key
+            for key in REQUIRED_PIPELINE_CONFIG_KEYS
+            if not isinstance(self.pipeline_config.get(key), Mapping)
+        ]
+        if missing_config_keys:
+            available = ", ".join(str(key) for key in sorted(self.pipeline_config.keys()))
+            raise ValueError(
+                "Pipeline config missing required root mapping(s): "
+                + ", ".join(missing_config_keys)
+                + f". Available root keys: {available or '<empty>'}. "
+                + "Use the repo config/pipeline_config.yaml or set EWS_ANOMALY_CONFIG_PATH to the anomaly config."
+            )
         self.secrets = load_yaml_config(secrets, resolve_default_secrets_path())
         self.pipeline_settings = self.pipeline_config["pipeline"]
         self.oracle_settings = self.pipeline_config["oracle"]

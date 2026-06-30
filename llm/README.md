@@ -83,6 +83,8 @@ oracle:
 
 Input/output tablo owner bilgileri credential tarafinda degil `config/pipeline_config.yaml` icindedir. Her tablo ayri owner/schema ile yazilabilir:
 
+Config dosyasi secilirken `pipeline` ve `oracle` root alanlari zorunlu kabul edilir. Parent workspace'te baska projeye ait `pipeline_config.yaml` varsa ve bu alanlari icermiyorsa otomatik atlanir; repo icindeki `config/pipeline_config.yaml` kullanilir.
+
 ```yaml
 oracle:
   section: ORA_PRD_ZTUSER

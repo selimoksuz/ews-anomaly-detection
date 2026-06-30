@@ -13,6 +13,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SECRETS_PATH = PROJECT_ROOT / "secret" / "secrets.yaml"
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "pipeline_config.yaml"
+REQUIRED_PIPELINE_CONFIG_KEYS = ("pipeline", "oracle")
 
 
 def _unique_paths(paths: Iterable[Path]) -> list[Path]:
@@ -112,6 +113,14 @@ def _resolve_config_refs(config: dict, *, config_path: Path) -> dict:
     return merged
 
 
+def _valid_pipeline_config(path: Path) -> bool:
+    try:
+        config = _resolve_config_refs(_load_yaml_mapping(path), config_path=path)
+    except (OSError, ValueError, yaml.YAMLError):
+        return False
+    return all(isinstance(config.get(key), dict) for key in REQUIRED_PIPELINE_CONFIG_KEYS)
+
+
 def load_config(config_path=None):
     path = resolve_config_path(config_path)
     raw = _load_yaml_mapping(path)
@@ -157,6 +166,7 @@ def load_secrets(secrets_path=None):
 
 def resolve_config_path(config_path=None) -> Path:
     candidates: list[Path] = []
+    explicit_path = config_path is not None
     if config_path:
         candidates.extend(_path_variants(config_path))
     else:
@@ -169,14 +179,35 @@ def resolve_config_path(config_path=None) -> Path:
         candidates.append(DEFAULT_CONFIG_PATH)
 
     candidates = _unique_paths(candidates)
+    invalid_existing: list[Path] = []
     for candidate in candidates:
-        if candidate.exists():
+        if not candidate.exists():
+            continue
+        if _valid_pipeline_config(candidate):
             return candidate.resolve()
+        invalid_existing.append(candidate)
+
+    if explicit_path and invalid_existing:
+        checked = ", ".join(str(path) for path in invalid_existing)
+        raise ValueError(
+            "Pipeline config file does not match expected schema. "
+            + f"Checked existing explicit path(s): {checked}. "
+            + "Required root mappings: pipeline, oracle."
+        )
 
     checked = ", ".join(str(path) for path in candidates) or str(DEFAULT_CONFIG_PATH)
+    invalid_note = ""
+    if invalid_existing:
+        invalid_note = (
+            " Existing files ignored because they do not contain required root mappings "
+            f"{', '.join(REQUIRED_PIPELINE_CONFIG_KEYS)}: "
+            + ", ".join(str(path) for path in invalid_existing)
+            + "."
+        )
     raise FileNotFoundError(
         "Pipeline config file not found. Checked: "
         + checked
+        + invalid_note
         + ". Put config under <repo>/config/pipeline_config.yaml or set EWS_ANOMALY_CONFIG_PATH."
     )
 
