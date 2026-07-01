@@ -79,6 +79,13 @@ BUILTIN_PIPELINE_CONFIG = {
             },
         },
     },
+    "llm": {
+        "outputs": {
+            "oracle": {
+                "write_mode": "replace",
+            },
+        },
+    },
     "logging": {
         "logger_name": "ews.multivar",
         "level": "INFO",

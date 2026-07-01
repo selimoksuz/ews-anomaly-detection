@@ -101,7 +101,16 @@ oracle:
     llm_feature_details:
       owner: X2
       table: EWS_ANOMALY_LLM_FEATURES
+
+llm:
+  outputs:
+    oracle:
+      # replace: ayni scoring month icin eski LLM output satirlarini silip yeni run'i yazar.
+      # append: eski satirlari silmeden yeni run'i insert eder.
+      write_mode: replace
 ```
+
+`append` ayni musteri/ay icin birden fazla run saklamak icin kullanilacaksa LLM output tablolarinin primary key yapisi `RUN_ID` icermelidir. Yeni olusturulan tablolar bu yapiyla kurulur; eski tabloda eski PK varsa kontrollu migration gerekir.
 
 ## LLM Key ve Endpoint Ayarlari
 
@@ -272,6 +281,9 @@ Onemli:
 - `run-oracle` varsayilan olarak once tum scoring cohort'u ML ile skorlar. Sonra LLM'e gidecek 10 musteriyi bu ML sonucundan secer: `--ml-balanced-anomaly-count 5` kadar en yuksek ML anomaly bucket'i ve kalan kadar `NORMAL` bucket referans musteri.
 - Eski Oracle sirasi ile secim istenirse `--customer-selection-mode first` kullan.
 - LLM sonucuna ML karsilastirma kolonlari eklenir: `ML_ENSEMBLE_SCORE`, `ML_ANOMALY_SCORE` (geriye uyumlu ensemble alias), `ML_IS_ANOMALY`, `ML_ALERT_BAND`, `ML_IF_SCORE`, `ML_RESIDUAL_SCORE`, `ML_AUTOENCODER_SCORE`. Bu skorlar LLM promptuna verilmez; sadece karsilastirma icin output satirina yazilir.
+- Result tablosunda `LLM_CONFIDENCE` geriye uyumlu alan olarak `ANOMALY_SCORE` ile doldurulur; mevcut kontratta ayrica confidence kavrami yoktur.
+- `SEASONALITY_ASSESSMENT`, `TREND_ASSESSMENT` ve `PEER_ASSESSMENT` LLM decision satirina bagli evidence feature detaylarindan uretilen kisa sayisal ozetlerdir.
+- `CAVEAT`, karar yorumunun hangi veri kisitlariyla okunmasi gerektigini anlatan uyari/not alanidir; ornegin dusuk coverage, eksik history, stale veri veya zayif peer gibi durumlari belirtir.
 - ML companion skoru istenmezse `--skip-ml-companion` kullan.
 - `--dry-run`: LLM'e gitmez ve Oracle output insert yapmaz; sadece prompt/evidence kontrolu icindir.
 - `--max-customers 10`: LLM'e gidecek scoring snapshot/musteri sayisidir. Her musteri scoring ayinda 1 karar satiri olarak gider; history satirlari insert edilmez, evidence icinde baglam olarak kullanilir.

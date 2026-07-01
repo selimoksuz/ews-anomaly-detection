@@ -1317,6 +1317,8 @@ def attach_evidence_feature_details(
         details = item.get("feature_details") or item.get("features") or []
         decision["evidence_features"] = details
         decision["evidence_feature_count"] = len(details)
+        decision["evidence_data_quality"] = item.get("data_quality") or {}
+        decision["evidence_peer_definition"] = item.get("peer_definition") or {}
         enrich_decision_reasons_with_numeric_evidence(decision, item)
         attached += 1
     logger.info(

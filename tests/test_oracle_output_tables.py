@@ -31,6 +31,12 @@ class OracleOutputTableTests(unittest.TestCase):
                 "reason_3": "Peer destekleyici sapma",
                 "reason_3_weight": 0.15,
                 "recommended_action": "Manuel incele",
+                "evidence_data_quality": {
+                    "coverage_ratio": 0.95,
+                    "missing_feature_count": 1,
+                    "customer_history_periods": 6,
+                    "caveat": "Bir finansal term stale olabilir.",
+                },
                 "main_reasons": [
                     {
                         "feature": "bank_risk_to_assets",
@@ -101,7 +107,13 @@ class OracleOutputTableTests(unittest.TestCase):
 
         self.assertEqual(results.loc[0, "ml_ensemble_score"], 96.4)
         self.assertEqual(results.loc[0, "ml_autoencoder_score"], 95.3)
+        self.assertEqual(results.loc[0, "llm_confidence"], 0.82)
+        self.assertIn("same_month_z=4.8", results.loc[0, "seasonality_assessment"])
+        self.assertIn("trend_break=1", results.loc[0, "trend_assessment"])
+        self.assertIn("peer_z=4.2", results.loc[0, "peer_assessment"])
+        self.assertIn("coverage_ratio=0.95", results.loc[0, "caveat"])
         self.assertNotIn("evidence_features", results.loc[0, "raw_response"])
+        self.assertNotIn("evidence_data_quality", results.loc[0, "raw_response"])
         self.assertEqual(reasons.loc[0, "feature_name"], "bank_risk_to_assets")
         self.assertEqual(features.loc[0, "feature_name"], "bank_risk_to_assets")
         self.assertEqual(features.loc[0, "peer_z"], 4.2)

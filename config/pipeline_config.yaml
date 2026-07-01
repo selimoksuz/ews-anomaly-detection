@@ -29,6 +29,14 @@ multivar_anomaly:
       results_table_key: multivar_results
       details_table_key: multivar_details
 
+llm:
+  outputs:
+    oracle:
+      # replace: ayni scoring month icin eski LLM satirlarini silip yeni run'i yazar.
+      # append: eski satirlari silmeden yeni run'i insert eder; ayni musteri/ay icin
+      #         birden fazla run saklamak istiyorsan output table PK yapisinin RUN_ID icermesi gerekir.
+      write_mode: replace
+
 oracle:
   section: ORA_PRD_ZTUSER
   tables:

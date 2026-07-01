@@ -17,8 +17,29 @@ from engine.oracle_io import OracleConnector
 DEFAULT_LLM_RESULTS_TABLE_KEY = "llm_results"
 DEFAULT_LLM_REASONS_TABLE_KEY = "llm_reason_details"
 DEFAULT_LLM_FEATURES_TABLE_KEY = "llm_feature_details"
+DEFAULT_LLM_OUTPUT_WRITE_MODE = "replace"
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_llm_output_write_mode(config: dict[str, Any], explicit_mode: str | None = None) -> str:
+    mode = explicit_mode
+    if mode is None:
+        mode = (
+            ((config.get("llm") or {}).get("outputs") or {})
+            .get("oracle", {})
+            .get("write_mode")
+        )
+    mode = str(mode or DEFAULT_LLM_OUTPUT_WRITE_MODE).strip().lower()
+    aliases = {
+        "delete_insert": "replace",
+        "overwrite": "replace",
+        "insert": "append",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in {"replace", "append"}:
+        raise ValueError("llm.outputs.oracle.write_mode must be 'replace' or 'append'.")
+    return mode
 
 LLM_RESULT_COLUMNS = [
     "run_id",
@@ -28,6 +49,11 @@ LLM_RESULT_COLUMNS = [
     "anomaly_type",
     "risk_level",
     "anomaly_score",
+    "llm_confidence",
+    "seasonality_assessment",
+    "trend_assessment",
+    "peer_assessment",
+    "caveat",
     "ml_anomaly_score",
     "ml_ensemble_score",
     "ml_is_anomaly",
@@ -110,6 +136,11 @@ LLM_RESULT_COLUMN_DDLS = {
     "ANOMALY_TYPE": "ANOMALY_TYPE VARCHAR2(64)",
     "RISK_LEVEL": "RISK_LEVEL VARCHAR2(32)",
     "ANOMALY_SCORE": "ANOMALY_SCORE NUMBER(6,4)",
+    "LLM_CONFIDENCE": "LLM_CONFIDENCE NUMBER(6,4)",
+    "SEASONALITY_ASSESSMENT": "SEASONALITY_ASSESSMENT VARCHAR2(2000)",
+    "TREND_ASSESSMENT": "TREND_ASSESSMENT VARCHAR2(2000)",
+    "PEER_ASSESSMENT": "PEER_ASSESSMENT VARCHAR2(2000)",
+    "CAVEAT": "CAVEAT VARCHAR2(2000)",
     "ML_ANOMALY_SCORE": "ML_ANOMALY_SCORE NUMBER(6,2)",
     "ML_ENSEMBLE_SCORE": "ML_ENSEMBLE_SCORE NUMBER(6,2)",
     "ML_IS_ANOMALY": "ML_IS_ANOMALY NUMBER(1)",
@@ -197,6 +228,7 @@ def write_llm_outputs_to_oracle(
     reasons_table_key: str = DEFAULT_LLM_REASONS_TABLE_KEY,
     features_table_key: str = DEFAULT_LLM_FEATURES_TABLE_KEY,
     batch_size: int = 1000,
+    write_mode: str | None = None,
 ) -> dict[str, Any]:
     if not decisions:
         logger.info("No LLM decisions to persist to Oracle.")
@@ -212,6 +244,8 @@ def write_llm_outputs_to_oracle(
         }
 
     scoring_month = first_scoring_month(decisions)
+    config = load_config()
+    write_mode = resolve_llm_output_write_mode(config, write_mode)
     run_id = f"llm_{scoring_month.strftime('%Y%m%d')}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     result_frame = prepare_llm_result_frame(
         decisions,
@@ -235,7 +269,6 @@ def write_llm_outputs_to_oracle(
         ",".join(LLM_FEATURE_COLUMNS),
     )
 
-    config = load_config()
     secrets = load_secrets()
     with OracleConnector(config, secrets) as ora:
         logger.info(
@@ -250,20 +283,27 @@ def write_llm_outputs_to_oracle(
             reasons_table_key=reasons_table_key,
             features_table_key=features_table_key,
         )
-        logger.info("Deleting previous LLM output rows for scoring_month=%s", scoring_month.date())
-        deleted = delete_llm_output_month(
-            ora,
-            scoring_month=scoring_month,
-            results_table_key=results_table_key,
-            reasons_table_key=reasons_table_key,
-            features_table_key=features_table_key,
-        )
-        logger.info(
-            "Deleted old LLM rows: results=%s reasons=%s features=%s",
-            deleted["results"],
-            deleted["reasons"],
-            deleted["features"],
-        )
+        if write_mode == "replace":
+            logger.info("Deleting previous LLM output rows for scoring_month=%s write_mode=replace", scoring_month.date())
+            deleted = delete_llm_output_month(
+                ora,
+                scoring_month=scoring_month,
+                results_table_key=results_table_key,
+                reasons_table_key=reasons_table_key,
+                features_table_key=features_table_key,
+            )
+            logger.info(
+                "Deleted old LLM rows: results=%s reasons=%s features=%s",
+                deleted["results"],
+                deleted["reasons"],
+                deleted["features"],
+            )
+        else:
+            deleted = {"results": 0, "reasons": 0, "features": 0}
+            logger.info(
+                "Skipping delete of previous LLM output rows: scoring_month=%s write_mode=append",
+                scoring_month.date(),
+            )
         logger.info("Inserting LLM result rows: rows=%s", len(result_frame))
         inserted_results = insert_frame(
             ora,
@@ -339,6 +379,7 @@ def write_llm_outputs_to_oracle(
         return {
             "backend": "oracle",
             "run_id": run_id,
+            "write_mode": write_mode,
             "results_table_key": results_table_key,
             "reasons_table_key": reasons_table_key,
             "features_table_key": features_table_key,
@@ -661,6 +702,196 @@ def prepare_llm_feature_frame(decisions: list[dict[str, Any]], *, run_id: str) -
     return pd.DataFrame(rows, columns=LLM_FEATURE_COLUMNS)
 
 
+def llm_confidence_value(decision: dict[str, Any]) -> Any:
+    """Backward-compatible confidence column.
+
+    The current contract uses anomaly_score as the decision score. If an older
+    table has LLM_CONFIDENCE, keep it populated with the same normalized score
+    unless the model explicitly returned a separate value.
+    """
+
+    value = decision.get("llm_confidence")
+    if value is None:
+        value = decision.get("confidence")
+    if value is None:
+        value = decision.get("anomaly_score")
+    return value
+
+
+def seasonality_assessment(decision: dict[str, Any]) -> str:
+    explicit = text_or_empty(decision.get("seasonality_assessment") or decision.get("seasonality_assesment"))
+    if explicit:
+        return explicit
+    feature = top_feature_by_metric(
+        decision,
+        lambda item: max_abs_number(
+            ((item.get("seasonality") or {}).get("same_month_customer_z")),
+            ((item.get("seasonality") or {}).get("seasonal_peer_z")),
+            safe_divide_abs(((item.get("seasonality") or {}).get("yoy_change_pct")), 100.0),
+        ),
+    )
+    if feature is None:
+        return "Sezon: yeterli sezon metrigi yok; karar sezon kanitina dayanmiyor."
+    seasonality = feature.get("seasonality") or {}
+    return compact_assessment(
+        "Sezon",
+        feature,
+        [
+            ("month", seasonality.get("month_of_year")),
+            ("same_month_last_year", seasonality.get("same_month_last_year_value")),
+            ("yoy_change_pct", seasonality.get("yoy_change_pct")),
+            ("same_month_z", seasonality.get("same_month_customer_z")),
+            ("seasonal_peer_median", seasonality.get("seasonal_peer_median")),
+            ("seasonal_peer_z", seasonality.get("seasonal_peer_z")),
+            ("note", seasonality.get("seasonality_note")),
+        ],
+    )
+
+
+def trend_assessment(decision: dict[str, Any]) -> str:
+    explicit = text_or_empty(decision.get("trend_assessment") or decision.get("trend_assesment"))
+    if explicit:
+        return explicit
+    feature = top_feature_by_metric(
+        decision,
+        lambda item: max_abs_number(
+            ((item.get("trend") or {}).get("slope_6m")),
+            ((item.get("trend") or {}).get("slope_12m")),
+            10.0 if bool((item.get("trend") or {}).get("trend_break_flag")) else None,
+        ),
+    )
+    if feature is None:
+        return "Trend: yeterli trend metrigi yok; karar trend kanitina dayanmiyor."
+    trend = feature.get("trend") or {}
+    return compact_assessment(
+        "Trend",
+        feature,
+        [
+            ("slope_6m", trend.get("slope_6m")),
+            ("slope_12m", trend.get("slope_12m")),
+            ("trend_break", trend.get("trend_break_flag")),
+            ("note", trend.get("trend_note")),
+        ],
+    )
+
+
+def peer_assessment(decision: dict[str, Any]) -> str:
+    explicit = text_or_empty(decision.get("peer_assessment") or decision.get("peer_assesment"))
+    if explicit:
+        return explicit
+    feature = top_feature_by_metric(
+        decision,
+        lambda item: max_abs_number(((item.get("peer") or {}).get("peer_z"))),
+    )
+    if feature is None:
+        return "Peer: yeterli peer metrigi yok; karar peer kanitina dayanmiyor."
+    peer = feature.get("peer") or {}
+    return compact_assessment(
+        "Peer",
+        feature,
+        [
+            ("peer_median", peer.get("peer_median")),
+            ("peer_z", peer.get("peer_z")),
+            ("peer_support", peer.get("peer_support")),
+            ("peer_quality", peer.get("peer_quality")),
+            ("peer_level", peer.get("peer_definition_level")),
+        ],
+    )
+
+
+def caveat_assessment(decision: dict[str, Any]) -> str:
+    explicit = text_or_empty(decision.get("caveat"))
+    if explicit:
+        return explicit
+    data_quality = decision.get("evidence_data_quality") or {}
+    parts = []
+    add_assessment_text(parts, "note", data_quality.get("caveat"))
+    add_assessment_number(parts, "coverage_ratio", data_quality.get("coverage_ratio"))
+    add_assessment_number(parts, "missing_feature_count", data_quality.get("missing_feature_count"))
+    add_assessment_number(parts, "customer_history_periods", data_quality.get("customer_history_periods"))
+    features = evidence_features(decision)
+    weak_peer_count = sum(
+        1
+        for feature in features
+        if text_or_empty((feature.get("peer") or {}).get("peer_quality")).upper() == "ZAYIF"
+    )
+    if weak_peer_count:
+        parts.append(f"weak_peer_features={weak_peer_count}")
+    if not parts:
+        return "Caveat: belirgin veri kisiti yok; yorum mevcut evidence kapsami icin gecerlidir."
+    return "Caveat: " + "; ".join(parts)
+
+
+def evidence_features(decision: dict[str, Any]) -> list[dict[str, Any]]:
+    features = decision.get("evidence_features") or []
+    if not isinstance(features, list):
+        return []
+    return [feature for feature in features if isinstance(feature, dict)]
+
+
+def top_feature_by_metric(decision: dict[str, Any], scorer) -> dict[str, Any] | None:
+    best_feature = None
+    best_score = None
+    for feature in evidence_features(decision):
+        score = number_or_none(scorer(feature))
+        if score is None:
+            continue
+        score = abs(score)
+        if best_score is None or score > best_score:
+            best_score = score
+            best_feature = feature
+    return best_feature
+
+
+def compact_assessment(prefix: str, feature: dict[str, Any], fields: list[tuple[str, Any]]) -> str:
+    parts = [f"feature={feature_display_name(feature)}"]
+    for key, value in fields:
+        if isinstance(value, bool):
+            parts.append(f"{key}={int(value)}")
+        elif isinstance(value, str):
+            add_assessment_text(parts, key, value)
+        else:
+            add_assessment_number(parts, key, value)
+    return f"{prefix}: " + "; ".join(parts)
+
+
+def feature_display_name(feature: dict[str, Any]) -> str:
+    dictionary = feature.get("dictionary") or {}
+    return text_or_empty(dictionary.get("label")) or text_or_empty(feature.get("name")) or "degisken"
+
+
+def add_assessment_number(parts: list[str], key: str, value: Any) -> None:
+    number = number_or_none(value)
+    if number is not None:
+        parts.append(f"{key}={format_assessment_number(number)}")
+
+
+def add_assessment_text(parts: list[str], key: str, value: Any) -> None:
+    text = text_or_empty(value)
+    if text:
+        parts.append(f"{key}={text[:500]}")
+
+
+def format_assessment_number(value: float) -> str:
+    if value == 0:
+        return "0"
+    return f"{value:.6g}"
+
+
+def max_abs_number(*values: Any) -> float | None:
+    numbers = [abs(number) for number in (number_or_none(value) for value in values) if number is not None]
+    if not numbers:
+        return None
+    return max(numbers)
+
+
+def safe_divide_abs(value: Any, denominator: float) -> float | None:
+    number = number_or_none(value)
+    if number is None or denominator == 0:
+        return None
+    return abs(number / denominator)
+
+
 def prepare_llm_result_frame(
     decisions: list[dict[str, Any]],
     *,
@@ -682,6 +913,11 @@ def prepare_llm_result_frame(
                 "anomaly_type": text_or_none(decision.get("anomaly_type"), 64),
                 "risk_level": text_or_none(decision.get("risk_level"), 32),
                 "anomaly_score": number_or_none(decision.get("anomaly_score")),
+                "llm_confidence": number_or_none(llm_confidence_value(decision)),
+                "seasonality_assessment": text_or_none(seasonality_assessment(decision), 2000),
+                "trend_assessment": text_or_none(trend_assessment(decision), 2000),
+                "peer_assessment": text_or_none(peer_assessment(decision), 2000),
+                "caveat": text_or_none(caveat_assessment(decision), 2000),
                 "ml_anomaly_score": number_or_none(decision.get("ml_anomaly_score")),
                 "ml_ensemble_score": number_or_none(ml_ensemble_score),
                 "ml_is_anomaly": bool_to_number_or_none(decision.get("ml_is_anomaly")),
@@ -780,8 +1016,21 @@ def robust_z_value(current: float | None, median: float | None, scale: float | N
 def result_raw_payload(decision: dict[str, Any]) -> dict[str, Any]:
     payload = dict(decision)
     payload.pop("evidence_features", None)
+    payload.pop("evidence_data_quality", None)
+    payload.pop("evidence_peer_definition", None)
     payload.pop("_reason_numeric_evidence", None)
     return payload
+
+
+def text_or_empty(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
 
 
 def text_or_none(value, limit: int) -> str | None:
@@ -809,6 +1058,11 @@ def llm_results_table_ddl(ora: OracleConnector, table_key: str) -> str:
             ANOMALY_TYPE VARCHAR2(64),
             RISK_LEVEL VARCHAR2(32),
             ANOMALY_SCORE NUMBER(6,4),
+            LLM_CONFIDENCE NUMBER(6,4),
+            SEASONALITY_ASSESSMENT VARCHAR2(2000),
+            TREND_ASSESSMENT VARCHAR2(2000),
+            PEER_ASSESSMENT VARCHAR2(2000),
+            CAVEAT VARCHAR2(2000),
             ML_ANOMALY_SCORE NUMBER(6,2),
             ML_ENSEMBLE_SCORE NUMBER(6,2),
             ML_IS_ANOMALY NUMBER(1),
@@ -828,7 +1082,7 @@ def llm_results_table_ddl(ora: OracleConnector, table_key: str) -> str:
             EVIDENCE_SOURCE VARCHAR2(64),
             RAW_RESPONSE CLOB,
             CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
-            CONSTRAINT {pk_name} PRIMARY KEY ({TIME_COLUMN.upper()}, {ID_COLUMN.upper()})
+            CONSTRAINT {pk_name} PRIMARY KEY (RUN_ID, {TIME_COLUMN.upper()}, {ID_COLUMN.upper()})
         )
     """
 
@@ -845,7 +1099,7 @@ def llm_reasons_table_ddl(ora: OracleConnector, table_key: str) -> str:
             EVIDENCE_TEXT VARCHAR2(2000),
             INTERPRETATION VARCHAR2(2000),
             CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
-            CONSTRAINT {pk_name} PRIMARY KEY ({TIME_COLUMN.upper()}, {ID_COLUMN.upper()}, REASON_RANK)
+            CONSTRAINT {pk_name} PRIMARY KEY (RUN_ID, {TIME_COLUMN.upper()}, {ID_COLUMN.upper()}, REASON_RANK)
         )
     """
 
@@ -896,6 +1150,6 @@ def llm_features_table_ddl(ora: OracleConnector, table_key: str) -> str:
             SNAPSHOT_SERIES_JSON CLOB,
             FEATURE_JSON CLOB,
             CREATED_AT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
-            CONSTRAINT {pk_name} PRIMARY KEY ({TIME_COLUMN.upper()}, {ID_COLUMN.upper()}, FEATURE_RANK)
+            CONSTRAINT {pk_name} PRIMARY KEY (RUN_ID, {TIME_COLUMN.upper()}, {ID_COLUMN.upper()}, FEATURE_RANK)
         )
     """
