@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import re
+import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -315,6 +316,7 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
     series_reference_df = build_series_reference_frame(train_df, score_df)
     series_reference_features = build_feature_frame(series_reference_df, numeric_source_columns)
     series_peer_artifacts = build_peer_artifacts(series_reference_df, series_reference_features, selected_features)
+    series_reference_lookup = build_series_reference_lookup(series_reference_df)
     logger.info(
         "Peer/context artifacts are ready: score_peer_rows=%s series_reference_rows=%s series_periods=%s",
         len(score_df),
@@ -332,6 +334,19 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
         customer_id = str(row[ID_COLUMN])
         customer_history = history_groups.get(customer_id, train_df.iloc[0:0].copy())
         customer_feature_history = train_features.loc[customer_history.index] if len(customer_history) else pd.DataFrame()
+        history_dates = (
+            parse_dates(customer_history[TIME_COLUMN])
+            if len(customer_history) and TIME_COLUMN in customer_history
+            else pd.Series(dtype="datetime64[ns]")
+        )
+        customer_payload_start = time.perf_counter()
+        logger.info(
+            "LLM scoring payload build started: mono_id=%s scoring_cohort_dt=%s customer_history_periods=%s features_to_compute=%s output_rows_for_customer=1",
+            customer_id,
+            scoring_month.date(),
+            len(customer_history),
+            len(selected_features),
+        )
         feature_evidence = []
         for feature in selected_features:
             item = build_feature_evidence(
@@ -349,6 +364,8 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                 seasonal_peer_cache=seasonal_peer_cache,
                 reference_scale_cache=reference_scale_cache,
                 series_reference_df=series_reference_df,
+                history_dates=history_dates,
+                series_reference_lookup=series_reference_lookup,
                 series_peer_artifacts=series_peer_artifacts,
                 customer_id=customer_id,
                 series_periods=config.series_periods,
@@ -385,6 +402,15 @@ def build_evidence_packages(frame: pd.DataFrame, config: EvidenceConfig | None =
                 "features": prompt_feature_evidence,
                 "feature_details": ranked_feature_evidence,
             }
+        )
+        logger.info(
+            "LLM scoring payload prepared: mono_id=%s scoring_cohort_dt=%s customer_history_periods=%s computed_features=%s prompt_features=%s elapsed_sec=%.2f output_rows_for_customer=1",
+            customer_id,
+            scoring_month.date(),
+            len(customer_history),
+            len(ranked_feature_evidence),
+            len(prompt_feature_evidence),
+            time.perf_counter() - customer_payload_start,
         )
         if len(packages) == 1 or len(packages) % 100 == 0:
             logger.info("Built evidence packages: %s/%s", len(packages), min(len(score_df), config.max_customers or len(score_df)))
@@ -557,6 +583,7 @@ def build_evidence_packages_from_prepared_windows(
     series_reference_df = build_series_reference_frame(train_df, score_df, selected_history_df)
     series_reference_features = build_feature_frame(series_reference_df, numeric_source_columns)
     series_peer_artifacts = build_peer_artifacts(series_reference_df, series_reference_features, selected_features)
+    series_reference_lookup = build_series_reference_lookup(series_reference_df)
     logger.info(
         "Peer/context artifacts are ready: peer_rows=%s train_context_rows=%s selected_history_rows=%s series_reference_rows=%s series_periods=%s",
         len(score_df),
@@ -583,13 +610,15 @@ def build_evidence_packages_from_prepared_windows(
         )
         history_dates = parse_dates(customer_history[TIME_COLUMN]) if len(customer_history) else pd.Series(dtype="datetime64[ns]")
         logger.info(
-            "LLM scoring payload prepared: mono_id=%s scoring_cohort_dt=%s customer_history_periods=%s history_first_cohort_dt=%s history_last_cohort_dt=%s output_rows_for_customer=1",
+            "LLM scoring payload build started: mono_id=%s scoring_cohort_dt=%s customer_history_periods=%s history_first_cohort_dt=%s history_last_cohort_dt=%s features_to_compute=%s output_rows_for_customer=1",
             customer_id,
             scoring_month.date(),
             len(customer_history),
             history_dates.min().date() if len(history_dates.dropna()) else None,
             history_dates.max().date() if len(history_dates.dropna()) else None,
+            len(selected_features),
         )
+        customer_payload_start = time.perf_counter()
         score_context_row = score_context.loc[row_index]
         feature_evidence = []
         for feature in selected_features:
@@ -608,6 +637,8 @@ def build_evidence_packages_from_prepared_windows(
                 seasonal_peer_cache=seasonal_peer_cache,
                 reference_scale_cache=reference_scale_cache,
                 series_reference_df=series_reference_df,
+                history_dates=history_dates,
+                series_reference_lookup=series_reference_lookup,
                 series_peer_artifacts=series_peer_artifacts,
                 customer_id=customer_id,
                 series_periods=config.series_periods,
@@ -644,6 +675,15 @@ def build_evidence_packages_from_prepared_windows(
                 "features": prompt_feature_evidence,
                 "feature_details": ranked_feature_evidence,
             }
+        )
+        logger.info(
+            "LLM scoring payload prepared: mono_id=%s scoring_cohort_dt=%s customer_history_periods=%s computed_features=%s prompt_features=%s elapsed_sec=%.2f output_rows_for_customer=1",
+            customer_id,
+            scoring_month.date(),
+            len(customer_history),
+            len(ranked_feature_evidence),
+            len(prompt_feature_evidence),
+            time.perf_counter() - customer_payload_start,
         )
         if len(packages) == 1 or len(packages) % 100 == 0:
             logger.info("Built evidence packages: %s/%s", len(packages), len(selected_score_df))
@@ -887,6 +927,8 @@ def build_feature_evidence(
     seasonal_peer_cache: SeasonalPeerMedianCache | None = None,
     reference_scale_cache: dict[str, float] | None = None,
     series_reference_df: pd.DataFrame | None = None,
+    history_dates: pd.Series | None = None,
+    series_reference_lookup: dict[tuple[str, str], Any] | None = None,
     series_peer_artifacts: Any | None = None,
     customer_id: str | None = None,
     series_periods: int = 6,
@@ -897,11 +939,12 @@ def build_feature_evidence(
         if not customer_feature_history.empty and feature in customer_feature_history
         else pd.Series(dtype=float)
     )
-    history_dates = (
-        parse_dates(customer_history[TIME_COLUMN])
-        if not customer_history.empty and TIME_COLUMN in customer_history
-        else pd.Series(dtype="datetime64[ns]")
-    )
+    if history_dates is None:
+        history_dates = (
+            parse_dates(customer_history[TIME_COLUMN])
+            if not customer_history.empty and TIME_COLUMN in customer_history
+            else pd.Series(dtype="datetime64[ns]")
+        )
     previous = clean_number(history_series.dropna().iloc[-1]) if history_series.dropna().size else None
     peer_reference = clean_number(peer_artifacts.median.loc[row_index, feature])
     peer_z = clean_number(peer_artifacts.zscore.loc[row_index, feature])
@@ -931,6 +974,7 @@ def build_feature_evidence(
         history_dates=history_dates,
         history_series=history_series,
         series_reference_df=series_reference_df,
+        series_reference_lookup=series_reference_lookup,
         series_peer_artifacts=series_peer_artifacts,
         series_periods=series_periods,
     )
@@ -984,6 +1028,25 @@ def build_series_reference_frame(*frames: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def build_series_reference_lookup(series_reference_df: pd.DataFrame | None) -> dict[tuple[str, str], Any]:
+    if (
+        series_reference_df is None
+        or series_reference_df.empty
+        or ID_COLUMN not in series_reference_df.columns
+        or TIME_COLUMN not in series_reference_df.columns
+    ):
+        return {}
+    ids = series_reference_df[ID_COLUMN].astype(str)
+    dates = parse_dates(series_reference_df[TIME_COLUMN])
+    lookup: dict[tuple[str, str], Any] = {}
+    for row_index, customer_id, date_value in zip(series_reference_df.index, ids, dates):
+        if pd.isna(date_value):
+            continue
+        key = (str(customer_id), pd.Timestamp(date_value).normalize().strftime("%Y-%m-%d"))
+        lookup[key] = row_index
+    return lookup
+
+
 def snapshot_series(
     *,
     feature: str,
@@ -993,6 +1056,7 @@ def snapshot_series(
     history_dates: pd.Series,
     history_series: pd.Series,
     series_reference_df: pd.DataFrame | None,
+    series_reference_lookup: dict[tuple[str, str], Any] | None,
     series_peer_artifacts: Any | None,
     series_periods: int,
 ) -> dict[str, Any]:
@@ -1008,6 +1072,7 @@ def snapshot_series(
         customer_id=customer_id,
         customer_series=customer,
         series_reference_df=series_reference_df,
+        series_reference_lookup=series_reference_lookup,
         series_peer_artifacts=series_peer_artifacts,
     )
     return {
@@ -1069,6 +1134,7 @@ def peer_snapshot_series(
     customer_id: str | None,
     customer_series: list[dict[str, Any]],
     series_reference_df: pd.DataFrame | None,
+    series_reference_lookup: dict[tuple[str, str], Any] | None,
     series_peer_artifacts: Any | None,
 ) -> list[dict[str, Any]]:
     if (
@@ -1085,16 +1151,15 @@ def peer_snapshot_series(
             }
             for item in customer_series
         ]
-    reference_ids = series_reference_df[ID_COLUMN].astype(str)
-    reference_dates = parse_dates(series_reference_df[TIME_COLUMN])
+    if series_reference_lookup is None:
+        series_reference_lookup = build_series_reference_lookup(series_reference_df)
     rows = []
     for item in customer_series:
         date = pd.Timestamp(item.get("cohort_dt")).normalize()
-        matches = reference_ids.eq(str(customer_id)) & reference_dates.eq(date)
-        if not bool(matches.any()):
+        row_index = series_reference_lookup.get((str(customer_id), date.strftime("%Y-%m-%d")))
+        if row_index is None:
             rows.append({"cohort_dt": item.get("cohort_dt"), "peer_available": False})
             continue
-        row_index = matches[matches].index[0]
         rows.append(
             {
                 "cohort_dt": item.get("cohort_dt"),
