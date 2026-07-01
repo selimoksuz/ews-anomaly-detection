@@ -278,16 +278,16 @@ Onemli:
 
 - `build-oracle`: sadece evidence JSONL uretir, LLM'e gitmez, Oracle output insert yapmaz.
 - `run-oracle`: Oracle'dan okur, evidence uretir, LLM'e gider, structured output'u Oracle tablolarina yazar.
-- `run-oracle` varsayilan olarak once tum scoring cohort'u ML ile skorlar. Sonra LLM'e gidecek 10 musteriyi bu ML sonucundan secer: `--ml-balanced-anomaly-count 5` kadar en yuksek ML anomaly bucket'i ve kalan kadar `NORMAL` bucket referans musteri.
+- `run-oracle` varsayilan olarak once tum scoring cohort'u ML ile skorlar. Sonra `--max-customers N` icin LLM'e gidecek musterileri bu ML sonucundan dengeli secer: `N/2` adet en yuksek ML anomaly bucket'i ve kalan adet en dusuk skorlu `NORMAL` referans musteri. `--ml-balanced-anomaly-count` sadece bu varsayilani override etmek icindir.
 - Eski Oracle sirasi ile secim istenirse `--customer-selection-mode first` kullan.
-- LLM sonucuna ML karsilastirma kolonlari eklenir: `ML_ENSEMBLE_SCORE`, `ML_ANOMALY_SCORE` (geriye uyumlu ensemble alias), `ML_IS_ANOMALY`, `ML_ALERT_BAND`, `ML_IF_SCORE`, `ML_RESIDUAL_SCORE`, `ML_AUTOENCODER_SCORE`. Bu skorlar LLM promptuna verilmez; sadece karsilastirma icin output satirina yazilir.
+- LLM sonucuna ML karsilastirma kolonlari LLM karari alindiktan sonra eklenir: `ML_ENSEMBLE_SCORE`, `ML_IS_ANOMALY`, `ML_ALERT_BAND`, `ML_IF_SCORE`, `ML_RESIDUAL_SCORE`, `ML_AUTOENCODER_SCORE`. `ML_ANOMALY_SCORE` tekrar eden ensemble alias'i oldugu icin yeni output frame'inde uretilmez. Bu skorlar ve secim bucket bilgisi LLM promptuna verilmez.
 - Result tablosunda `LLM_CONFIDENCE` geriye uyumlu alan olarak `ANOMALY_SCORE` ile doldurulur; mevcut kontratta ayrica confidence kavrami yoktur.
 - `SEASONALITY_ASSESSMENT`, `TREND_ASSESSMENT` ve `PEER_ASSESSMENT` LLM decision satirina bagli evidence feature detaylarindan uretilen kisa sayisal ozetlerdir.
 - `CAVEAT`, karar yorumunun hangi veri kisitlariyla okunmasi gerektigini anlatan uyari/not alanidir; ornegin dusuk coverage, eksik history, stale veri veya zayif peer gibi durumlari belirtir.
 - ML companion skoru istenmezse `--skip-ml-companion` kullan.
 - `--dry-run`: LLM'e gitmez ve Oracle output insert yapmaz; sadece prompt/evidence kontrolu icindir.
 - `--max-customers 10`: LLM'e gidecek scoring snapshot/musteri sayisidir. Her musteri scoring ayinda 1 karar satiri olarak gider; history satirlari insert edilmez, evidence icinde baglam olarak kullanilir.
-- `--customer-selection-mode ml-balanced`: ML skorlamayi full cohort uzerinde yapar, LLM ornegini ML sonucuna gore dengeli secer. Secilen musteriler `runtime/llm/ml_balanced_selected_customers.csv` dosyasina yazilir.
+- `--customer-selection-mode ml-balanced`: ML skorlamayi full cohort uzerinde yapar, LLM ornegini ML sonucuna gore dengeli secer. Secim skoru onceligi `ensemble_score`, sonra geriye uyumlu `anomaly_score`, sonra model bilesen skorlaridir. Secilen musteriler audit icin `runtime/llm/ml_balanced_selected_customers.csv` dosyasina yazilir; bu dosya LLM inputu degildir.
 - `--max-train-rows 300000`: LLM'e 300k satir gondermez. History, peer, trend ve seasonality referanslarini hesaplamak icin kullanilan gecmis/reference ust limitidir.
 - `--series-periods 6`: Her feature icin LLM promptuna girecek musteri ve peer snapshot serisi uzunlugudur. Musterinin toplam 5 snapshot'i varsa 5'i de gider; daha uzun pencere icin bu degeri artir.
 - Secilen musterilerin tam gecmisi ayrica cekilir; bu sayede `max_train_rows` sampling'i secilen musterinin history'sini dusurmez.
@@ -302,7 +302,7 @@ python -m llm.llm_anomaly ensure-output-tables --scoring-month 2026-05-31
 
 LLM karar tablolari:
 
-- `ZT_VAR2.EWS_ANOMALY_LLM_RESULTS`: musteri-donem seviyesinde `IS_ANOMALY`, `ANOMALY_TYPE`, `RISK_LEVEL`, LLM `ANOMALY_SCORE`, ML comparison kolonlari (`ML_ENSEMBLE_SCORE`, `ML_ANOMALY_SCORE`, `ML_IS_ANOMALY`, `ML_ALERT_BAND`, `ML_IF_SCORE`, `ML_RESIDUAL_SCORE`, `ML_AUTOENCODER_SCORE`), `REASON_SUMMARY`, `REASON_1/2/3`, `REASON_1_WEIGHT/2_WEIGHT/3_WEIGHT` ve raw JSON response.
+- `ZT_VAR2.EWS_ANOMALY_LLM_RESULTS`: musteri-donem seviyesinde `IS_ANOMALY`, `ANOMALY_TYPE`, `RISK_LEVEL`, LLM `ANOMALY_SCORE`, ML comparison kolonlari (`ML_ENSEMBLE_SCORE`, `ML_IS_ANOMALY`, `ML_ALERT_BAND`, `ML_IF_SCORE`, `ML_RESIDUAL_SCORE`, `ML_AUTOENCODER_SCORE`), `REASON_SUMMARY`, `REASON_1/2/3`, `REASON_1_WEIGHT/2_WEIGHT/3_WEIGHT` ve raw JSON response.
 - `ZT_VAR2.EWS_ANOMALY_LLM_REASONS`: tek karar icindeki top reason alanlarinin detay satirlari.
 - `ZT_VAR2.EWS_ANOMALY_LLM_FEATURES`: her karar satiri icin hesaplanan tum feature evidence satirlari. Current/previous/change, history median-p25-p75-robust scale-history z, rolling medianlar, trend, sezon, peer median/z/support/quality, snapshot series JSON ve full feature JSON burada gorulur.
 

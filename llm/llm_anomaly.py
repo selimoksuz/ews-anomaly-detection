@@ -53,6 +53,30 @@ COMMON_CA_BUNDLE_PATHS = (
     "/etc/ssl/cert.pem",
     "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
 )
+ML_SELECTION_SCORE_PRIORITY = (
+    "ensemble_score",
+    "anomaly_score",
+    "autoencoder_score",
+    "residual_score",
+    "if_score",
+)
+LLM_FORBIDDEN_MODEL_OUTPUT_FIELDS = {
+    "anomaly_score",
+    "ensemble_score",
+    "if_score",
+    "residual_score",
+    "autoencoder_score",
+    "confidence",
+    "alert_band",
+    "alert_type",
+    "review_queue",
+    "rank_in_run",
+    "selection_bucket",
+    "selection_score",
+    "selection_score_column",
+    "selection_model",
+    "is_anomaly",
+}
 
 SYSTEM_PROMPT = """Sen deneyimli bir banka risk yoneticisi ve finansal anomali uzmanisin.
 Sana secilen scoring ayina ait musteri snapshot kayitlari verilecek.
@@ -325,8 +349,26 @@ def format_evidence_for_langchain(evidence_items: list[dict[str, Any]]) -> str:
         "Kayit:",
     ]
     for index, item in enumerate(evidence_items):
-        lines.extend(compact_evidence_lines(item, index=index))
+        lines.extend(compact_evidence_lines(sanitize_evidence_for_llm(item), index=index))
     return "\n".join(lines)
+
+
+def sanitize_evidence_for_llm(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            if is_forbidden_llm_model_output_field(key):
+                continue
+            cleaned[key] = sanitize_evidence_for_llm(item)
+        return cleaned
+    if isinstance(value, list):
+        return [sanitize_evidence_for_llm(item) for item in value]
+    return value
+
+
+def is_forbidden_llm_model_output_field(key: Any) -> bool:
+    normalized = str(key).strip().lower()
+    return normalized.startswith("ml_") or normalized in LLM_FORBIDDEN_MODEL_OUTPUT_FIELDS
 
 
 def compact_evidence_lines(item: dict[str, Any], *, index: int) -> list[str]:
@@ -1333,7 +1375,7 @@ def select_ml_balanced_customer_ids(
     score_frame: pd.DataFrame,
     *,
     total_customers: int = 10,
-    anomaly_customers: int = 5,
+    anomaly_customers: int | None = None,
     output_path: str | Path | None = None,
 ) -> tuple[list[str], pd.DataFrame]:
     if total_customers <= 0:
@@ -1346,54 +1388,48 @@ def select_ml_balanced_customer_ids(
     if TIME_COLUMN in frame.columns:
         frame[TIME_COLUMN] = pd.to_datetime(frame[TIME_COLUMN], errors="coerce").dt.strftime("%Y-%m-%d")
 
-    score_source = "ensemble_score" if "ensemble_score" in frame.columns else "anomaly_score"
-    if score_source not in frame.columns:
-        raise ValueError("ML selection score frame does not include ensemble_score or anomaly_score.")
+    score_source = resolve_ml_selection_score_column(frame)
     frame["_selection_score"] = pd.to_numeric(frame[score_source], errors="coerce").fillna(-1.0)
     if "alert_band" in frame.columns:
         frame["_alert_band"] = frame["alert_band"].astype(str).str.upper().fillna("")
+        frame["_is_ml_anomaly"] = frame["_alert_band"].ne("NORMAL")
+    elif "is_anomaly" in frame.columns:
+        frame["_alert_band"] = ""
+        frame["_is_ml_anomaly"] = frame["is_anomaly"].map(parse_selection_bool)
     else:
-        frame["_alert_band"] = pd.Series(["NORMAL"] * len(frame), index=frame.index)
-    frame["_is_ml_anomaly"] = frame["_alert_band"].ne("NORMAL")
+        raise ValueError("ML selection score frame must include alert_band or is_anomaly for anomaly/normal split.")
     frame = frame.sort_values("_selection_score", ascending=False).drop_duplicates(subset=[ID_COLUMN], keep="first")
 
-    anomaly_target = min(max(anomaly_customers, 0), total_customers)
+    anomaly_target = balanced_anomaly_target(total_customers, anomaly_customers)
+    normal_target = total_customers - anomaly_target
     anomaly_rows = frame[frame["_is_ml_anomaly"]].sort_values("_selection_score", ascending=False).head(anomaly_target)
-    normal_target = total_customers - len(anomaly_rows)
     normal_rows = (
         frame[~frame[ID_COLUMN].isin(anomaly_rows[ID_COLUMN]) & ~frame["_is_ml_anomaly"]]
         .sort_values("_selection_score", ascending=True)
         .head(normal_target)
     )
+    if len(anomaly_rows) < anomaly_target or len(normal_rows) < normal_target:
+        raise ValueError(
+            "ML balanced selection could not satisfy requested split: "
+            f"total={total_customers} anomaly_target={anomaly_target} anomaly_available={len(anomaly_rows)} "
+            f"normal_target={normal_target} normal_available={len(normal_rows)} score_column={score_source}"
+        )
     selected = pd.concat([anomaly_rows, normal_rows], ignore_index=True)
-    if len(selected) < total_customers:
-        filler = (
-            frame[~frame[ID_COLUMN].isin(selected[ID_COLUMN])]
-            .sort_values("_selection_score", ascending=False)
-            .head(total_customers - len(selected))
-        )
-        selected = pd.concat([selected, filler], ignore_index=True)
-        logger.warning(
-            "ML balanced selection could not find requested split exactly; filled remaining rows from highest remaining ML scores: requested_total=%s selected=%s anomaly_target=%s anomaly_selected=%s",
-            total_customers,
-            len(selected),
-            anomaly_target,
-            len(anomaly_rows),
-        )
 
     selected = selected.head(total_customers).copy()
-    selected["selection_bucket"] = [
-        "ML_HIGH_ANOMALY" if idx < len(anomaly_rows) else "ML_NORMAL_REFERENCE"
-        for idx in range(len(selected))
-    ]
+    selected["selection_bucket"] = ["ML_HIGH_ANOMALY"] * len(anomaly_rows) + ["ML_NORMAL_REFERENCE"] * len(normal_rows)
+    selected["selection_score"] = selected["_selection_score"]
+    selected["selection_score_column"] = score_source
+    selected["selection_model"] = ml_selection_model_name(score_source)
     customer_ids = selected[ID_COLUMN].astype(str).tolist()
     logger.info(
-        "ML BALANCED CUSTOMER SELECTION | total=%s anomaly_requested=%s anomaly_selected=%s normal_selected=%s score_column=%s selected_ids=%s",
+        "ML BALANCED CUSTOMER SELECTION | total=%s anomaly_requested=%s anomaly_selected=%s normal_selected=%s score_column=%s selection_model=%s selected_ids=%s",
         len(customer_ids),
         anomaly_target,
         int(selected["selection_bucket"].eq("ML_HIGH_ANOMALY").sum()),
         int(selected["selection_bucket"].eq("ML_NORMAL_REFERENCE").sum()),
         score_source,
+        ml_selection_model_name(score_source),
         ",".join(customer_ids),
     )
 
@@ -1408,6 +1444,42 @@ def select_ml_balanced_customer_ids(
         logger.info("Wrote ML balanced customer selection to %s", path)
 
     return customer_ids, selected.drop(columns=[column for column in selected.columns if column.startswith("_")], errors="ignore")
+
+
+def balanced_anomaly_target(total_customers: int, explicit_anomaly_customers: int | None = None) -> int:
+    if explicit_anomaly_customers is None:
+        return max(total_customers // 2, 0)
+    return min(max(int(explicit_anomaly_customers), 0), total_customers)
+
+
+def resolve_ml_selection_score_column(frame: pd.DataFrame) -> str:
+    for column in ML_SELECTION_SCORE_PRIORITY:
+        if column in frame.columns:
+            return column
+    raise ValueError(
+        "ML selection score frame does not include any supported score column: "
+        + ", ".join(ML_SELECTION_SCORE_PRIORITY)
+    )
+
+
+def ml_selection_model_name(score_column: str) -> str:
+    mapping = {
+        "ensemble_score": "ensemble",
+        "anomaly_score": "ensemble_alias",
+        "autoencoder_score": "autoencoder",
+        "residual_score": "residual",
+        "if_score": "isolation_forest",
+    }
+    return mapping.get(str(score_column), str(score_column))
+
+
+def parse_selection_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return bool(int(value))
+    text = str(value).strip().upper()
+    return text in {"1", "TRUE", "T", "YES", "Y", "EVET", "ANOMALY"}
 
 
 def attach_ml_companion_scores(
@@ -1479,7 +1551,6 @@ def attach_ml_companion_scores(
         if ensemble_value is None:
             ensemble_value = clean_float(row.get("anomaly_score"))
         decision["ml_ensemble_score"] = ensemble_value
-        decision["ml_anomaly_score"] = ensemble_value
         decision["ml_if_score"] = clean_float(row.get("if_score"))
         decision["ml_residual_score"] = clean_float(row.get("residual_score"))
         decision["ml_autoencoder_score"] = clean_float(row.get("autoencoder_score"))
@@ -1618,9 +1689,9 @@ def main(argv: list[str] | None = None) -> int:
         "--customer-selection-mode",
         choices=["ml-balanced", "first"],
         default="ml-balanced",
-        help="LLM'e gidecek musterileri secme yontemi. ml-balanced: once full ML skorla, 5 yuksek anomaly + normal referans sec.",
+        help="LLM'e gidecek musterileri secme yontemi. ml-balanced: once full ML skorla, N/2 yuksek anomaly + kalan normal referans sec.",
     )
-    run_oracle_parser.add_argument("--ml-balanced-anomaly-count", type=int, default=5)
+    run_oracle_parser.add_argument("--ml-balanced-anomaly-count", type=int, default=None)
 
     ensure_parser = subparsers.add_parser("ensure-output-tables")
     ensure_parser.add_argument("--scoring-month")
@@ -1690,14 +1761,21 @@ def main(argv: list[str] | None = None) -> int:
                 anomaly_customers=args.ml_balanced_anomaly_count,
                 output_path=args.output_path,
             )
+            anomaly_selected = int(selected_rows["selection_bucket"].eq("ML_HIGH_ANOMALY").sum())
+            normal_selected = int(selected_rows["selection_bucket"].eq("ML_NORMAL_REFERENCE").sum())
+            selection_score_column = str(selected_rows["selection_score_column"].iloc[0]) if not selected_rows.empty else ""
+            selection_model = str(selected_rows["selection_model"].iloc[0]) if not selected_rows.empty else ""
             selection_rule = (
-                f"ml_balanced_full_cohort_top_anomaly_{args.ml_balanced_anomaly_count}_"
-                f"plus_normal_{max(llm_max_customers - min(args.ml_balanced_anomaly_count, llm_max_customers), 0)}"
+                f"ml_balanced_full_cohort_{selection_model}_"
+                f"top_anomaly_{anomaly_selected}_plus_normal_{normal_selected}"
             )
             logger.info(
-                "LLM customer selection is ML-balanced: selected_customers=%s selected_rows=%s",
+                "LLM customer selection is ML-balanced: selected_customers=%s anomaly_selected=%s normal_selected=%s score_column=%s selection_model=%s note='ML scores are used only before evidence build and are not added to the LLM prompt'",
                 ",".join(selected_customer_ids),
-                selected_rows.to_dict(orient="records"),
+                anomaly_selected,
+                normal_selected,
+                selection_score_column,
+                selection_model,
             )
         logger.info(
             "Running Oracle-to-LLM flow: table_key=%s scoring_month=%s max_customers=%s customer_selection_mode=%s max_train_rows=%s top_features=%s dry_run=%s persist_oracle=%s",
